@@ -79,13 +79,14 @@ launcher_note=""
 if [[ "$INSTALL_LAUNCHER" -eq 1 ]]; then
   launcher_dir="$(ghostless_launcher_dir)"
   launcher_path="$launcher_dir/ghostless"
+  suite_bin="$(readlink -f "$SUITE_ROOT/bin/ghostless" 2>/dev/null || echo "$SUITE_ROOT/bin/ghostless")"
   existing_cli="$(command -v ghostless 2>/dev/null || true)"
   if [[ -n "$existing_cli" ]]; then
     real="$(readlink -f "$existing_cli" 2>/dev/null || echo "$existing_cli")"
     case "$existing_cli$real" in
       *"/.cache/pnpm/dlx/"*|*"/.npm/_npx/"*|*"/pnpm/store/"*) existing_cli="" ;;
     esac
-    if [[ "$real" == "$SUITE_ROOT/bin/ghostless" ]]; then
+    if [[ "$real" == "$suite_bin" ]]; then
       existing_cli=""
     fi
   fi

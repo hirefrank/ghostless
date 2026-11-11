@@ -145,6 +145,27 @@ printf '%s\\n' \\
             self.assertIn("foreign-tool", launcher.read_text(encoding="utf-8"))
             self.assertIn("not a ghostless launcher", completed.stdout)
 
+    def test_install_links_launcher_when_suite_reached_via_symlink(self) -> None:
+        # `npm i -g .` symlinks the global install to the checkout. The suite
+        # must still recognize its own bin through that link and write the
+        # launcher rather than treat itself as foreign.
+        with tempfile_home() as home:
+            env = os.environ.copy()
+            env["HOME"] = str(home)
+            env["GHOSTLESS_HOME"] = str(home / ".ghostless")
+            env["GHOSTLESS_NO_UPDATE"] = "1"
+            link_root = home / "ghostless-link"
+            link_root.symlink_to(ROOT)
+            env["PATH"] = str(link_root / "bin") + os.pathsep + env["PATH"]
+            completed = subprocess.run(
+                ["bash", str(link_root / "setup"), "--agent", "cursor"],
+                check=False, capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+            launcher = home / ".local" / "bin" / "ghostless"
+            self.assertTrue(launcher.is_file(), completed.stdout)
+            self.assertIn("ghostless launcher", launcher.read_text(encoding="utf-8"))
+
     def test_launcher_version_is_offline(self) -> None:
         env = os.environ.copy()
         env["GHOSTLESS_NO_UPDATE"] = "1"
