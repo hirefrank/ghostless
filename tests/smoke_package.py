@@ -32,7 +32,7 @@ def main() -> int:
         pack = json.loads(run([npm, "pack", "--json", "--pack-destination", str(base)], cwd=ROOT))
         files = {row["path"] for row in pack[0]["files"]}
         required = {"bin/ghostless.cjs", "lib/ghostless/harness.py", "lib/ghostless/cli.py",
-                    "skills/ghostless-draft/SKILL.md"}
+                    "lib/ghostless/sessions.py", "skills/ghostless-draft/SKILL.md"}
         if not required.issubset(files):
             raise RuntimeError(f"Missing packaged files: {sorted(required - files)}")
         archive = base / pack[0]["filename"]
@@ -74,6 +74,28 @@ def main() -> int:
                                 cwd=base, env=env, check=False, text=True, capture_output=True)
         if judged.returncode not in (0, 1) or "ghostless mechanical check" not in judged.stdout:
             raise RuntimeError(f"Installed judge failed: {judged.stdout}\n{judged.stderr}")
+        # Edit sessions (from #8): start, snapshot, and finish through the
+        # installed CLI, then learn once into gold/.
+        session = json.loads(cli("start", str(draft), "--project", str(project), "--json",
+                                 "--source", "https://example.org/reference"))
+        session_dir = project / session["path"]
+        if (session_dir / "before.md").read_text(encoding="utf-8") != draft.read_text(encoding="utf-8"):
+            raise RuntimeError("The session baseline differs from the draft")
+        snap = subprocess.run(
+            [str(executable), "snapshot", "--session", session["id"], "--project", str(project)],
+            cwd=base, env=env,
+            input=json.dumps({"after": "A better line.\n", "notes": "Cut the filler."}),
+            text=True, capture_output=True, check=False,
+        )
+        if snap.returncode:
+            raise RuntimeError(f"Installed snapshot failed: {snap.stdout}\n{snap.stderr}")
+        receipt = json.loads(cli("finish", "--session", session["id"], "--project", str(project), "--json"))
+        if receipt["sources"] != ["https://example.org/reference"]:
+            raise RuntimeError(f"Session sources not recorded: {receipt.get('sources')!r}")
+        if (session_dir / "after.md").read_text(encoding="utf-8") != "A better line.\n":
+            raise RuntimeError("The session final was not stored")
+        if json.loads(cli("finish", "--session", session["id"], "--project", str(project), "--json")) != receipt:
+            raise RuntimeError("Finish was not idempotent")
         print(f"Installed artifact smoke passed on {sys.platform}: {archive.name}")
     return 0
 
