@@ -24,8 +24,8 @@ Usage: ghostless update [options]
 
 Fetch the latest release and relink skills so the installed skills match the CLI.
 
-npm -g installs run:  npm i -g @hirefrank/ghostless@latest
-npx installs purge the cached copy and run the latest package.
+npm -g installs run:  npm i -g ghostless@latest
+npx and pnpm dlx installs purge the cached copy and run the latest package.
 A git checkout pulls --ff-only when the tree is clean.
 
 Options are passed through to install-skills:
@@ -83,7 +83,7 @@ ghostless_try_autoupdate() {
       echo "ghostless: npm is not on PATH." >&2
       return 1
     fi
-    npm i -g '@hirefrank/ghostless@latest' --prefer-online || return 1
+    npm i -g 'ghostless@latest' --prefer-online || return 1
     bash "$ROOT/setup" --force || true
     export GHOSTLESS_JUST_UPDATED=1
     exec "$ROOT/bin/ghostless" "$@"
@@ -95,9 +95,9 @@ ghostless_try_autoupdate() {
     runner="$(ghostless_package_runner)" || return 1
     export GHOSTLESS_JUST_UPDATED=1
     # shellcheck disable=SC2086
-    $runner '@hirefrank/ghostless@latest' install-skills --force || true
+    $runner 'ghostless@latest' install-skills --force || true
     # shellcheck disable=SC2086
-    exec $runner '@hirefrank/ghostless@latest' "$@"
+    exec $runner 'ghostless@latest' "$@"
   fi
   if [[ -d "$ROOT/.git" ]] && command -v git >/dev/null 2>&1; then
     if ! git -C "$ROOT" diff --quiet || ! git -C "$ROOT" diff --cached --quiet; then
@@ -131,11 +131,11 @@ cmd_update() {
   fi
 
   if ghostless_is_npm_global_install "$ROOT"; then
-    echo "Updating npm-global install (@hirefrank/ghostless)…"
-    if command -v npm >/dev/null 2>&1 && npm i -g '@hirefrank/ghostless@latest' --prefer-online; then
+    echo "Updating npm-global install (ghostless)…"
+    if command -v npm >/dev/null 2>&1 && npm i -g 'ghostless@latest' --prefer-online; then
       exec "$ROOT/setup" "${setup_args[@]}"
     fi
-    echo "error: npm update failed — run: npm i -g @hirefrank/ghostless@latest" >&2
+    echo "error: npm update failed — run: npm i -g ghostless@latest" >&2
     return 1
   fi
   if ghostless_is_packaged_install "$ROOT"; then
@@ -148,7 +148,7 @@ cmd_update() {
       return 1
     }
     # shellcheck disable=SC2086
-    exec $runner '@hirefrank/ghostless@latest' install-skills "${setup_args[@]}"
+    exec $runner 'ghostless@latest' install-skills "${setup_args[@]}"
   fi
   if [[ -d "$ROOT/.git" ]] && command -v git >/dev/null 2>&1; then
     echo "Updating local checkout at $ROOT …"
@@ -290,7 +290,7 @@ cmd_reset() {
   echo "Reset complete ($removed skill paths removed)."
   echo "The CLI itself is still installed."
   if ghostless_is_npm_global_install "$ROOT"; then
-    echo "  npm uninstall -g @hirefrank/ghostless"
+    echo "  npm uninstall -g ghostless"
   fi
   local launcher
   while IFS= read -r launcher; do

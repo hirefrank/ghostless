@@ -106,7 +106,7 @@ ghostless_is_npm_global_install() {
   local root="${1:-}"
   [[ -z "$root" ]] && return 1
   case "$root" in
-    */lib/node_modules/@hirefrank/ghostless|*/lib/node_modules/@hirefrank/ghostless/) return 0 ;;
+    */lib/node_modules/ghostless|*/lib/node_modules/ghostless/) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -116,7 +116,7 @@ ghostless_is_packaged_install() {
   [[ -z "$root" ]] && return 1
   [[ -d "$root/.git" ]] && return 1
   case "$root" in
-    */node_modules/@hirefrank/ghostless|*/node_modules/@hirefrank/ghostless/) return 0 ;;
+    */node_modules/ghostless|*/node_modules/ghostless/) return 0 ;;
     */.local/share/pnpm/*) return 0 ;;
     */.npm/_npx/*) return 0 ;;
     */.cache/pnpm/*) return 0 ;;
@@ -159,7 +159,7 @@ ghostless_purge_package_cache() {
   local removed=0 cache entry nested
   local -a entries=()
 
-  for cache in "$HOME"/.local/share/pnpm/store/v*/links/@hirefrank/ghostless; do
+  for cache in "$HOME"/.local/share/pnpm/store/v*/links/ghostless; do
     if [[ -e "$cache" || -L "$cache" ]]; then
       rm -rf "$cache"
       echo "removed $cache"
@@ -172,7 +172,7 @@ ghostless_purge_package_cache() {
     entries=()
     while IFS= read -r nested; do
       entries+=("$(ghostless__cache_entry_root "$cache" "$nested")")
-    done < <(find "$cache" -maxdepth 6 -type d -path '*node_modules/@hirefrank' 2>/dev/null || true)
+    done < <(find "$cache" -maxdepth 6 -type d -path '*node_modules/ghostless' 2>/dev/null || true)
     ((${#entries[@]})) || continue
     while IFS= read -r entry; do
       [[ -d "$entry" ]] || continue
@@ -218,10 +218,10 @@ ghostless_package_runner() {
 
 ghostless_setup_rerun_command() {
   if command -v npx >/dev/null 2>&1; then
-    echo "npx --yes @hirefrank/ghostless@latest install-skills"
+    echo "npx --yes ghostless@latest install-skills"
   elif command -v pnpm >/dev/null 2>&1; then
-    echo "pnpm dlx @hirefrank/ghostless@latest install-skills"
+    echo "pnpm dlx ghostless@latest install-skills"
   else
-    echo "npm i -g @hirefrank/ghostless@latest && ghostless install-skills"
+    echo "npm i -g ghostless@latest && ghostless install-skills"
   fi
 }

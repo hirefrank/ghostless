@@ -16,9 +16,9 @@ The install path matches `hirefrank/network-jobs`: an npm package whose `bin` is
    git push origin vX.Y.Z
    ```
 
-   [`.github/workflows/publish.yml`](../.github/workflows/publish.yml) checks that the tag matches `package.json`, reruns the tests, publishes `@hirefrank/ghostless` with npm trusted publishing (OIDC, no `NPM_TOKEN`), and then opens the GitHub release from the changelog section.
+   [`.github/workflows/publish.yml`](../.github/workflows/publish.yml) checks that the tag matches `package.json`, reruns the tests, publishes `ghostless` with npm trusted publishing (OIDC, no `NPM_TOKEN`), and then opens the GitHub release from the changelog section.
 
-Trusted publishing has to be turned on once in the npmjs.com UI: package `@hirefrank/ghostless`, GitHub user `hirefrank`, repository `ghostless`, workflow `publish.yml`, environment blank. Until that entry exists the publish job fails and nothing is uploaded.
+Trusted publishing has to be turned on once in the npmjs.com UI: package `ghostless`, GitHub user `hirefrank`, repository `ghostless`, workflow `publish.yml`, environment blank. Until that entry exists the publish job fails and nothing is uploaded.
 
 Manual fallback, from a real terminal:
 

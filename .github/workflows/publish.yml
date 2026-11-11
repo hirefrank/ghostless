@@ -1,7 +1,7 @@
 name: publish
 
 # Publishes on a version tag with npm trusted publishing (OIDC).
-# Needs a one-time trusted-publisher entry for @hirefrank/ghostless.
+# Needs a one-time trusted-publisher entry for the unscoped package ghostless.
 # Until that exists the publish step fails and nothing is uploaded.
 # See docs/RELEASE.md. Do not add a PyPI publish here.
 

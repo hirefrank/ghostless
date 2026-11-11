@@ -357,9 +357,11 @@ class VersionFileTests(unittest.TestCase):
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         from ghostless import __version__
 
+        self.assertEqual(package["name"], "ghostless")
         self.assertEqual(package["version"], "0.1.0")
         self.assertEqual(__version__, "0.1.0")
         self.assertIn('version = "0.1.0"', pyproject)
+        self.assertIn('name = "ghostless"', pyproject)
 
 
 if __name__ == "__main__":

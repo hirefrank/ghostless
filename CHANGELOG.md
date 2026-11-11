@@ -8,3 +8,4 @@
 - `learn` stores a before/after pair as gold and records what the edit changed.
 - Thin skills for drafting, editing, and capturing edits, installed into detected harnesses.
 - Once-a-day release check that sends no writing. Off with `GHOSTLESS_NO_UPDATE=1` or `updateCheck: false`.
+- npm package name is the unscoped `ghostless`. The GitHub repo stays `hirefrank/ghostless`.

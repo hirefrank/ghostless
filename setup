@@ -106,20 +106,20 @@ if [[ -n "$root" ]]; then
   fi
   printf 'ghostless: installed suite is gone: %q\n' "$root" >&2
   if command -v npx >/dev/null 2>&1; then
-    echo "Reinstall: npx --yes @hirefrank/ghostless@latest install-skills" >&2
+    echo "Reinstall: npx --yes ghostless@latest install-skills" >&2
   else
-    echo "Reinstall: npm i -g @hirefrank/ghostless@latest && ghostless install-skills" >&2
+    echo "Reinstall: npm i -g ghostless@latest && ghostless install-skills" >&2
   fi
   printf 'Or forget it: rm %q\n' "$data/suite-root" >&2
   exit 1
 fi
 if command -v npx >/dev/null 2>&1 && npx --version >/dev/null 2>&1; then
-  echo "ghostless: no suite-root recorded — running @hirefrank/ghostless@latest via npx" >&2
-  exec npx --yes '@hirefrank/ghostless@latest' "$@"
+  echo "ghostless: no suite-root recorded — running ghostless@latest via npx" >&2
+  exec npx --yes 'ghostless@latest' "$@"
 fi
 if command -v pnpm >/dev/null 2>&1 && pnpm --version >/dev/null 2>&1; then
-  echo "ghostless: no suite-root recorded — running @hirefrank/ghostless@latest via pnpm dlx" >&2
-  exec pnpm dlx '@hirefrank/ghostless@latest' "$@"
+  echo "ghostless: no suite-root recorded — running ghostless@latest via pnpm dlx" >&2
+  exec pnpm dlx 'ghostless@latest' "$@"
 fi
 echo "ghostless: suite not found and no npx/pnpm available" >&2
 exit 1

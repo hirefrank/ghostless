@@ -1,5 +1,5 @@
 {
-  "name": "@hirefrank/ghostless",
+  "name": "ghostless",
   "version": "0.1.0",
   "description": "Local voice guide for AI drafts that sound like you. Learns from your edits.",
   "license": "MIT",

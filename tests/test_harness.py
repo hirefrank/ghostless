@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import tempfile
@@ -94,6 +95,53 @@ printf '%s\\n' \\
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("ghostless 0.1.0", completed.stdout)
+
+    def test_npm_package_is_unscoped_ghostless(self) -> None:
+        surfaces = [
+            ROOT / "package.json",
+            ROOT / "bin" / "ghostless",
+            ROOT / "setup",
+            ROOT / "lib" / "agents.sh",
+            ROOT / "README.md",
+            ROOT / "docs" / "RELEASE.md",
+            ROOT / ".github" / "workflows" / "publish.yml",
+            *sorted((ROOT / "skills").rglob("SKILL.md")),
+        ]
+        for path in surfaces:
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("@hirefrank/ghostless", text, str(path))
+        package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        self.assertEqual(package["name"], "ghostless")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("npm i -g ghostless@latest", readme)
+        self.assertIn("npx --yes ghostless@latest install-skills", readme)
+        self.assertIn("pnpm dlx ghostless@latest install-skills", readme)
+        script = r"""
+set -euo pipefail
+source "$ROOT/lib/agents.sh"
+global="$HOME/.local/share/mise/installs/node/22/lib/node_modules/ghostless"
+scoped="$HOME/.local/share/mise/installs/node/22/lib/node_modules/@hirefrank/ghostless"
+npx_copy="$HOME/.npm/_npx/abc/node_modules/ghostless"
+if ghostless_is_npm_global_install "$global"; then echo global_yes; else echo global_no; fi
+if ghostless_is_npm_global_install "$scoped"; then echo scoped_yes; else echo scoped_no; fi
+if ghostless_is_packaged_install "$npx_copy"; then echo packaged_yes; else echo packaged_no; fi
+if ghostless_is_packaged_install "$ROOT"; then echo checkout_yes; else echo checkout_no; fi
+ghostless_setup_rerun_command
+"""
+        env = os.environ.copy()
+        env["ROOT"] = str(ROOT)
+        completed = subprocess.run(
+            ["bash", "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        lines = [line for line in completed.stdout.splitlines() if line]
+        self.assertEqual(lines[:4], ["global_yes", "scoped_no", "packaged_yes", "checkout_no"])
+        self.assertIn("ghostless@latest", lines[4])
+        self.assertNotIn("@hirefrank", lines[4])
 
     def test_bash_syntax(self) -> None:
         completed = subprocess.run(

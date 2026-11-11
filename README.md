@@ -13,7 +13,7 @@ It works with any harness that loads [Agent Skills](https://agentskills.io): Cla
 Python 3.11+ is required. The package layout follows [network-jobs](https://github.com/hirefrank/network-jobs): an npm launcher, Python under `lib/`, skills symlinked into each harness it finds.
 
 ```bash
-npm i -g @hirefrank/ghostless@latest
+npm i -g ghostless@latest
 ghostless install-skills
 ```
 
@@ -22,7 +22,11 @@ ghostless install-skills
 Zero-install:
 
 ```bash
-npx --yes @hirefrank/ghostless@latest install-skills
+npx --yes ghostless@latest install-skills
+```
+
+```bash
+pnpm dlx ghostless@latest install-skills
 ```
 
 From a checkout of this repo:
@@ -32,7 +36,7 @@ npm i -g .
 ghostless install-skills
 ```
 
-v0.1 is not on npm or PyPI yet. Publishing needs the maintainer's credentials. The workflows and `pyproject.toml` are in place; see [docs/RELEASE.md](docs/RELEASE.md).
+The npm package is the unscoped name `ghostless`. The GitHub repository stays [hirefrank/ghostless](https://github.com/hirefrank/ghostless). v0.1 is not published yet. Publishing needs the maintainer's credentials. The workflows and `pyproject.toml` are in place; see [docs/RELEASE.md](docs/RELEASE.md).
 
 ```bash
 ghostless install-skills --agent claude-code,cursor,codex
