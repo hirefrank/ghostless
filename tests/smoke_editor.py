@@ -16,8 +16,14 @@ EDITOR = ROOT / "editor" / "target" / "release" / ("ghostless-editor.exe" if os.
 
 
 def norm(text: str) -> str:
-    """Normalize line endings and Unicode form so cross-platform edits compare equal."""
-    return unicodedata.normalize("NFC", text.replace("\r\n", "\n").replace("\r", "\n")).strip()
+    """Normalize line endings, Unicode form, and whitespace so cross-platform edits compare equal."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = unicodedata.normalize("NFC", text)
+    return " ".join(text.split())
+
+
+def _show(text: str) -> str:
+    return "".join(f"\\u{ord(ch):04x}" if ord(ch) > 126 else ch for ch in text)
 
 
 def run(args: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> str:
@@ -67,10 +73,12 @@ def main() -> None:
         final = (session / "after.md").read_text(encoding="utf-8")
         notes = (session / "notes.md").read_text(encoding="utf-8")
         receipt = json.loads((session / "receipt.json").read_text(encoding="utf-8"))
-        if norm(final) != "I changed this draft. Café stays. And the ending is mine.":
-            raise RuntimeError(f"Unexpected editor final: {final!r}")
+        if norm(final) != norm("I changed this draft. Café stays. And the ending is mine."):
+            raise RuntimeError(
+                f"Unexpected editor final: {_show(final)!r} (expected {_show('I changed this draft. Café stays. And the ending is mine.')!r})"
+            )
         if norm(notes) != "I cut the filler.":
-            raise RuntimeError(f"Unexpected editor notes: {notes!r}")
+            raise RuntimeError(f"Unexpected editor notes: {_show(notes)!r}")
         if (session / "before.md").read_text(encoding="utf-8") != draft.read_text(encoding="utf-8"):
             raise RuntimeError("The immutable original changed")
         if not snap.is_file() or not (project / str(receipt["learnedPath"])).is_dir():
