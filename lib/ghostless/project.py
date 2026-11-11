@@ -23,8 +23,8 @@ DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 # stays out, so a rebuild never dirties the working tree.
 GITIGNORE_MARKER = "# ghostless: voice-data repository"
 GITIGNORE_BLOCK = """# ghostless: voice-data repository
-# Tracked on purpose: manifest.json, corpus/, transcripts/, gold/, sessions/,
-# and holdouts/. Everything below is generated, temporary, or raw media.
+# Tracked on purpose: manifest.json, rules.json, corpus/, transcripts/, gold/,
+# sessions/, and holdouts/. Everything below is generated, temporary, or raw media.
 voice-stats.json
 voice-guide.md
 voice-guide.paste.md
@@ -92,6 +92,7 @@ DATA_DIRS = (
 # drafts, and raw media are not in this list.
 TRACKED_PATHS = (
     "manifest.json",
+    "rules.json",
     ".gitignore",
     "corpus",
     "transcripts",

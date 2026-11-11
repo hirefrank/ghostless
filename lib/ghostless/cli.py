@@ -16,6 +16,7 @@ from ghostless.harness import main as harness_main
 from ghostless.judge import format_report, judge_text
 from ghostless.learn import learn_edit, load_edit_summary, promote_final, refresh_edit_summary
 from ghostless.paths import ProjectError, data_home, find_project, suite_root, version
+from ghostless.rules import confirm_rule, reject_rule, retire_rule, rules_summary
 from ghostless.sessions import finish_session, list_sessions, snapshot_session, start_session
 from ghostless.project import (
     TRACKED_PATHS,
@@ -168,6 +169,22 @@ def main(argv: list[str] | None = None) -> int:
     export_parser.add_argument("--out", help="Output path (default: voice-guide.paste.md)")
     _add_project(export_parser)
 
+    rules_parser = sub.add_parser(
+        "rules",
+        help="Review, confirm, reject, or retire voice rules mined from your edits",
+    )
+    rules_parser.add_argument(
+        "action",
+        nargs="?",
+        default="list",
+        choices=("list", "confirm", "reject", "retire"),
+        help="list candidates (default), or decide one",
+    )
+    rules_parser.add_argument("rule_id", nargs="?", help="Rule id, e.g. cut:delve or add:contraction")
+    rules_parser.add_argument("--section", help="Limit a confirmed rule to this section")
+    rules_parser.add_argument("--json", action="store_true")
+    _add_project(rules_parser)
+
     eval_parser = sub.add_parser(
         "eval",
         help="Hold out part of the corpus and test whether judge scores track your edits",
@@ -247,6 +264,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             return _cmd_snapshot(args)
         case "export":
             return _cmd_export(args)
+        case "rules":
+            return _cmd_rules(args)
         case "eval":
             return _cmd_eval(args)
         case "locate":
@@ -609,6 +628,140 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     return 0 if report.get("ok") else 1
 
 
+def _cmd_rules(args: argparse.Namespace) -> int:
+    root = _project(args.project)
+    action = args.action
+    if action == "list":
+        summary = rules_summary(root)
+        if args.json:
+            print(json.dumps(summary, indent=2, ensure_ascii=False))
+        else:
+            print(_format_rules(summary))
+        return 0
+    if not args.rule_id:
+        raise ProjectError(
+            f"`ghostless rules {action}` needs a rule id, for example cut:delve."
+        )
+    if action in ("reject", "retire") and args.section:
+        raise ProjectError("--section only applies to confirm.")
+    if action == "confirm":
+        result = confirm_rule(root, args.rule_id, section=args.section)
+    elif action == "reject":
+        result = reject_rule(root, args.rule_id)
+    else:
+        result = retire_rule(root, args.rule_id)
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+    print(f"{result['id']}: {result['status']}")
+    if isinstance(result.get("scope"), str):
+        print(f"  scope: {result['scope']}")
+    receipts = result.get("receipts")
+    if isinstance(receipts, list) and receipts:
+        print("  receipts: " + ", ".join(str(receipt) for receipt in receipts))
+    if result["status"] == "confirmed":
+        print("  Active on the next build.")
+    elif result["status"] == "rejected":
+        print("  Suppressed for good; rebuilds will not bring it back.")
+    else:
+        print("  Retired; the decision stays on record.")
+    print("Run `ghostless build` to update voice-guide.md.")
+    return 0
+
+
+def _format_rules(summary: dict[str, object]) -> str:
+    minimum = summary.get("minimumSupport")
+    lines = [
+        f"Voice rules from edit receipts (minimum support: {minimum} distinct pieces)",
+        "",
+    ]
+    confirmed = summary.get("confirmed")
+    confirmed = confirmed if isinstance(confirmed, list) else []
+    lines.append("Confirmed (active)")
+    if not confirmed:
+        lines.append("  none yet")
+    else:
+        for item in confirmed:
+            if not isinstance(item, dict):
+                continue
+            lines.append(_rule_heading(item, confirmed=True))
+            receipts = item.get("receipts")
+            if isinstance(receipts, list) and receipts:
+                lines.append("    receipts: " + ", ".join(str(receipt) for receipt in receipts))
+    lines.append("")
+
+    hypotheses = summary.get("hypotheses")
+    hypotheses = hypotheses if isinstance(hypotheses, list) else []
+    lines.append("Hypotheses (unconfirmed, not active)")
+    if not hypotheses:
+        lines.append("  none")
+    for item in hypotheses:
+        if not isinstance(item, dict):
+            continue
+        lines.append(_rule_heading(item, confirmed=False))
+        examples = item.get("examples")
+        if isinstance(examples, list):
+            for example in examples:
+                if not isinstance(example, dict):
+                    continue
+                before = str(example.get("before_snippet") or "").strip()
+                after = str(example.get("after_snippet") or "").strip()
+                lines.append(f"    {example.get('slug')}: \"{before}\" -> \"{after}\"")
+                if example.get("receipt"):
+                    lines.append(f"      receipt: {example.get('receipt')}")
+        counterexamples = item.get("counterexamples")
+        if isinstance(counterexamples, list) and counterexamples:
+            lines.append(f"    counterexamples: {len(counterexamples)}")
+            for example in counterexamples[:2]:
+                if isinstance(example, dict):
+                    lines.append(f"      {example.get('slug')}: \"{example.get('snippet')}\"")
+    lines.append("")
+
+    for key in ("rejected", "retired"):
+        items = summary.get(key)
+        items = items if isinstance(items, list) else []
+        label = "never active" if key == "rejected" else "no longer active"
+        lines.append(f"{key.capitalize()} ({label})")
+        if not items:
+            lines.append("  none")
+        for item in items:
+            if isinstance(item, dict):
+                lines.append(f"  {item.get('id')}  {item.get('at') or ''}".rstrip())
+        lines.append("")
+
+    if not confirmed and not hypotheses:
+        lines.append(
+            "No candidates yet. A word has to recur in enough distinct finished edits "
+            "before it appears here."
+        )
+        lines.append("")
+    else:
+        lines.append("Decide one with: ghostless rules confirm|reject <id> [--section NAME]")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _rule_heading(item: dict[str, object], *, confirmed: bool) -> str:
+    kind = str(item.get("kind") or "cut")
+    verb = "cut" if kind == "cut" else "add"
+    word = item.get("word") or "?"
+    detail: list[str] = []
+    support = item.get("support")
+    if isinstance(support, int) and not isinstance(support, bool):
+        detail.append(f"{support} pieces")
+    sections = item.get("sections")
+    if isinstance(sections, list) and sections:
+        detail.append("sections: " + ", ".join(str(name) for name in sections))
+    if confirmed:
+        scope = item.get("scope")
+        detail.append(f"scope: {scope}" if isinstance(scope, str) and scope else "scope: all")
+        at = item.get("confirmedAt")
+        if isinstance(at, str) and at:
+            detail.append(f"confirmed {at[:10]}")
+    suffix = f"  ({'; '.join(detail)})" if detail else ""
+    return f"  {verb} {word}{suffix}"
+
+
 def _cmd_which(args: argparse.Namespace) -> int:
     root = suite_root()
     print(f"suite={root if root is not None else 'none'}")
@@ -653,6 +806,9 @@ def build_voice(root: Path) -> dict[str, object]:
     stats["generatedAt"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     fail_under = manifest.get("failUnder")
     stats["failUnder"] = fail_under if isinstance(fail_under, int) else 70
+    # A derived snapshot for the guide. `rules.json` stays the source of truth
+    # for decisions, and build never writes it.
+    stats["rules"] = rules_summary(root, edits=edits)
     (root / "voice-stats.json").write_text(
         json.dumps(stats, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
