@@ -4,11 +4,11 @@ v0.1 is ready to publish and is not published. npm and PyPI both need the mainta
 
 ## npm (supported install)
 
-The npm package includes a bash launcher under `bin/`, the voice logic under `lib/ghostless/`, and agent skills under `skills/`.
+The npm package includes a portable Node launcher under `bin/`, the voice logic under `lib/ghostless/`, and agent skills under `skills/`. Its installed artifact is smoke-tested on macOS, Windows, and Linux by `.github/workflows/package.yml`.
 
-1. Bump `version` in `package.json`, `pyproject.toml`, and `ghostless.__version__` together. `bash tests/run.sh` fails when they disagree.
+1. Bump `version` in `package.json`, `pyproject.toml`, and `ghostless.__version__` together. `npm test` fails when they disagree.
 2. Add a `CHANGELOG.md` section `## vX.Y.Z — YYYY-MM-DD`.
-3. Run `bash tests/run.sh`.
+3. Run `npm test` and `python tests/smoke_package.py`.
 4. Tag and push when you want the workflow to run:
 
    ```bash
@@ -31,7 +31,7 @@ The first publish of a new package cannot use a stage-only token.
 
 ## PyPI
 
-`pyproject.toml` builds a wheel of the Python package (`pip install build && python -m build`). The console script runs the voice commands (`init`, `build`, `judge`, `learn`, `export`). Skill install, the daily updater, and the launcher are the npm package. There is no PyPI publish workflow on purpose, so a tag cannot upload a package that was never claimed on PyPI.
+`pyproject.toml` builds a wheel of the Python package (`pip install build && python -m build`). The wheel's console script runs the voice commands (`init`, `build`, `judge`, `learn`, `export`). The npm package includes skills and the supported installer. There is no PyPI publish workflow, so a tag cannot upload a package that was never claimed on PyPI.
 
 ## What the release check looks at
 

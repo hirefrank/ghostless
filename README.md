@@ -10,16 +10,16 @@ It works with any harness that loads [Agent Skills](https://agentskills.io): Cla
 
 ## Install
 
-Python 3.11+ is required. The npm package includes a bash launcher, Python code under `lib/`, and skills symlinked into detected agent harnesses.
+Node 18+ and Python 3.11+ are required for the npm install. The npm package uses a portable Node launcher for the Python voice engine. Native CLI commands run on macOS, Windows, and Linux without Bash.
 
 ```bash
 npm i -g ghostless@latest
 ghostless install-skills
 ```
 
-`install-skills` creates `~/.ghostless/`, puts `ghostless` on `PATH` (`~/.local/bin` when that directory is on `PATH`), and symlinks the three skills into every detected harness.
+The global npm install puts `ghostless` on `PATH`. `install-skills` creates `~/.ghostless/` and installs the three skills into detected harnesses. It links on macOS/Linux and copies on Windows, where creating symlinks can require extra privileges.
 
-Zero-install:
+One-off install of the skills:
 
 ```bash
 npx --yes ghostless@latest install-skills
@@ -29,6 +29,8 @@ npx --yes ghostless@latest install-skills
 pnpm dlx ghostless@latest install-skills
 ```
 
+One-off runs copy the skills so clearing the package-manager cache cannot break them. They do not install a persistent `ghostless` command; use the global install for that.
+
 From a checkout of this repo:
 
 ```bash
@@ -37,6 +39,9 @@ ghostless install-skills
 ```
 
 The npm package is the unscoped name `ghostless`. The GitHub repository stays [hirefrank/ghostless](https://github.com/hirefrank/ghostless). v0.1 is not published yet. Publishing needs the maintainer's credentials. The workflows and `pyproject.toml` are in place; see [docs/RELEASE.md](docs/RELEASE.md).
+
+The native desktop editor is being tracked in [#9](https://github.com/hirefrank/ghostless/issues/9). The cross-platform CLI and distribution work is [#13](https://github.com/hirefrank/ghostless/issues/13); this CLI does not yet include the `start`/`finish` workflow from [#8](https://github.com/hirefrank/ghostless/issues/8).
+See [desktop distribution](docs/CROSS_PLATFORM.md) for platform behavior, updates, and uninstall.
 
 ```bash
 ghostless install-skills --agent claude-code,cursor,codex
@@ -296,10 +301,10 @@ On a newer release, the CLI prints an update notice. Run `ghostless update` to r
 ## Develop
 
 ```bash
-bash tests/run.sh
+npm test
 ```
 
-Tests cover the stats, the tier and spoken rules, corpus cleanup, `judge` confidence, held-out evaluation, `learn`, export, and skill linking into a fake home. The sample corpus is invented. CI runs that suite on Python 3.11, 3.12, and 3.13.
+Tests cover the stats, the tier and spoken rules, corpus cleanup, `judge` confidence, held-out evaluation, edit sessions, `learn`, export, and skill installation into a fake home. The sample corpus is invented. CI runs the Python suite on 3.11, 3.12, and 3.13, plus an installed npm artifact smoke test on macOS, Windows, and Linux.
 
 Paths, the manifest, and the stats JSON are in [SCHEMA.md](SCHEMA.md).
 

@@ -1,11 +1,10 @@
-"""Voice commands. Skill install, update, and doctor live on the bash launcher."""
+"""Voice commands and portable skill maintenance."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +12,7 @@ from pathlib import Path
 from ghostless.export import write_export
 from ghostless.eval import evaluate, format_eval
 from ghostless.guide import render_guide
+from ghostless.harness import main as harness_main
 from ghostless.judge import format_report, judge_text
 from ghostless.learn import learn_edit, load_edit_summary, promote_final, refresh_edit_summary
 from ghostless.paths import ProjectError, data_home, find_project, suite_root, version
@@ -29,9 +29,10 @@ from ghostless.project import (
     read_provenance,
 )
 from ghostless.stats import compile_stats
+from ghostless.updatecheck import run_once as check_for_update
 
 EPILOG = """
-Launcher commands:
+Maintenance commands:
   install-skills    Link skills into detected harnesses
   update            Install the latest release and relink skills
   doctor            Check Python, the data dir, and skill links
@@ -47,6 +48,20 @@ The check only GETs the public GitHub release. It does not send your writing.
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if (os.environ.get("GHOSTLESS_LAUNCHER") == "npm" and argv
+            and argv[0] not in {"-h", "--help", "help", "-V", "--version", "version", "update"}):
+        decision = check_for_update()
+        if decision.startswith("update "):
+            print(f"ghostless: {decision[7:]} is available. Run 'ghostless update' to install it.", file=sys.stderr)
+    if argv and argv[0] in {
+        "install-skills", "setup", "update", "doctor", "agents", "routing", "reset", "uninstall"
+    }:
+        try:
+            return harness_main(argv)
+        except (ProjectError, OSError) as exc:
+            print(f"ghostless: {exc}", file=sys.stderr)
+            return 2
     parser = argparse.ArgumentParser(
         prog="ghostless",
         description="Measure a local writing corpus and judge drafts against that voice.",
@@ -609,34 +624,11 @@ def _cmd_which(args: argparse.Namespace) -> int:
 
 
 def _cmd_launcher(command: str, extra: list[str]) -> int:
-    """Hand installer commands to the bash launcher, which owns symlinks and npm."""
-    root = suite_root()
-    if root is None or not (root / "bin" / "ghostless").is_file():
-        print(
-            f"ghostless: `{command}` needs the full suite (npm install or a git checkout).",
-            file=sys.stderr,
-        )
-        return 1
-    env = os.environ.copy()
-    env["GHOSTLESS_FROM_BIN"] = "1"
-    completed = subprocess.run(
-        [str(root / "bin" / "ghostless"), command, *extra],
-        check=False,
-        env=env,
-    )
-    return int(completed.returncode)
+    return harness_main([command, *extra])
 
 
 def _cmd_install_skills(extra: list[str]) -> int:
-    root = suite_root()
-    if root is None or not (root / "setup").is_file():
-        print(
-            "ghostless: install-skills needs the full suite (npm install or a git checkout).",
-            file=sys.stderr,
-        )
-        return 1
-    completed = subprocess.run(["bash", str(root / "setup"), *extra], check=False)
-    return int(completed.returncode)
+    return harness_main(["install-skills", *extra])
 
 
 def build_voice(root: Path) -> dict[str, object]:

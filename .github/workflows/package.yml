@@ -1,0 +1,25 @@
+name: package smoke
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  npm-artifact:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Test source
+        run: npm test
+      - name: Pack, install, and smoke-test artifact
+        run: python tests/smoke_package.py
