@@ -226,6 +226,20 @@ class NotesTests(unittest.TestCase):
             self.assertIn("# Audience", audience)
             self.assertIn("Engineers who skim.", audience)
 
+    def test_save_does_not_treat_prefix_as_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            init_project(project, git=False)
+            main(["save", "--style", "Every claim needs a source, and a link.", "--project", str(project)])
+            # A shorter same-day rule that is only a prefix of the stored line
+            # must still append, not be mistaken for the line already present.
+            self.assertEqual(
+                main(["save", "--style", "Every claim needs a source", "--project", str(project)]),
+                0,
+            )
+            style = (project / "STYLE.md").read_text(encoding="utf-8")
+            self.assertEqual(style.count("Every claim needs a source"), 2)
+
     def test_save_rejects_empty_rule(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "voice"

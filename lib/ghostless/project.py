@@ -348,7 +348,7 @@ def save_note(root: Path, *, kind: str, text: str) -> dict[str, object]:
         path.write_text(heading + "\n" + line + "\n", encoding="utf-8")
         return {"path": path, "created": True, "appended": True}
     existing = path.read_text(encoding="utf-8")
-    if line in existing:
+    if line in existing.splitlines():
         return {"path": path, "created": False, "appended": False}
     if not existing.strip():
         path.write_text(heading + "\n" + line + "\n", encoding="utf-8")
