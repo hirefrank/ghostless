@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ghostless.export import write_export
+from ghostless.eval import evaluate, format_eval
 from ghostless.guide import render_guide
 from ghostless.judge import format_report, judge_text
 from ghostless.learn import learn_edit, load_edit_summary, promote_final, refresh_edit_summary
@@ -128,6 +129,19 @@ def main(argv: list[str] | None = None) -> int:
     export_parser.add_argument("--out", help="Output path (default: voice-guide.paste.md)")
     _add_project(export_parser)
 
+    eval_parser = sub.add_parser(
+        "eval",
+        help="Hold out part of the corpus and test whether judge scores track your edits",
+    )
+    eval_parser.add_argument(
+        "--holdout",
+        type=int,
+        help="Edit pairs or gold pieces to hold out (default: about a third)",
+    )
+    eval_parser.add_argument("--seed", type=int, default=0, help="Split seed (default: 0)")
+    eval_parser.add_argument("--json", action="store_true")
+    _add_project(eval_parser)
+
     sub.add_parser("locate", help="Print the voice project directory")
     which_parser = sub.add_parser("which", help="Print suite, data, and project paths")
     _add_project(which_parser)
@@ -186,6 +200,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             return _cmd_promote(args)
         case "export":
             return _cmd_export(args)
+        case "eval":
+            return _cmd_eval(args)
         case "locate":
             print(find_project())
             return 0
@@ -462,6 +478,16 @@ def _cmd_export(args: argparse.Namespace) -> int:
     else:
         print("Excerpts omitted. Pass --excerpts to include short gold samples.")
     return 0
+
+
+def _cmd_eval(args: argparse.Namespace) -> int:
+    root = _project(args.project)
+    report = evaluate(root, holdout=args.holdout, seed=args.seed)
+    if args.json:
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+    else:
+        print(format_eval(report), end="")
+    return 0 if report.get("ok") else 1
 
 
 def _cmd_which(args: argparse.Namespace) -> int:

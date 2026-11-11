@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+from ghostless.judge import corpus_confidence
+
 
 def render_guide(stats: dict[str, object]) -> str:
     return _render(stats, paste=False, excerpts=None)
@@ -61,6 +63,7 @@ def _render(
             f"| {label} | {formatter(metrics.get(key))} | {formatter(bare.get(key))} |"
         )
     lines.append("")
+    lines.extend(_sample_size(stats))
     lines.append("## Sentence length")
     lines.append("")
     lines.append("Short is 1–10 words, medium is 11–20, long is 21 or more.")
@@ -123,6 +126,39 @@ def _rules(stats: dict[str, object], *, paste: bool) -> list[str]:
         lines.append("- Corpus files stay on this machine. Do not upload them.")
     lines.append("")
     return lines
+
+
+def _sample_size(stats: dict[str, object]) -> list[str]:
+    confidence = corpus_confidence(stats)
+    counts = _block(stats.get("counts"))
+    written_pieces = _sum_counts(_block(counts.get("prose")))
+    spoken_pieces = _sum_counts(_block(counts.get("spoken")))
+    lines = ["## Sample size", ""]
+    lines.append(
+        f"- Pieces: {_num(confidence.get('pieces'))} measured "
+        f"({written_pieces} written, {spoken_pieces} spoken)"
+    )
+    lines.append(
+        f"- Words: {_num(confidence.get('words'))} measured, "
+        f"{_num(confidence.get('writtenWords'))} written prose"
+    )
+    lines.append(f"- Sentences: {_num(confidence.get('sentences'))}")
+    level = confidence.get("level")
+    note = confidence.get("note")
+    if isinstance(note, str) and note:
+        lines.append(f"- Confidence: {level}. {note}")
+    else:
+        lines.append(f"- Confidence: {level}.")
+    lines.append("")
+    return lines
+
+
+def _sum_counts(block: dict[str, object]) -> int:
+    return sum(
+        int(value)
+        for value in block.values()
+        if isinstance(value, int) and not isinstance(value, bool)
+    )
 
 
 def _phrases(block: dict[str, object]) -> list[str]:
