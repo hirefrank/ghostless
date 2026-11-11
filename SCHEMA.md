@@ -57,6 +57,7 @@ sessions/<session-id>/
   "kind": "ghostless-edit-session",
   "version": 1,
   "id": "2026-01-02-notes",
+  "date": "2026-01-02",
   "createdAt": "2026-01-02T13:00:00Z",
   "section": "notes",
   "origin": "ai-first",

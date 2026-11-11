@@ -186,12 +186,16 @@ fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
 
 fn cli_command() -> Command {
     if let Some(path) = env::var_os("GHOSTLESS_CLI") { return Command::new(path); }
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../bin/ghostless");
-    if source.is_file() {
-        Command::new(source)
-    } else {
-        Command::new("ghostless")
+    // The checkout launcher is a Unix script; on Windows it cannot run, so
+    // fall through to an installed `ghostless` on PATH there.
+    #[cfg(not(windows))]
+    {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../bin/ghostless");
+        if source.is_file() {
+            return Command::new(source);
+        }
     }
+    Command::new("ghostless")
 }
 
 fn run_cli(args: &[&str], input: Option<&str>) -> Result<String, String> {

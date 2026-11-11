@@ -8,10 +8,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EDITOR = ROOT / "editor" / "target" / "release" / ("ghostless-editor.exe" if os.name == "nt" else "ghostless-editor")
+
+
+def norm(text: str) -> str:
+    """Normalize line endings and Unicode form so cross-platform edits compare equal."""
+    return unicodedata.normalize("NFC", text.replace("\r\n", "\n").replace("\r", "\n")).strip()
 
 
 def run(args: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> str:
@@ -61,9 +67,9 @@ def main() -> None:
         final = (session / "after.md").read_text(encoding="utf-8")
         notes = (session / "notes.md").read_text(encoding="utf-8")
         receipt = json.loads((session / "receipt.json").read_text(encoding="utf-8"))
-        if final != "I changed this draft. Café stays. And the ending is mine.":
+        if norm(final) != "I changed this draft. Café stays. And the ending is mine.":
             raise RuntimeError(f"Unexpected editor final: {final!r}")
-        if notes != "I cut the filler.":
+        if norm(notes) != "I cut the filler.":
             raise RuntimeError(f"Unexpected editor notes: {notes!r}")
         if (session / "before.md").read_text(encoding="utf-8") != draft.read_text(encoding="utf-8"):
             raise RuntimeError("The immutable original changed")
@@ -92,9 +98,9 @@ def main() -> None:
         if len(recovery_sessions) != 1:
             raise RuntimeError("Cannot find the interrupted edit session")
         recovery = recovery_sessions[0]
-        if (recovery / "after.md").read_text(encoding="utf-8") != "Recovery text. こんにちは ✨ pasted":
+        if norm((recovery / "after.md").read_text(encoding="utf-8")) != "Recovery text. こんにちは ✨ pasted":
             raise RuntimeError("Undo/redo or UTF-8 recovery failed")
-        if (recovery / "notes.md").read_text(encoding="utf-8") != "Resume after closing.":
+        if norm((recovery / "notes.md").read_text(encoding="utf-8")) != "Resume after closing.":
             raise RuntimeError("Notes were not saved before interruption")
         if (recovery / "receipt.json").exists():
             raise RuntimeError("Save must not finish a session")

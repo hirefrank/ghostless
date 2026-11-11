@@ -56,6 +56,8 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(receipt["sources"], ["https://example.org/reference"])
         self.assertEqual(receipt["origin"], "writer-first")
         self.assertEqual(receipt["tier"], "gold")
+        # The learned pair shares the session's id (the #8 invariant).
+        self.assertEqual(receipt["learnedPath"], f"gold/{session['id']}")
         self.assertEqual((folder / "after.md").read_text(), "A better thought.\n")
         self.assertEqual((folder / "notes.md").read_text(), "More direct.")
         self.assertEqual(len(list((self.project / "gold").glob("*/meta.json"))), 1)

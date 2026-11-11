@@ -120,6 +120,7 @@ def start_session(
         "kind": "ghostless-edit-session",
         "version": 1,
         "id": session_id,
+        "date": date_text,
         "createdAt": _now(),
         "section": section,
         "origin": checked_origin,
@@ -203,12 +204,16 @@ def finish_session(
         learned_path = existing
         tier, confirmation = _existing_placement(root, existing)
     else:
+        section = metadata.get("section") if isinstance(metadata.get("section"), str) else None
+        date_value = metadata.get("date")
+        date = date_value if isinstance(date_value, str) else None
         result = learn_edit(
             root,
             before=folder / "before.md",
             after=folder / "after.md",
-            section=metadata.get("section") if isinstance(metadata.get("section"), str) else None,
+            section=section,
             origin=str(metadata.get("origin")),
+            date=date,
         )
         learned_path = str(result["path"])
         tier = result.get("tier")
