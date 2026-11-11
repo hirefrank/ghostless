@@ -140,6 +140,7 @@ ghostless rules [list|confirm|reject|retire] [ID] [--section NAME] [--project DI
 ghostless snapshot --session ID [--project DIR]
 ghostless eval [--holdout N] [--seed N] [--project DIR] [--json]
 ghostless export [--excerpts] [--out PATH] [--project DIR]
+ghostless save --style TEXT | --audience TEXT [--project DIR]
 ghostless install-skills [--agent auto|all|name,...] [--force] [--copy] [--no-launcher] [-v]
 ghostless update [--agent ...]
 ghostless doctor
@@ -208,6 +209,25 @@ If you tag pieces with `section:` (or a subfolder), `build` writes per-section t
 The catalog is a fixed list of distinctive model tics (`delve`, `tapestry`, `furthermore`, `it's worth noting`, …). If you use a tell, it is reported as in use and left off the ban list. Absence is weak evidence in a small corpus: below 1,500 written words, the guide marks the list provisional. Review a hit in context before changing a draft.
 
 `judge` also flags tidy structure that targets do not fully catch: "it's not X, it's Y" frames, single-word triplets (`clear, concise, and compelling`), and em dashes above the target.
+
+## Editorial notes: STYLE.md and AUDIENCE.md
+
+Voice is measured; substance is not. Two optional, tracked files let you state what the engine cannot measure, and `build` folds both into the guide (and the paste export) without measuring them.
+
+| File | What it holds | Where it lands |
+| --- | --- | --- |
+| `STYLE.md` | What a piece must do, contain, and prove: argument, evidence, structure, publication readiness. | Folded under `## Style` |
+| `AUDIENCE.md` | Who reads it: situation, prior knowledge, wants, interests, resistance. | Folded under `## Audience` |
+
+The boundary is deliberate. Wording and rhythm are measured in the Targets table, and recurring cut/add words become voice rules under `ghostless rules` — neither belongs in `STYLE.md`. `STYLE.md` and `AUDIENCE.md` carry substance and reader context, which no number claims to check. Absence never blocks a build; the guide marks each missing file with a one-line pointer.
+
+```bash
+ghostless save --style "Every claim needs a source."
+ghostless save --audience "Readers know the domain terms; skip definitions."
+ghostless build
+```
+
+`save` appends a dated line to the right file; saving the same rule on the same day is a no-op. The files are tracked like the corpus, so edit them directly or route a confirmed rule through `ghostless save`.
 
 ## How a draft should behave
 

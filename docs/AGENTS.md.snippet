@@ -9,6 +9,7 @@ Local voice project. The corpus, transcripts, and gold edits stay on this machin
 | I finished a piece; learn from my edits | `ghostless-learn` |
 
 - Read `voice-guide.md` in the project (`ghostless locate`). Run `ghostless build` if it is missing.
+- Substantive rules live in `STYLE.md` (what a piece must prove) and `AUDIENCE.md` (who reads it); both are folded into `voice-guide.md` by `ghostless build`. Route a confirmed rule with `ghostless save --style/--audience`.
 - After a draft, run `ghostless judge`.
 - Leave `[WRITER: your take]` where an opinion, quote, statistic, or anecdote is needed. Do not invent those.
 - When the user says a piece is finished and both drafts exist, run `ghostless learn`, then `ghostless build`.

@@ -32,8 +32,9 @@ def _render(
         lines.append(
             "Self-contained voice target for a writer. Paste this whole file into "
             "a Claude project or a ChatGPT project. It already holds the targets, "
-            "the ban list, signature phrases, per-section targets, and the words "
-            "you cut or added in edits. Nothing else on disk is required to follow it."
+            "the ban list, signature phrases, per-section targets, the words "
+            "you cut or added in edits, and your STYLE.md and AUDIENCE.md when "
+            "present. Nothing else on disk is required to follow it."
         )
     else:
         lines.append("# Voice guide")
@@ -46,6 +47,8 @@ def _render(
     lines.append("")
     lines.extend(_rules(stats, paste=paste))
     lines.extend(_voice_rules(stats))
+    lines.extend(_style(stats))
+    lines.extend(_audience(stats))
     lines.append("## Targets")
     lines.append("")
     lines.append("| Metric | Weighted | Unweighted |")
@@ -231,6 +234,59 @@ def _rule_line(item: dict[str, object], *, confirmed: bool) -> str:
             detail.append("receipts: " + ", ".join(str(receipt) for receipt in receipts[:4]))
     suffix = f" ({'; '.join(detail)})" if detail else ""
     return f"- {verb} `{word}`{suffix}"
+
+
+def _style(stats: dict[str, object]) -> list[str]:
+    text = stats.get("style")
+    lines = ["## Style", ""]
+    if not isinstance(text, str) or not text:
+        lines.append(
+            "No STYLE.md yet. This optional file holds what a piece must do, "
+            "contain, and prove — argument, evidence, structure, readiness. "
+            "Voice stays measured, not described."
+        )
+        lines.append("")
+        return lines
+    lines.append(
+        "Substantive standards, not voice. Wording and rhythm come from the Targets table."
+    )
+    lines.append("")
+    lines.append(_note_body(text))
+    lines.append("")
+    return lines
+
+
+def _audience(stats: dict[str, object]) -> list[str]:
+    text = stats.get("audience")
+    lines = ["## Audience", ""]
+    if not isinstance(text, str) or not text:
+        lines.append(
+            "No AUDIENCE.md yet. This optional file holds who reads the piece — "
+            "situation, knowledge, wants, interests, resistance."
+        )
+        lines.append("")
+        return lines
+    lines.append("Who reads the piece. This is reader context, not voice.")
+    lines.append("")
+    lines.append(_note_body(text))
+    lines.append("")
+    return lines
+
+
+def _note_body(text: str) -> str:
+    """The note content with a leading top-level heading dropped.
+
+    The guide already supplies the `## Style` / `## Audience` heading, so the
+    file's own `# Style` / `# Audience` line would only repeat it.
+    """
+    lines = text.splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if lines and lines[0].lstrip().startswith("# "):
+        lines.pop(0)
+        while lines and not lines[0].strip():
+            lines.pop(0)
+    return "\n".join(lines).strip()
 
 
 def _sample_size(stats: dict[str, object]) -> list[str]:

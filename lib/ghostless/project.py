@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Never
 
@@ -24,7 +25,8 @@ DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 GITIGNORE_MARKER = "# ghostless: voice-data repository"
 GITIGNORE_BLOCK = """# ghostless: voice-data repository
 # Tracked on purpose: manifest.json, rules.json, corpus/, transcripts/, gold/,
-# sessions/, and holdouts/. Everything below is generated, temporary, or raw media.
+# sessions/, holdouts/, and the optional STYLE.md and AUDIENCE.md. Everything
+# below is generated, temporary, or raw media.
 voice-stats.json
 voice-guide.md
 voice-guide.paste.md
@@ -99,6 +101,14 @@ TRACKED_PATHS = (
     "gold",
     "sessions",
     "holdouts",
+)
+
+# Optional writer-authored editorial prose, folded into the guide by build.
+# They are tracked like the corpus and never measured. `load_notes` reads
+# them; `save_note` appends a dated rule.
+NOTE_FILES = (
+    ("style", "STYLE.md"),
+    ("audience", "AUDIENCE.md"),
 )
 
 Origin = Literal["ai-first", "writer-first"]
@@ -294,6 +304,58 @@ def load_manifest(root: Path) -> dict[str, object]:
         "updateCheck": update_check,
         "pieces": pieces,
     }
+
+
+def load_notes(root: Path) -> dict[str, str | None]:
+    """Optional writer-authored editorial prose, folded into the guide.
+
+    `STYLE.md` governs what a piece must do, contain, and prove (argument,
+    evidence, structure, readiness). `AUDIENCE.md` governs who reads it.
+    Both are tracked sources like the corpus; the generated guide is ignored.
+    Absence never blocks a build, and neither file is ever measured.
+    """
+    notes: dict[str, str | None] = {}
+    for key, name in NOTE_FILES:
+        path = root / name
+        if not path.is_file():
+            notes[key] = None
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeError as exc:
+            raise ProjectError(f"{path} is not valid UTF-8.") from exc
+        notes[key] = text.strip() or None
+    return notes
+
+
+def save_note(root: Path, *, kind: str, text: str) -> dict[str, object]:
+    """Append one confirmed editorial rule to STYLE.md or AUDIENCE.md.
+
+    `kind` is ``"style"`` or ``"audience"``. The line is dated, so a rule the
+    writer confirms later gets its own entry. Saving the same rule on the same
+    day is a no-op rather than a duplicate.
+    """
+    name = {"style": "STYLE.md", "audience": "AUDIENCE.md"}.get(kind)
+    if name is None:
+        raise ProjectError("save needs --style or --audience.")
+    rule = text.strip()
+    if not rule:
+        raise ProjectError("The rule text must not be empty.")
+    path = root / name
+    line = f"- {datetime.now(timezone.utc).strftime('%Y-%m-%d')} {rule}"
+    heading = f"# {kind.title()}\n"
+    if not path.is_file():
+        path.write_text(heading + "\n" + line + "\n", encoding="utf-8")
+        return {"path": path, "created": True, "appended": True}
+    existing = path.read_text(encoding="utf-8")
+    if line in existing:
+        return {"path": path, "created": False, "appended": False}
+    if not existing.strip():
+        path.write_text(heading + "\n" + line + "\n", encoding="utf-8")
+        return {"path": path, "created": True, "appended": True}
+    body = existing.rstrip("\n") + "\n\n" + line + "\n"
+    path.write_text(body, encoding="utf-8")
+    return {"path": path, "created": False, "appended": True}
 
 
 def _positive_int(value: object, *, path: Path, field: str) -> int:
