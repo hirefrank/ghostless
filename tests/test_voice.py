@@ -164,6 +164,129 @@ class SampleProjectTests(unittest.TestCase):
             self.assertIsNotNone(archive_metrics["medianParagraphLength"])
 
 
+class NotesTests(unittest.TestCase):
+    def test_notes_fold_into_guide_and_export(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            shutil.copytree(SAMPLE, project)
+            (project / "STYLE.md").write_text(
+                "# Style\n\n- Every claim needs a source.\n", encoding="utf-8"
+            )
+            (project / "AUDIENCE.md").write_text(
+                "# Audience\n\n- Engineers who skim.\n", encoding="utf-8"
+            )
+            stats = build_voice(project)
+            self.assertEqual(stats["style"], "# Style\n\n- Every claim needs a source.")
+            self.assertEqual(stats["audience"], "# Audience\n\n- Engineers who skim.")
+            guide = (project / "voice-guide.md").read_text(encoding="utf-8")
+            self.assertIn("## Style", guide)
+            self.assertIn("Every claim needs a source.", guide)
+            self.assertIn("## Audience", guide)
+            self.assertIn("Engineers who skim.", guide)
+            self.assertEqual(main(["export", "--project", str(project)]), 0)
+            paste = (project / "voice-guide.paste.md").read_text(encoding="utf-8")
+            self.assertIn("Every claim needs a source.", paste)
+            self.assertIn("Engineers who skim.", paste)
+
+    def test_missing_notes_render_a_pointer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            shutil.copytree(SAMPLE, project)
+            stats = build_voice(project)
+            self.assertIsNone(stats["style"])
+            self.assertIsNone(stats["audience"])
+            guide = (project / "voice-guide.md").read_text(encoding="utf-8")
+            self.assertIn("No STYLE.md yet", guide)
+            self.assertIn("No AUDIENCE.md yet", guide)
+
+    def test_save_appends_dated_rule_and_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            init_project(project, git=False)
+            self.assertEqual(
+                main(["save", "--style", "Every claim needs a source.", "--project", str(project)]),
+                0,
+            )
+            style = (project / "STYLE.md").read_text(encoding="utf-8")
+            self.assertIn("# Style", style)
+            self.assertIn("Every claim needs a source.", style)
+            # The same rule on the same day must not add a duplicate line.
+            self.assertEqual(
+                main(["save", "--style", "Every claim needs a source.", "--project", str(project)]),
+                0,
+            )
+            second = (project / "STYLE.md").read_text(encoding="utf-8")
+            self.assertEqual(second.count("Every claim needs a source."), 1)
+            # A different kind routes to the other file.
+            self.assertEqual(
+                main(["save", "--audience", "Engineers who skim.", "--project", str(project)]),
+                0,
+            )
+            audience = (project / "AUDIENCE.md").read_text(encoding="utf-8")
+            self.assertIn("# Audience", audience)
+            self.assertIn("Engineers who skim.", audience)
+
+    def test_save_does_not_treat_prefix_as_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            init_project(project, git=False)
+            main(["save", "--style", "Every claim needs a source, and a link.", "--project", str(project)])
+            # A shorter same-day rule that is only a prefix of the stored line
+            # must still append, not be mistaken for the line already present.
+            self.assertEqual(
+                main(["save", "--style", "Every claim needs a source", "--project", str(project)]),
+                0,
+            )
+            style = (project / "STYLE.md").read_text(encoding="utf-8")
+            self.assertEqual(style.count("Every claim needs a source"), 2)
+
+    def test_save_collapses_newlines_to_a_single_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            init_project(project, git=False)
+            self.assertEqual(
+                main(["save", "--style", "Every claim\nneeds a source.", "--project", str(project)]),
+                0,
+            )
+            style = (project / "STYLE.md").read_text(encoding="utf-8")
+            self.assertIn("Every claim needs a source.", style)
+            self.assertNotIn("Every claim\n", style)
+            # Same-day idempotency holds once the rule is collapsed.
+            self.assertEqual(
+                main(["save", "--style", "Every claim\nneeds a source.", "--project", str(project)]),
+                0,
+            )
+            self.assertEqual(
+                (project / "STYLE.md").read_text(encoding="utf-8").count("Every claim needs a source."),
+                1,
+            )
+
+    def test_save_rejects_empty_rule(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            init_project(project, git=False)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                code = main(["save", "--style", "   ", "--project", str(project)])
+            self.assertEqual(code, 2)
+            self.assertFalse((project / "STYLE.md").exists())
+
+    def test_notes_are_tracked_not_measured(self) -> None:
+        _require_git(self)
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            init_project(project)
+            (project / "STYLE.md").write_text("# Style\n", encoding="utf-8")
+            (project / "AUDIENCE.md").write_text("# Audience\n", encoding="utf-8")
+            (project / "corpus" / "gold" / "desk.md").write_text("I write.\n", encoding="utf-8")
+            # Tracked: the voice-data rules never ignore them.
+            self.assertFalse(_ignored(project, "STYLE.md"))
+            self.assertFalse(_ignored(project, "AUDIENCE.md"))
+            # Not measured: discovery reads corpus/, transcripts/, and gold/ only.
+            pieces = discover(project, load_manifest(project))
+            self.assertEqual([piece.path for piece in pieces], ["corpus/gold/desk.md"])
+
+
 class JudgeTests(unittest.TestCase):
     def test_ai_draft_fails_and_closer_draft_beats_it(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

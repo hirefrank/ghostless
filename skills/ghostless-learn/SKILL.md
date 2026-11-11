@@ -31,3 +31,14 @@ ghostless build
 `learn` writes `gold/<date-slug>/` with `before.md`, `after.md`, and `meta.json`, and updates `edits-summary`. `build` folds the final into the guide at its tier (gold or edited).
 
 Tell the user the slug and the main shifts (words, edit rate, moved text, sentence length, contractions). Do not paste their whole piece into a chat log they didn't ask for, and do not upload the gold files anywhere.
+
+## Also: a durable rule
+
+If the writer confirms a rule that should generalize — a substantive standard or a reader note, not a wording preference — save it instead of letting it live only in this piece:
+
+```bash
+ghostless save --style "Every claim needs a source."
+ghostless save --audience "Readers know the domain terms; skip definitions."
+```
+
+Then `ghostless build`. Wording and tone are already measured, and recurring cut/add words belong to `ghostless rules`, not `STYLE.md`.

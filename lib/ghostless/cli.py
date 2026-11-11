@@ -25,9 +25,11 @@ from ghostless.project import (
     git_toplevel,
     init_project,
     load_manifest,
+    load_notes,
     migrate_project,
     placement_for,
     read_provenance,
+    save_note,
 )
 from ghostless.stats import compile_stats
 from ghostless.updatecheck import run_once as check_for_update
@@ -158,6 +160,21 @@ def main(argv: list[str] | None = None) -> int:
     snapshot_parser.add_argument("--session", required=True, help="Session ID")
     _add_project(snapshot_parser)
 
+    save_parser = sub.add_parser(
+        "save",
+        help="Append a confirmed editorial rule to STYLE.md or AUDIENCE.md",
+    )
+    save_group = save_parser.add_mutually_exclusive_group(required=True)
+    save_group.add_argument(
+        "--style",
+        help="Substantive rule (argument, evidence, structure, readiness): append to STYLE.md",
+    )
+    save_group.add_argument(
+        "--audience",
+        help="Reader note (situation, knowledge, wants, resistance): append to AUDIENCE.md",
+    )
+    _add_project(save_parser)
+
     export_parser = sub.add_parser("export", help="Write one paste-ready voice guide")
     export_parser.add_argument(
         "--excerpts",
@@ -262,6 +279,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             return _cmd_sessions(args)
         case "snapshot":
             return _cmd_snapshot(args)
+        case "save":
+            return _cmd_save(args)
         case "export":
             return _cmd_export(args)
         case "rules":
@@ -301,6 +320,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
     print("Next:")
     print("  Put your own writing in corpus/gold (best), corpus/silver, and corpus/bronze.")
     print("  Put transcripts of your speech in corpus/spoken (your lines only).")
+    print("  Optionally add STYLE.md (what a piece must prove) and AUDIENCE.md (who reads it).")
     print("  ghostless build")
     return 0
 
@@ -601,6 +621,21 @@ def _placement_note(tier: str) -> str:
             return tier
 
 
+def _cmd_save(args: argparse.Namespace) -> int:
+    root = _project(args.project)
+    kind = "style" if args.style is not None else "audience"
+    text = args.style if kind == "style" else args.audience
+    result = save_note(root, kind=kind, text=text)
+    path = str(result["path"])
+    if result["appended"]:
+        print(f"appended to {path}")
+    else:
+        print(f"already in {path}")
+    print("Tracked, not uploaded. Review with `git diff` before committing.")
+    print("Run `ghostless build` to fold it into the guide.")
+    return 0
+
+
 def _cmd_export(args: argparse.Namespace) -> int:
     root = _project(args.project)
     stats = _load_stats(root)
@@ -809,6 +844,9 @@ def build_voice(root: Path) -> dict[str, object]:
     # A derived snapshot for the guide. `rules.json` stays the source of truth
     # for decisions, and build never writes it.
     stats["rules"] = rules_summary(root, edits=edits)
+    notes = load_notes(root)
+    stats["style"] = notes["style"]
+    stats["audience"] = notes["audience"]
     (root / "voice-stats.json").write_text(
         json.dumps(stats, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",

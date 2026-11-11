@@ -8,6 +8,8 @@ The voice directory is also a Git data repository. It is self-contained: no remo
 
 ```text
 manifest.json           tracked    project settings
+STYLE.md                tracked    optional. What a piece must do, contain, prove.
+AUDIENCE.md             tracked    optional. Who reads the piece.
 corpus/gold/            tracked    weight 3, prose. Your own unaided drafts.
 corpus/silver/          tracked    weight 1, prose. Recent writing.
 corpus/bronze/          tracked    weight 0.5, prose. Older writing.
@@ -30,6 +32,7 @@ raw/                    ignored    source recordings and video
 | Path | Git | Read by build |
 | --- | --- | --- |
 | `manifest.json`, `corpus/`, `transcripts/` | tracked | yes |
+| `STYLE.md`, `AUDIENCE.md` | tracked, optional | yes, folded into the guide, never measured |
 | `gold/` (edit pairs) | tracked | yes, the `after` files, as gold or edited by provenance |
 | `sessions/` (in-progress edits) | tracked | no |
 | `rules.json` (voice-rule decisions) | tracked | yes, as confirmed rules |
@@ -193,6 +196,30 @@ Measurement reads prose, not formatting. Every measure (`words`, `paragraphs`, `
 - removes autolinks, bare URLs, HTML tags, ATX heading lines, blockquote markers, list markers, task boxes, horizontal rules, and table rules; table pipes become spaces.
 
 Link text is kept because the writer wrote it. Emphasis markers are kept so `learn` still reports an emphasis-only revision as a structural change. For text with none of this syntax the result is exactly `normalize(text)`, so existing prose measurements do not move.
+
+## Editorial notes: STYLE.md and AUDIENCE.md
+
+Voice is measured; substance is not. Two optional, tracked files let a writer
+state what the counts never claim to check, and `build` folds both into the
+guide (and the paste export) without measuring them.
+
+| File | Holds |
+| --- | --- |
+| `STYLE.md` | What a piece must do, contain, and prove: argument, evidence, structure, publication readiness. |
+| `AUDIENCE.md` | Who reads it: situation, prior knowledge, wants, interests, resistance. |
+
+The boundary is deliberate. Wording and rhythm are measured in the Targets
+table, and recurring cut/add words become voice rules under `ghostless rules`
+(see [Voice rules](#voice-rules)); neither belongs in `STYLE.md`. `STYLE.md` and
+`AUDIENCE.md` carry substance and reader context, which no number claims to
+check. Absence never blocks a build; the guide marks each missing file with a
+one-line pointer.
+
+`ghostless save --style "..."` appends a dated line to `STYLE.md`;
+`ghostless save --audience "..."` does the same for `AUDIENCE.md`. Saving the
+same rule on the same day is a no-op. Both files are tracked like the corpus,
+so they are committed, never uploaded. `build` re-reads them, so edit either
+file and rebuild to refresh the guide.
 
 ## Provenance
 
