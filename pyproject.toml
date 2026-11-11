@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ghostless"
+version = "0.1.0"
+description = "Measure a local writing corpus and judge AI drafts against that voice."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Frank Harris" }]
+keywords = ["writing", "voice", "cli", "agent-skills"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/hirefrank/ghostless"
+Repository = "https://github.com/hirefrank/ghostless"
+
+[project.scripts]
+ghostless = "ghostless.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["lib"]

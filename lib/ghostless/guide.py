@@ -1,0 +1,337 @@
+"""Render voice-guide.md from compiled stats."""
+
+from __future__ import annotations
+
+import json
+
+
+def render_guide(stats: dict[str, object]) -> str:
+    return _render(stats, paste=False, excerpts=None)
+
+
+def render_paste(stats: dict[str, object], excerpts: list[dict[str, str]] | None) -> str:
+    return _render(stats, paste=True, excerpts=excerpts)
+
+
+def _render(
+    stats: dict[str, object],
+    *,
+    paste: bool,
+    excerpts: list[dict[str, str]] | None,
+) -> str:
+    weighted = _block(stats.get("weighted"))
+    unweighted = _block(stats.get("unweighted"))
+    metrics = _metrics(weighted)
+    bare = _metrics(unweighted)
+    lines: list[str] = []
+    if paste:
+        lines.append("# Voice guide (paste into a project)")
+        lines.append("")
+        lines.append(
+            "Self-contained voice target for a writer. Paste this whole file into "
+            "a Claude project or a ChatGPT project. It already holds the targets, "
+            "the ban list, signature phrases, per-section targets, and the words "
+            "you cut or added in edits. Nothing else on disk is required to follow it."
+        )
+    else:
+        lines.append("# Voice guide")
+        lines.append("")
+        lines.append(
+            "Measured from the local corpus. Weighted numbers are the targets. "
+            "Unweighted numbers use the same pieces at weight 1, so you can see "
+            "what the weights changed. Check a draft with `ghostless judge`."
+        )
+    lines.append("")
+    lines.extend(_rules(stats, paste=paste))
+    lines.append("## Targets")
+    lines.append("")
+    lines.append("| Metric | Weighted | Unweighted |")
+    lines.append("| --- | --- | --- |")
+    rows = (
+        ("Median sentence length (words)", "medianSentenceLength", _num),
+        ("Contractions per 1k words", "contractionsPer1k", _num),
+        ("First-person I per 1k words", "iPer1k", _num),
+        ("Em dashes per 1k words", "emDashesPer1k", _num),
+        ("Questions per 1k words", "questionsPer1k", _num),
+        ("Sentences opening with And/But/So", "openerShare", _pct),
+        ("Median paragraph length (words)", "medianParagraphLength", _num),
+    )
+    for label, key, formatter in rows:
+        lines.append(
+            f"| {label} | {formatter(metrics.get(key))} | {formatter(bare.get(key))} |"
+        )
+    lines.append("")
+    lines.append("## Sentence length")
+    lines.append("")
+    lines.append("Short is 1–10 words, medium is 11–20, long is 21 or more.")
+    lines.append("")
+    lines.append(f"- Weighted: {_distribution(metrics.get('sentenceLengthDistribution'))}")
+    lines.append(f"- Unweighted: {_distribution(bare.get('sentenceLengthDistribution'))}")
+    lines.append("")
+    lines.append("## Openers")
+    lines.append("")
+    lines.append(_openers(metrics.get("openers"), "Weighted"))
+    lines.append(_openers(bare.get("openers"), "Unweighted"))
+    lines.append("")
+    lines.extend(_phrases(weighted))
+    lines.extend(_bans(weighted, stats))
+    lines.extend(_sections(stats))
+    lines.extend(_edits(stats.get("edits")))
+    lines.extend(_weights(stats))
+    if paste and excerpts:
+        lines.append("## Gold excerpts")
+        lines.append("")
+        lines.append("Short samples from the writer's own gold. Included because export was run with excerpts turned on.")
+        lines.append("")
+        for index, excerpt in enumerate(excerpts, start=1):
+            section = excerpt.get("section") or "unsectioned"
+            lines.append(f"### Excerpt {index} ({section})")
+            lines.append("")
+            lines.append(excerpt.get("text", "").strip())
+            lines.append("")
+    generated = stats.get("generatedAt")
+    if isinstance(generated, str) and generated:
+        lines.append(f"Generated {generated}.")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _rules(stats: dict[str, object], *, paste: bool) -> list[str]:
+    lines = ["## Rules", ""]
+    lines.append("- Use the targets above as diagnostics. They are counts from the writer's own text, not a measure of writing quality.")
+    lines.append("- Review words and phrases on the absent-tell list in context, especially with a small corpus.")
+    lines.append(
+        "- Do not invent quotes, statistics, anecdotes, or opinions. "
+        "Where the piece needs the writer's take, leave `[WRITER: your take]` and say what is missing."
+    )
+    lines.append("- Avoid the tidy frames models default to: \"it's not X, it's Y\", neat triplets, and em dashes stacked past the target.")
+    if stats.get("bronzeFormatOnly"):
+        minimum = stats.get("goldVoiceMinimum")
+        gold = stats.get("goldPieces")
+        lines.append(
+            f"- Bronze is format-only right now ({gold} gold pieces, threshold {minimum}). "
+            "It can shape paragraph length. It does not set voice, phrases, or the ban list."
+        )
+    else:
+        lines.append(
+            "- Bronze still counts toward voice. It drops out of voice once gold reaches the threshold in the manifest, and stays on for paragraph length."
+        )
+    lines.append(
+        "- Spoken transcripts count only toward sentence length, contractions, first-person I, and And/But/So openers. They do not set paragraphs, em dashes, questions, phrases, or the ban list."
+    )
+    if not paste:
+        lines.append("- Corpus files stay on this machine. Do not upload them.")
+    lines.append("")
+    return lines
+
+
+def _phrases(block: dict[str, object]) -> list[str]:
+    raw = block.get("signaturePhrases")
+    lines = ["## Signature phrases", ""]
+    if not isinstance(raw, list) or not raw:
+        lines.append("None yet. A phrase has to show up at least twice in the written voice pool.")
+        lines.append("")
+        return lines
+    lines.append("These show up at least twice in the written voice pool. Use one only when it actually fits.")
+    lines.append("")
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        phrase = item.get("phrase")
+        count = item.get("count")
+        if isinstance(phrase, str):
+            lines.append(f"- {phrase} ({count})")
+    lines.append("")
+    return lines
+
+
+def _bans(block: dict[str, object], stats: dict[str, object]) -> list[str]:
+    lines = ["## Ban list", ""]
+    if block.get("dictionEmpty"):
+        lines.append("Not inferred. There is no written prose in the voice pool yet, and spoken lines cannot fill a ban list.")
+        lines.append("")
+        return lines
+    ban = block.get("banList")
+    used = block.get("tellsInUse")
+    if isinstance(ban, list) and ban:
+        lines.append("Catalog AI-tells that do not appear in the written voice pool:")
+        lines.append("")
+        for tell in ban:
+            if isinstance(tell, str):
+                lines.append(f"- {tell}")
+        lines.append("")
+    else:
+        lines.append("None. Every catalog tell showed up in the written voice pool, so nothing was banned.")
+        lines.append("")
+    if isinstance(used, list) and used:
+        lines.append("Present in the written voice pool, so not banned:")
+        lines.append("")
+        for tell in used:
+            if isinstance(tell, str):
+                lines.append(f"- {tell}")
+        lines.append("")
+    warnings = stats.get("warnings")
+    if isinstance(warnings, list):
+        for warning in warnings:
+            if isinstance(warning, str) and warning not in "\n".join(lines):
+                lines.append(f"Note: {warning}")
+                lines.append("")
+    return lines
+
+
+def _sections(stats: dict[str, object]) -> list[str]:
+    raw = stats.get("sections")
+    lines = ["## Sections", ""]
+    if not isinstance(raw, dict) or not raw:
+        lines.append("No section tags yet. Add `section:` in frontmatter, or put files in a subfolder of a tier, and rebuild.")
+        lines.append("")
+        return lines
+    lines.append("Pass `--section` to `ghostless judge` to use a section's weighted targets. The ban list stays global.")
+    lines.append("")
+    for name in sorted(raw):
+        block = raw[name]
+        if not isinstance(block, dict):
+            continue
+        weighted = _metrics(_block(block.get("weighted")))
+        lines.append(f"### {name}")
+        lines.append("")
+        lines.append(f"- Pieces: {block.get('pieces')}")
+        lines.append(f"- Median sentence length: {_num(weighted.get('medianSentenceLength'))} words")
+        lines.append(f"- Contractions per 1k: {_num(weighted.get('contractionsPer1k'))}")
+        lines.append(f"- I per 1k: {_num(weighted.get('iPer1k'))}")
+        lines.append(f"- And/But/So openers: {_pct(weighted.get('openerShare'))}")
+        lines.append(f"- Em dashes per 1k: {_num(weighted.get('emDashesPer1k'))}")
+        lines.append(f"- Median paragraph length: {_num(weighted.get('medianParagraphLength'))} words")
+        lines.append("")
+    return lines
+
+
+def _edits(edits: object) -> list[str]:
+    if not isinstance(edits, dict):
+        return []
+    learns = edits.get("learns")
+    if not isinstance(learns, list) or not learns:
+        return []
+    lines = ["## What your edits do", ""]
+    lines.append("Each final you kept with `ghostless learn` is gold. The shifts below are before → after.")
+    lines.append("")
+    for item in learns:
+        if not isinstance(item, dict):
+            continue
+        slug = item.get("slug")
+        origin = item.get("origin") or "unspecified"
+        section = item.get("section") or "unsectioned"
+        lines.append(f"### {slug}")
+        lines.append("")
+        lines.append(f"- {origin}, section {section}")
+        lines.append(
+            f"- Words: {_num(item.get('wordsBefore'))} → {_num(item.get('wordsAfter'))} "
+            f"(removed {_num(item.get('wordsRemoved'))} tokens, added {_num(item.get('wordsAdded'))})"
+        )
+        lines.append(
+            f"- Median sentence length: {_num(item.get('medianSentenceLengthBefore'))} → "
+            f"{_num(item.get('medianSentenceLengthAfter'))}"
+        )
+        lines.append(
+            f"- Contractions per 1k: {_num(item.get('contractionsPer1kBefore'))} → "
+            f"{_num(item.get('contractionsPer1kAfter'))}"
+        )
+        lines.append(f"- Cut: {_word_list(item.get('removedWords'))}")
+        lines.append(f"- Added: {_word_list(item.get('addedWords'))}")
+        lines.append("")
+    lines.append("Cut more than once: " + _repeat(edits.get("repeatedRemovals")))
+    lines.append("")
+    lines.append("Added more than once: " + _repeat(edits.get("repeatedAdditions")))
+    lines.append("")
+    return lines
+
+
+def _weights(stats: dict[str, object]) -> list[str]:
+    weights = stats.get("weights")
+    lines = ["## Weights", ""]
+    if isinstance(weights, dict):
+        lines.append(
+            f"- gold {weights.get('gold')}, silver {weights.get('silver')}, bronze {weights.get('bronze')}"
+        )
+    lines.append(
+        f"- Gold pieces: {stats.get('goldPieces')}. "
+        f"Bronze becomes format-only at {stats.get('goldVoiceMinimum')}."
+    )
+    counts = stats.get("counts")
+    if isinstance(counts, dict):
+        lines.append(f"- Counts: `{json_compact(counts)}`")
+    lines.append("")
+    return lines
+
+
+def json_compact(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(", ", ": "))
+
+
+def _block(value: object) -> dict[str, object]:
+    return value if isinstance(value, dict) else {}
+
+
+def _metrics(block: dict[str, object]) -> dict[str, object]:
+    metrics = block.get("metrics")
+    return metrics if isinstance(metrics, dict) else {}
+
+
+def _num(value: object) -> str:
+    if isinstance(value, bool) or value is None:
+        return "n/a"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        text = f"{value:.2f}".rstrip("0").rstrip(".")
+        return text
+    return str(value)
+
+
+def _pct(value: object) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "n/a"
+    return f"{value * 100:.0f}%"
+
+
+def _distribution(value: object) -> str:
+    if not isinstance(value, dict):
+        return "n/a"
+    return (
+        f"{_pct(value.get('short'))} short, "
+        f"{_pct(value.get('medium'))} medium, "
+        f"{_pct(value.get('long'))} long"
+    )
+
+
+def _openers(value: object, label: str) -> str:
+    if not isinstance(value, dict):
+        return f"- {label}: n/a"
+    return (
+        f"- {label}: And {_pct(value.get('and'))}, "
+        f"But {_pct(value.get('but'))}, So {_pct(value.get('so'))}"
+    )
+
+
+def _word_list(value: object) -> str:
+    if not isinstance(value, list) or not value:
+        return "nothing tracked"
+    parts: list[str] = []
+    for item in value[:12]:
+        if not isinstance(item, dict):
+            continue
+        word = item.get("word")
+        count = item.get("count")
+        if isinstance(word, str):
+            parts.append(f"{word} ({count})")
+    return ", ".join(parts) if parts else "nothing tracked"
+
+
+def _repeat(value: object) -> str:
+    if not isinstance(value, dict) or not value:
+        return "none yet"
+    items = [(str(word), count) for word, count in value.items() if isinstance(count, int)]
+    items.sort(key=lambda item: (-item[1], item[0]))
+    return ", ".join(f"{word} ({count})" for word, count in items)

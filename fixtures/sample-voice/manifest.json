@@ -1,0 +1,12 @@
+{
+  "kind": "ghostless",
+  "version": 1,
+  "weights": {
+    "gold": 3,
+    "silver": 1,
+    "bronze": 0.5
+  },
+  "goldVoiceMinimum": 10,
+  "updateCheck": true,
+  "failUnder": 70
+}

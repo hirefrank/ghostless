@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+# ghostless skill installer.
+# Links skills into one or more agent skill directories and records the suite.
+set -euo pipefail
+
+SUITE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/agents.sh
+source "$SUITE_ROOT/lib/agents.sh"
+
+DATA_HOME="${GHOSTLESS_HOME:-$HOME/.ghostless}"
+SKILLS_SRC="$SUITE_ROOT/skills"
+SKILLS=("${GHOSTLESS_SKILL_IDS[@]}")
+
+AGENTS_CSV=""
+COPY_MODE=0
+VERBOSE=0
+FORCE=0
+INSTALL_LAUNCHER=1
+
+usage() {
+  cat <<'EOF'
+Usage: ghostless install-skills [options]
+
+Link the ghostless skills into one or more agent skill directories.
+
+Options:
+  --agent <list>    Target agents: auto (default), all, or claude-code,cursor,…
+  --force           Replace existing non-symlink skill dirs
+  --copy            Copy skills instead of symlinking
+  --no-launcher     Skip installing the ghostless launcher on PATH
+  --verbose, -v     Show every path as it is linked
+  --help, -h        Show this help
+
+Env:
+  GHOSTLESS_HOME        Data directory (default: ~/.ghostless)
+  GHOSTLESS_SKILLS_DIR  Single skills parent (overrides --agent)
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --agent|--agents) AGENTS_CSV="${2:-}"; shift 2 ;;
+    --copy) COPY_MODE=1; shift ;;
+    --force) FORCE=1; shift ;;
+    --no-launcher) INSTALL_LAUNCHER=0; shift ;;
+    -v|--verbose) VERBOSE=1; shift ;;
+    -y|--yes) shift ;;
+    *) echo "Unknown arg: $1" >&2; usage; exit 1 ;;
+  esac
+done
+
+say() {
+  if [[ "$VERBOSE" -eq 1 ]]; then
+    echo "$@"
+  fi
+}
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "error: python3 is required" >&2
+  exit 1
+fi
+
+mkdir -p "$DATA_HOME/logs"
+if [[ ! -f "$DATA_HOME/config.json" ]]; then
+  cat > "$DATA_HOME/config.json" <<'EOF'
+{
+  "updateCheck": true
+}
+EOF
+  say "wrote $DATA_HOME/config.json"
+fi
+
+echo "$SUITE_ROOT" > "$DATA_HOME/suite-root"
+python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("version", "0.0.0"))' \
+  "$SUITE_ROOT/package.json" > "$DATA_HOME/version"
+
+launcher_note=""
+if [[ "$INSTALL_LAUNCHER" -eq 1 ]]; then
+  launcher_dir="$(ghostless_launcher_dir)"
+  launcher_path="$launcher_dir/ghostless"
+  suite_bin="$(readlink -f "$SUITE_ROOT/bin/ghostless" 2>/dev/null || echo "$SUITE_ROOT/bin/ghostless")"
+  existing_cli="$(command -v ghostless 2>/dev/null || true)"
+  if [[ -n "$existing_cli" ]]; then
+    real="$(readlink -f "$existing_cli" 2>/dev/null || echo "$existing_cli")"
+    case "$existing_cli$real" in
+      *"/.cache/pnpm/dlx/"*|*"/.npm/_npx/"*|*"/pnpm/store/"*) existing_cli="" ;;
+    esac
+    if [[ "$real" == "$suite_bin" ]]; then
+      existing_cli=""
+    fi
+  fi
+  if [[ -e "$launcher_path" ]] && ! grep -q "ghostless launcher" "$launcher_path" 2>/dev/null; then
+    launcher_note="kept $launcher_path (not a ghostless launcher)"
+  elif [[ -n "$existing_cli" && ! -e "$launcher_path" ]]; then
+    launcher_note="ghostless already on PATH ($existing_cli)"
+  else
+    mkdir -p "$launcher_dir"
+    cat > "$launcher_path" <<'LAUNCHER'
+#!/usr/bin/env bash
+# ghostless launcher — resolves the installed suite, then falls back to the registry.
+set -euo pipefail
+data="${GHOSTLESS_HOME:-$HOME/.ghostless}"
+root="$(cat "$data/suite-root" 2>/dev/null || true)"
+root="${root#"${root%%[![:space:]]*}"}"
+root="${root%"${root##*[![:space:]]}"}"
+if [[ -n "$root" ]]; then
+  if [[ -x "$root/bin/ghostless" ]]; then
+    exec "$root/bin/ghostless" "$@"
+  fi
+  printf 'ghostless: installed suite is gone: %q\n' "$root" >&2
+  if command -v npx >/dev/null 2>&1; then
+    echo "Reinstall: npx --yes ghostless@latest install-skills" >&2
+  else
+    echo "Reinstall: npm i -g ghostless@latest && ghostless install-skills" >&2
+  fi
+  printf 'Or forget it: rm %q\n' "$data/suite-root" >&2
+  exit 1
+fi
+if command -v npx >/dev/null 2>&1 && npx --version >/dev/null 2>&1; then
+  echo "ghostless: no suite-root recorded — running ghostless@latest via npx" >&2
+  exec npx --yes 'ghostless@latest' "$@"
+fi
+if command -v pnpm >/dev/null 2>&1 && pnpm --version >/dev/null 2>&1; then
+  echo "ghostless: no suite-root recorded — running ghostless@latest via pnpm dlx" >&2
+  exec pnpm dlx 'ghostless@latest' "$@"
+fi
+echo "ghostless: suite not found and no npx/pnpm available" >&2
+exit 1
+LAUNCHER
+    chmod +x "$launcher_path"
+    hash -r 2>/dev/null || true
+    case ":$PATH:" in
+      *":$launcher_dir:"*) launcher_note="ghostless → $launcher_path" ;;
+      *) launcher_note="ghostless → $launcher_path (add $launcher_dir to PATH)" ;;
+    esac
+  fi
+else
+  launcher_note="launcher skipped (--no-launcher)"
+fi
+
+declare -a TARGET_DIRS=()
+declare -a TARGET_LABELS=()
+
+if [[ -n "${GHOSTLESS_SKILLS_DIR:-}" ]]; then
+  TARGET_DIRS+=("$GHOSTLESS_SKILLS_DIR")
+  TARGET_LABELS+=("custom")
+else
+  AGENTS_CSV="${AGENTS_CSV:-auto}"
+  declare -a agent_names=()
+  case "$AGENTS_CSV" in
+    all) agent_names=("${GHOSTLESS_AGENT_IDS[@]}") ;;
+    auto)
+      while IFS= read -r name; do
+        [[ -n "$name" ]] && agent_names+=("$name")
+      done < <(ghostless_detect_agents)
+      ;;
+    *) IFS=',' read -ra agent_names <<<"$AGENTS_CSV" ;;
+  esac
+
+  for name in "${agent_names[@]}"; do
+    name="$(echo "$name" | xargs)"
+    [[ -z "$name" ]] && continue
+    dir="$(ghostless_agent_dir "$name" || true)"
+    if [[ -z "$dir" ]]; then
+      echo "warning: unknown agent '$name' — skipped" >&2
+      continue
+    fi
+    TARGET_DIRS+=("$dir")
+    TARGET_LABELS+=("$name")
+  done
+fi
+
+if ((${#TARGET_DIRS[@]} == 0)); then
+  echo "error: no agent skill directories selected" >&2
+  exit 1
+fi
+
+install_skill() {
+  local src="$1" dest="$2"
+  mkdir -p "$(dirname "$dest")"
+  if [[ -L "$dest" ]]; then
+    if [[ "$(readlink "$dest")" != "$src" && "$FORCE" -ne 1 ]]; then
+      say "skip    $dest (existing symlink not owned by ghostless; use --force to replace)"
+      return 2
+    fi
+    rm -f "$dest"
+  elif [[ -e "$dest" ]]; then
+    if [[ "$(cd "$dest" 2>/dev/null && pwd)" == "$(cd "$src" && pwd)" ]]; then
+      say "ok      $dest (already installed)"
+      return 0
+    fi
+    if [[ "$FORCE" -eq 1 ]]; then
+      rm -rf "$dest"
+    else
+      say "skip    $dest (existing directory; use --force to replace)"
+      return 2
+    fi
+  fi
+  if [[ "$COPY_MODE" -eq 1 ]]; then
+    rm -rf "$dest"
+    cp -R "$src" "$dest"
+    printf 'ghostless:%s\n' "$(basename "$src")" > "$dest/.ghostless-installed"
+    say "copied  $dest"
+  else
+    ln -sfn "$src" "$dest"
+    say "linked  $dest -> $src"
+  fi
+  return 0
+}
+
+declare -a AGENT_SUMMARY=()
+declare -a SKIPPED=()
+
+for i in "${!TARGET_DIRS[@]}"; do
+  parent="${TARGET_DIRS[$i]}"
+  label="${TARGET_LABELS[$i]}"
+  mkdir -p "$parent"
+  say "-- $label ($parent)"
+  linked=0
+  skipped=0
+  for skill in "${SKILLS[@]}"; do
+    src="$SKILLS_SRC/$skill"
+    [[ -d "$src" ]] || continue
+    if install_skill "$src" "$parent/$skill"; then
+      linked=$((linked + 1))
+    else
+      skipped=$((skipped + 1))
+      SKIPPED+=("$parent/$skill")
+    fi
+  done
+  if ((skipped > 0)); then
+    AGENT_SUMMARY+=("$label ($linked/${#SKILLS[@]})")
+  else
+    AGENT_SUMMARY+=("$label")
+  fi
+done
+
+{
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) install-skills suite=$SUITE_ROOT data=$DATA_HOME agents=${TARGET_LABELS[*]}"
+} >> "$DATA_HOME/logs/setup.log"
+
+agents_joined=""
+for entry in "${AGENT_SUMMARY[@]}"; do
+  agents_joined+="${agents_joined:+, }$entry"
+done
+
+echo "ghostless skills installed"
+echo "  data     $DATA_HOME"
+echo "  skills   ${#SKILLS[@]} → $agents_joined"
+echo "  cli      $launcher_note"
+if [[ -f "$DATA_HOME/version" ]]; then
+  echo "  version  $(cat "$DATA_HOME/version")"
+fi
+if ((${#SKIPPED[@]} > 0)); then
+  echo
+  echo "  ${#SKIPPED[@]} existing skill dir(s) left untouched."
+  echo "  Replace them with: ghostless install-skills --force"
+fi
+echo
+echo "Daily release check is on. Disable it with GHOSTLESS_NO_UPDATE=1"
+echo "or {\"updateCheck\": false} in $DATA_HOME/config.json."
+echo "It only reads the public GitHub release. Your writing is not sent."

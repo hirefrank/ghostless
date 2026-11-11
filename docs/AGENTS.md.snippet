@@ -1,0 +1,14 @@
+## ghostless
+
+Local voice project. The corpus, transcripts, and gold edits stay on this machine.
+
+| User intent | Skill |
+| --- | --- |
+| Draft something that sounds like me | `ghostless-draft` |
+| Tighten or cut a draft I wrote | `ghostless-edit` |
+| I finished a piece; learn from my edits | `ghostless-learn` |
+
+- Read `voice-guide.md` in the project (`ghostless locate`). Run `ghostless build` if it is missing.
+- After a draft, run `ghostless judge`.
+- Leave `[WRITER: your take]` where an opinion, quote, statistic, or anecdote is needed. Do not invent those.
+- When the user says a piece is finished and both drafts exist, run `ghostless learn`, then `ghostless build`.
