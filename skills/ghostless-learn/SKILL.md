@@ -30,4 +30,4 @@ ghostless build
 
 `learn` writes `gold/<date-slug>/` with `before.md`, `after.md`, and `meta.json`, and updates `edits-summary`. `build` folds the final into the weighted guide.
 
-Tell the user the slug and the main shifts (words, sentence length, contractions). Do not paste their whole piece into a chat log they didn't ask for, and do not upload the gold files anywhere.
+Tell the user the slug and the main shifts (words, edit rate, moved text, sentence length, contractions). Do not paste their whole piece into a chat log they didn't ask for, and do not upload the gold files anywhere.

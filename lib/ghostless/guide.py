@@ -229,6 +229,15 @@ def _edits(edits: object) -> list[str]:
             f"(removed {_num(item.get('wordsRemoved'))} tokens, added {_num(item.get('wordsAdded'))})"
         )
         lines.append(
+            f"- Edit rate: {_num(item.get('editRate'))} "
+            f"({_num(item.get('tokenEdits'))} token edits / "
+            f"{_num(item.get('editRateDenominator'))} aligned positions)"
+        )
+        lines.append(
+            f"- Moved: {_num(item.get('movedTokens'))} tokens in {_span_count(item.get('movedSpans'))} span(s)"
+        )
+        lines.append(f"- Structure: {_structure(item.get('structuralChanges'))}")
+        lines.append(
             f"- Median sentence length: {_num(item.get('medianSentenceLengthBefore'))} → "
             f"{_num(item.get('medianSentenceLengthAfter'))}"
         )
@@ -335,3 +344,28 @@ def _repeat(value: object) -> str:
     items = [(str(word), count) for word, count in value.items() if isinstance(count, int)]
     items.sort(key=lambda item: (-item[1], item[0]))
     return ", ".join(f"{word} ({count})" for word, count in items)
+
+
+def _span_count(value: object) -> str:
+    if not isinstance(value, list):
+        return "0"
+    return str(sum(1 for item in value if isinstance(item, dict)))
+
+
+def _structure(value: object) -> str:
+    if not isinstance(value, list) or not value:
+        return "no structural change"
+    parts: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        if item.get("kind") == "punctuation":
+            if item.get("change") == "order":
+                parts.append("punctuation order")
+            else:
+                parts.append(f"{item.get('mark')} {item.get('before')} → {item.get('after')}")
+        elif item.get("kind") == "paragraphs":
+            parts.append(f"paragraphs {item.get('before')} → {item.get('after')}")
+        elif item.get("kind") == "paragraph":
+            parts.append(f"paragraph moved {item.get('from')} → {item.get('to')}")
+    return "; ".join(parts) if parts else "no structural change"

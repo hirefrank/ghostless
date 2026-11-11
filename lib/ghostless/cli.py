@@ -311,6 +311,12 @@ def _cmd_learn(args: argparse.Namespace) -> int:
         f"(removed {meta.get('wordsRemoved')}, added {meta.get('wordsAdded')})"
     )
     print(
+        f"  edit rate {meta.get('editRate')} "
+        f"({meta.get('tokenEdits')} token edits / {meta.get('editRateDenominator')} aligned positions), "
+        f"{meta.get('movedTokens')} moved tokens, "
+        f"{meta.get('structuralChangeCount')} structural changes"
+    )
+    print(
         f"  sentence length {meta.get('medianSentenceLengthBefore')} → "
         f"{meta.get('medianSentenceLengthAfter')}"
     )

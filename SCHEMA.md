@@ -171,7 +171,21 @@ The absent-tell list is the catalog in `ghostless.tells.AI_TELLS` minus any tell
 }
 ```
 
-`origin` is `ai-first` (an AI draft the writer edited) or `writer-first` (the writer drafted first). Both finals are gold. `edits-summary.json` rolls up tokens removed and added, the sentence-length shift, the contraction shift, and words cut or added in more than one distinct edit pair. Identical before/after pairs cannot be learned twice.
+`origin` is `ai-first` (an AI draft the writer edited) or `writer-first` (the writer drafted first). Both finals are gold. Identical before/after pairs cannot be learned twice.
+
+`meta.json` also carries an edit receipt:
+
+| Field | Meaning |
+| --- | --- |
+| `deletions`, `insertions`, `replacements` | Sequence-aware token counts. A replacement counts once; moved tokens are taken out of deletions and insertions. |
+| `movedTokens`, `movedSpans` | Tokens that appear on both the deleted and inserted side, grouped into contiguous before-side spans. A pure reorder is nonzero here and zero in deletions/insertions. |
+| `tokenEdits` | `deletions + insertions + replacements + movedTokens`. |
+| `unchangedTokens` | Tokens the alignment left in place. |
+| `editRate`, `editRateDenominator` | `tokenEdits / (tokenEdits + unchangedTokens)`: the share of aligned token positions that were edited. `0` means the token sequence did not change; `1` means nothing survived in place. Reorders count because moved tokens are edits. The rate stays in `[0, 1]` and is comparable across drafts and sessions. Structural changes are reported separately because punctuation marks and word tokens are different units. |
+| `structuralChanges` | Punctuation deltas by mark (plus punctuation reordering when the counts match but positions moved), paragraph-count changes, and moved paragraphs. This keeps a punctuation-only or paragraph-only edit visible even when every word is unchanged. |
+| `paragraphsBefore`, `paragraphsAfter`, `sentencesBefore`, `sentencesAfter` | Structural counts for the same receipt. |
+
+`removedWords` and `addedWords` stay bag-of-words vocabulary lists for the repeated cut/add rollups. `wordsRemoved` and `wordsAdded` are sequence-aware: each is deletions or insertions plus replacements. `edits-summary.json` rolls up those counts, the sentence-length shift, the contraction shift, the edit rate, moves, structure, and words cut or added in more than one distinct edit pair.
 
 ## Suite data
 
