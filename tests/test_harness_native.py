@@ -88,6 +88,10 @@ class NativeHarnessTests(unittest.TestCase):
 
 
 class PathWarningTests(unittest.TestCase):
+    def _bin_dir(self, prefix: Path) -> Path:
+        # Windows global installs put the .cmd shims directly in the prefix.
+        return prefix if os.name == "nt" else prefix / "bin"
+
     def _fake_npm(self, base: Path, prefix: Path) -> Path:
         """A stub `npm` that reports `prefix` for `npm config get prefix`."""
         fakebin = base / "fakebin"
@@ -95,6 +99,8 @@ class PathWarningTests(unittest.TestCase):
         npm = fakebin / "npm"
         npm.write_text(f"#!/bin/sh\necho {prefix}\n", encoding="utf-8")
         npm.chmod(0o755)
+        cmd = fakebin / "npm.cmd"
+        cmd.write_text(f"@echo {prefix}\r\n", encoding="utf-8")
         return fakebin
 
     def test_bin_dir_detected_and_warning_when_missing(self) -> None:
@@ -103,18 +109,20 @@ class PathWarningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             prefix = base / "prefix"
+            expected = self._bin_dir(prefix)
             fakebin = self._fake_npm(base, prefix)
             env = {"PATH": str(fakebin), "GHOSTLESS_HOME": str(base / "data")}
             with patch.dict(os.environ, env):
-                # PATH holds only the stub, so prefix/bin is missing from it.
-                self.assertEqual(npm_global_bin_dir(), prefix / "bin")
+                # PATH holds only the stub, so the bin dir is missing from it.
+                self.assertEqual(npm_global_bin_dir(), expected)
                 warning = npm_bin_path_warning()
                 self.assertIsNotNone(warning)
-                self.assertIn(str(prefix / "bin"), warning)
-                self.assertIn('export PATH="', warning)
+                self.assertIn(str(expected), warning)
+                if os.name != "nt":
+                    self.assertIn('export PATH="', warning)
                 with patch.dict(
                     os.environ,
-                    {"PATH": os.pathsep.join([str(fakebin), str(prefix / "bin")])},
+                    {"PATH": os.pathsep.join([str(fakebin), str(expected)])},
                 ):
                     self.assertIsNone(npm_bin_path_warning())
 
@@ -130,14 +138,16 @@ class PathWarningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             prefix = base / "prefix"
+            expected = self._bin_dir(prefix)
             fakebin = self._fake_npm(base, prefix)
             env = {"PATH": str(fakebin), "GHOSTLESS_HOME": str(base / "data")}
             with patch.dict(os.environ, env):
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out):
                     self.assertEqual(main(["doctor"]), 0)
-            self.assertIn(str(prefix / "bin"), out.getvalue())
-            self.assertIn("export PATH=", out.getvalue())
+            self.assertIn(str(expected), out.getvalue())
+            if os.name != "nt":
+                self.assertIn("export PATH=", out.getvalue())
 
 
 if __name__ == "__main__":
