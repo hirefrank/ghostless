@@ -67,6 +67,7 @@ def _render(
             f"| {label} | {formatter(metrics.get(key))} | {formatter(bare.get(key))} |"
         )
     lines.append("")
+    lines.extend(_overrides(stats, metrics, bare))
     lines.extend(_sample_size(stats))
     lines.append("## Sentence length")
     lines.append("")
@@ -287,6 +288,35 @@ def _note_body(text: str) -> str:
         while lines and not lines[0].strip():
             lines.pop(0)
     return "\n".join(lines).strip()
+
+
+def _overrides(
+    stats: dict[str, object],
+    weighted: dict[str, object],
+    unweighted: dict[str, object],
+) -> list[str]:
+    """Manifest overrides, stated plainly so the pinned target is not mistaken for measured."""
+    from ghostless.judge import METRIC_LABELS
+
+    raw = stats.get("overrides")
+    if not isinstance(raw, dict) or not raw:
+        return []
+    lines = [
+        "Overrides from the manifest. These pin the target — the Weighted column "
+        "above shows the pinned value, the Unweighted column shows what the corpus "
+        "actually measured. They apply to the whole project and every section.",
+        "",
+    ]
+    for key in sorted(raw):
+        value = raw[key]
+        measured = unweighted.get(key)
+        label = METRIC_LABELS.get(key, key)
+        lines.append(
+            f"- {label}: target pinned to {_num(value)} "
+            f"(measured {_num(measured)})"
+        )
+    lines.append("")
+    return lines
 
 
 def _sample_size(stats: dict[str, object]) -> list[str]:
