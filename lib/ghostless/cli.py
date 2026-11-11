@@ -16,6 +16,7 @@ from ghostless.guide import render_guide
 from ghostless.judge import format_report, judge_text
 from ghostless.learn import learn_edit, load_edit_summary, promote_final, refresh_edit_summary
 from ghostless.paths import ProjectError, data_home, find_project, suite_root, version
+from ghostless.sessions import finish_session, list_sessions, snapshot_session, start_session
 from ghostless.project import (
     TRACKED_PATHS,
     discover,
@@ -118,6 +119,29 @@ def main(argv: list[str] | None = None) -> int:
     )
     _add_project(promote_parser)
 
+    start_parser = sub.add_parser("start", help="Capture an immutable draft and open an edit session")
+    start_parser.add_argument("draft", help="Draft markdown file")
+    start_parser.add_argument("--section", help="Section tag for the learned final")
+    start_parser.add_argument("--origin", default="ai-first", choices=("ai-first", "writer-first"))
+    start_parser.add_argument("--source", action="append", default=[], help="Source reference; repeat as needed")
+    start_parser.add_argument("--json", action="store_true")
+    _add_project(start_parser)
+
+    finish_parser = sub.add_parser("finish", help="Finalize an edit session and learn its changes once")
+    finish_parser.add_argument("final", nargs="?", help="Final markdown file (default: session after.md)")
+    finish_parser.add_argument("--session", help="Session ID; optional if exactly one is unfinished")
+    finish_parser.add_argument("--note", help="Short note about the edit")
+    finish_parser.add_argument("--json", action="store_true")
+    _add_project(finish_parser)
+
+    sessions_parser = sub.add_parser("sessions", help="List edit sessions")
+    sessions_parser.add_argument("--json", action="store_true")
+    _add_project(sessions_parser)
+
+    snapshot_parser = sub.add_parser("snapshot", help="Save working text and notes from JSON on stdin")
+    snapshot_parser.add_argument("--session", required=True, help="Session ID")
+    _add_project(snapshot_parser)
+
     export_parser = sub.add_parser("export", help="Write one paste-ready voice guide")
     export_parser.add_argument(
         "--excerpts",
@@ -198,6 +222,14 @@ def _dispatch(args: argparse.Namespace) -> int:
             return _cmd_learn(args)
         case "promote":
             return _cmd_promote(args)
+        case "start":
+            return _cmd_start(args)
+        case "finish":
+            return _cmd_finish(args)
+        case "sessions":
+            return _cmd_sessions(args)
+        case "snapshot":
+            return _cmd_snapshot(args)
         case "export":
             return _cmd_export(args)
         case "eval":
@@ -426,6 +458,78 @@ def _cmd_promote(args: argparse.Namespace) -> int:
             "evidence stay in place."
         )
     print("Run ghostless build to fold the change into the guide.")
+    return 0
+
+
+def _cmd_start(args: argparse.Namespace) -> int:
+    root = _project(args.project)
+    result = start_session(
+        root,
+        Path(args.draft),
+        section=args.section,
+        origin=args.origin,
+        sources=args.source,
+    )
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print(f"Started {result['id']}")
+        print(f"  original: {root / str(result['path']) / 'before.md'}")
+        print(f"  working:  {root / str(result['path']) / 'after.md'}")
+        print(f"Finish with: ghostless finish --session {result['id']}")
+    return 0
+
+
+def _cmd_finish(args: argparse.Namespace) -> int:
+    root = _project(args.project)
+    result = finish_session(
+        root,
+        Path(args.final) if args.final else None,
+        session=args.session,
+        note=args.note,
+    )
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print(f"Finished {result['sessionId']}")
+        print(f"  final:   {root / 'sessions' / str(result['sessionId']) / 'after.md'}")
+        print(f"  receipt: {root / 'sessions' / str(result['sessionId']) / 'receipt.json'}")
+        print(f"  learned: {root / str(result['learnedPath'])}")
+        if result.get("tier"):
+            print(f"  measured as {result['tier']}")
+    return 0
+
+
+def _cmd_sessions(args: argparse.Namespace) -> int:
+    found = list_sessions(_project(args.project))
+    if args.json:
+        print(json.dumps(found, indent=2, ensure_ascii=False))
+    elif not found:
+        print("No edit sessions yet.")
+    else:
+        for item in found:
+            print(f"{item['id']}  {item['status']}  {item['sourceDraftName']}")
+    return 0
+
+
+def _cmd_snapshot(args: argparse.Namespace) -> int:
+    try:
+        payload = json.load(sys.stdin)
+    except json.JSONDecodeError as exc:
+        raise ProjectError(f"Snapshot input is not JSON: {exc}") from exc
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(payload.get("after"), str)
+        or not isinstance(payload.get("notes"), str)
+    ):
+        raise ProjectError("Snapshot input must contain string `after` and `notes` fields.")
+    result = snapshot_session(
+        _project(args.project),
+        session=args.session,
+        after=payload["after"],
+        notes=payload["notes"],
+    )
+    print(json.dumps(result, ensure_ascii=False))
     return 0
 
 
