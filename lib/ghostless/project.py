@@ -30,9 +30,9 @@ voice-guide.paste.md
 *.paste.md
 edits-summary.md
 edits-summary.json
-stats/
-exports/
-drafts/
+/stats/
+/exports/
+/drafts/
 
 # Temporary and editor files
 *.tmp
@@ -44,7 +44,7 @@ drafts/
 Thumbs.db
 
 # Raw media. Keep the transcript, not the recording.
-raw/
+/raw/
 *.wav
 *.mp3
 *.m4a

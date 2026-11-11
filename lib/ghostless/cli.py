@@ -213,23 +213,30 @@ def _cmd_migrate(args: argparse.Namespace) -> int:
         print("  .gitignore: already on the voice-data layout")
     if isinstance(created, list) and created:
         print(f"  created {', '.join(str(item) for item in created)}")
-    _report_git(root, skip=args.no_git)
+    state = _report_git(root, skip=args.no_git)
     print("Nothing was staged, committed, or pushed, and no remote was added.")
-    print("Next, review what Git would track, then add it on purpose:")
-    print(f"  cd {root}")
-    print("  git status")
-    print("  git add -- " + " ".join(TRACKED_PATHS))
-    print('  git commit -m "Start voice-data history"')
-    print("Optional private remote. Pushing sends your writing to that host:")
-    print("  git remote add origin <private-repo-url>")
-    print("  git push -u origin HEAD")
+    if state in ("created", "existing"):
+        print("Next, review what Git would track, then add it on purpose:")
+        print(f"  cd {root}")
+        print("  git status")
+        print("  git add -- " + " ".join(TRACKED_PATHS))
+        print('  git commit -m "Start voice-data history"')
+        print("Optional private remote. Pushing sends your writing to that host:")
+        print("  git remote add origin <private-repo-url>")
+        print("  git push -u origin HEAD")
+    elif state is not None and state.startswith("parent:"):
+        print(f"Next, review in the parent repository at {state.removeprefix('parent:')}:")
+        print(f"  cd {root}")
+        print("  git status")
+        print("  git add -- " + " ".join(TRACKED_PATHS))
+        print("Do not add a remote here; that would attach to the parent repository.")
     return 0
 
 
-def _report_git(root: Path, *, skip: bool) -> None:
+def _report_git(root: Path, *, skip: bool) -> str | None:
     if skip:
         print("Git: skipped (--no-git). No repository was created.")
-        return
+        return None
     state = ensure_local_git(root)
     match state:
         case "created":
@@ -246,6 +253,7 @@ def _report_git(root: Path, *, skip: bool) -> None:
         case _:
             print(f"Git: {state}")
     print("  Nothing was staged or committed. Commit when you choose.")
+    return state
 
 
 def _cmd_build(args: argparse.Namespace) -> int:

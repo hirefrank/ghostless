@@ -339,6 +339,20 @@ class ProjectTests(unittest.TestCase):
             # Appending twice must not duplicate the block.
             self.assertEqual(ignore.count(GITIGNORE_MARKER), 1)
 
+    def test_scratch_dirs_are_root_only(self) -> None:
+        _require_git(self)
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            self.assertEqual(main(["init", str(project)]), 0)
+            # A corpus section named like a scratch dir is still measured by
+            # build, so it must stay tracked rather than be swallowed by an
+            # unanchored ignore pattern.
+            for section in ("drafts", "stats", "exports", "raw"):
+                self.assertFalse(_ignored(project, f"corpus/gold/{section}/note.md"), section)
+            # The top-level scratch dirs themselves are still ignored.
+            for scratch in ("drafts", "stats", "exports", "raw"):
+                self.assertTrue(_ignored(project, f"{scratch}/note.md"), scratch)
+
     def test_init_can_skip_git(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "voice"
@@ -408,6 +422,32 @@ class ProjectTests(unittest.TestCase):
             # A second run is a no-op.
             self.assertEqual(main(["migrate", "--project", str(project)]), 0)
             self.assertEqual((project / ".gitignore").read_text(encoding="utf-8"), ignore)
+
+    def test_migrate_prints_no_remote_in_parent_repo(self) -> None:
+        _require_git(self)
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "parent"
+            parent.mkdir()
+            self.assertEqual(_git(parent, "init", "-q").returncode, 0)
+            project = _write_v01_project(parent / "voice")
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(main(["migrate", "--project", str(project)]), 0)
+            text = stdout.getvalue()
+            self.assertNotIn("git remote add origin", text)
+            self.assertNotIn("git push", text)
+            self.assertIn("parent", text.lower())
+
+    def test_migrate_no_git_prints_no_git_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _write_v01_project(Path(tmp) / "voice")
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(main(["migrate", "--project", str(project), "--no-git"]), 0)
+            text = stdout.getvalue()
+            self.assertNotIn("git remote add origin", text)
+            self.assertNotIn("git push", text)
+            self.assertNotIn("git commit", text)
 
     def test_init_refuses_a_v01_ignore_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
