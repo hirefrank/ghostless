@@ -304,6 +304,7 @@ class ProjectTests(unittest.TestCase):
             paste = (project / "voice-guide.paste.md").read_text(encoding="utf-8")
             self.assertNotIn("purple hedgehog", paste)
             self.assertIn("Ban list", paste)
+            self.assertIn("cold coffee", paste)  # signature phrase, included by default
             self.assertIn("paste", paste.lower())
             self.assertEqual(main(["export", "--project", str(project), "--excerpts"]), 0)
             with_bits = (project / "voice-guide.paste.md").read_text(encoding="utf-8")

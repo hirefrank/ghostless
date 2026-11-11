@@ -76,7 +76,9 @@ def main(argv: list[str] | None = None) -> int:
     export_parser.add_argument(
         "--excerpts",
         action="store_true",
-        help="Include a few short gold excerpts (off by default)",
+        help="Also include a few short gold excerpts. Off by default; the export "
+        "already contains targets, the ban list, signature phrases, per-section "
+        "targets, and edit vocabulary.",
     )
     export_parser.add_argument("--out", help="Output path (default: voice-guide.paste.md)")
     _add_project(export_parser)
