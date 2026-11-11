@@ -40,9 +40,9 @@ Text files are `.md`, `.markdown`, and `.txt`. `README.md` is skipped. A subfold
 | Field | Meaning |
 | --- | --- |
 | `weights` | Positive multipliers. Defaults above. |
-| `goldVoiceMinimum` | Once this many gold pieces exist, bronze is format-only. |
+| `goldVoiceMinimum` | Once this many gold written pieces exist, bronze is format-only. Spoken gold does not count. |
 | `updateCheck` | `false` turns off the daily release check when you run from this project. |
-| `failUnder` | `judge` exits 1 below this score, and also when a ban or a structural tell hits. |
+| `failUnder` | `judge` exits 1 below this score, and when there is no usable voice data to compare against. Banned tells and structural tells lower the score and set `reviewRequired`, but do not fail on their own. |
 | `pieces` | Optional explicit `{path, tier, section, kind}` rows. They override discovery. |
 
 Frontmatter on a source file is a simple `key: value` block:

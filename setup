@@ -78,6 +78,7 @@ python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")
 launcher_note=""
 if [[ "$INSTALL_LAUNCHER" -eq 1 ]]; then
   launcher_dir="$(ghostless_launcher_dir)"
+  launcher_path="$launcher_dir/ghostless"
   existing_cli="$(command -v ghostless 2>/dev/null || true)"
   if [[ -n "$existing_cli" ]]; then
     real="$(readlink -f "$existing_cli" 2>/dev/null || echo "$existing_cli")"
@@ -88,11 +89,13 @@ if [[ "$INSTALL_LAUNCHER" -eq 1 ]]; then
       existing_cli=""
     fi
   fi
-  if [[ -n "$existing_cli" && ! -e "$launcher_dir/ghostless" ]]; then
+  if [[ -e "$launcher_path" ]] && ! grep -q "ghostless launcher" "$launcher_path" 2>/dev/null; then
+    launcher_note="kept $launcher_path (not a ghostless launcher)"
+  elif [[ -n "$existing_cli" && ! -e "$launcher_path" ]]; then
     launcher_note="ghostless already on PATH ($existing_cli)"
   else
     mkdir -p "$launcher_dir"
-    cat > "$launcher_dir/ghostless" <<'LAUNCHER'
+    cat > "$launcher_path" <<'LAUNCHER'
 #!/usr/bin/env bash
 # ghostless launcher — resolves the installed suite, then falls back to the registry.
 set -euo pipefail
@@ -124,11 +127,11 @@ fi
 echo "ghostless: suite not found and no npx/pnpm available" >&2
 exit 1
 LAUNCHER
-    chmod +x "$launcher_dir/ghostless"
+    chmod +x "$launcher_path"
     hash -r 2>/dev/null || true
     case ":$PATH:" in
-      *":$launcher_dir:"*) launcher_note="ghostless → $launcher_dir/ghostless" ;;
-      *) launcher_note="ghostless → $launcher_dir/ghostless (add $launcher_dir to PATH)" ;;
+      *":$launcher_dir:"*) launcher_note="ghostless → $launcher_path" ;;
+      *) launcher_note="ghostless → $launcher_path (add $launcher_dir to PATH)" ;;
     esac
   fi
 else
@@ -176,6 +179,10 @@ install_skill() {
   local src="$1" dest="$2"
   mkdir -p "$(dirname "$dest")"
   if [[ -L "$dest" ]]; then
+    if [[ "$(readlink "$dest")" != "$src" && "$FORCE" -ne 1 ]]; then
+      say "skip    $dest (existing symlink not owned by ghostless; use --force to replace)"
+      return 2
+    fi
     rm -f "$dest"
   elif [[ -e "$dest" ]]; then
     if [[ "$(cd "$dest" 2>/dev/null && pwd)" == "$(cd "$src" && pwd)" ]]; then

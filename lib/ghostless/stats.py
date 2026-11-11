@@ -274,7 +274,13 @@ def compile_stats(
     gold_voice_minimum: int,
     edits: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    gold_pieces = sum(1 for piece in pieces if piece.tier == "gold")
+    # Bronze drops out of voice once enough *written* gold exists. Spoken
+    # gold (dictations) contributes no diction or format, so it must not
+    # count toward the threshold: ten gold transcripts would otherwise push
+    # the only written prose out of the voice pool.
+    gold_pieces = sum(
+        1 for piece in pieces if piece.tier == "gold" and piece.kind == "prose"
+    )
     format_only = gold_pieces >= gold_voice_minimum
     weighted = summarize(pieces, bronze_format_only=format_only, use_weights=True)
     unweighted = summarize(pieces, bronze_format_only=format_only, use_weights=False)

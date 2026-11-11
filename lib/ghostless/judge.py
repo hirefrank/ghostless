@@ -76,6 +76,23 @@ def judge_text(
             "targets": target_metrics,
             "error": "Draft is empty.",
         }
+    if not _has_comparable_targets(target_metrics):
+        return {
+            "ok": False,
+            "score": 0,
+            "failUnder": fail_under,
+            "section": target_label,
+            "checks": [],
+            "banned": [],
+            "structure": [],
+            "placeholders": [],
+            "draft": {},
+            "targets": target_metrics,
+            "error": (
+                "No usable voice data yet. Add writing to corpus/ (or transcripts/) "
+                "and run `ghostless build`, then judge again."
+            ),
+        }
     draft = draft_summary(text)
     draft_metrics = _metrics(draft)
     ban_list = _string_list(_block(stats.get("weighted")).get("banList"))
@@ -316,6 +333,14 @@ def _block(value: object) -> dict[str, object]:
 def _metrics(block: dict[str, object]) -> dict[str, object]:
     metrics = block.get("metrics")
     return metrics if isinstance(metrics, dict) else {}
+
+
+def _has_comparable_targets(target_metrics: dict[str, object]) -> bool:
+    return any(
+        isinstance(target_metrics.get(key), (int, float))
+        and not isinstance(target_metrics.get(key), bool)
+        for key in BOTH_DIRECTIONS
+    )
 
 
 def _string_list(value: object) -> list[str]:

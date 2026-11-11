@@ -107,6 +107,44 @@ printf '%s\\n' \\
             self.assertFalse((skills / "ghostless-draft").exists())
             self.assertIn("kept", reset.stdout)
 
+    def test_install_keeps_foreign_skill_symlink(self) -> None:
+        with tempfile_home() as home:
+            env = os.environ.copy()
+            env["HOME"] = str(home)
+            env["GHOSTLESS_HOME"] = str(home / ".ghostless")
+            env["GHOSTLESS_NO_UPDATE"] = "1"
+            skills = home / ".cursor" / "skills"
+            skills.mkdir(parents=True, exist_ok=True)
+            foreign = home / "my-own-skill"
+            foreign.mkdir()
+            (skills / "ghostless-draft").symlink_to(foreign)
+            completed = subprocess.run(
+                ["bash", str(ROOT / "setup"), "--agent", "cursor", "--no-launcher"],
+                check=False, capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            link = skills / "ghostless-draft"
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(os.readlink(link), str(foreign))
+            self.assertTrue((skills / "ghostless-edit" / "SKILL.md").is_file())
+
+    def test_install_keeps_foreign_launcher(self) -> None:
+        with tempfile_home() as home:
+            env = os.environ.copy()
+            env["HOME"] = str(home)
+            env["GHOSTLESS_HOME"] = str(home / ".ghostless")
+            env["GHOSTLESS_NO_UPDATE"] = "1"
+            launcher = home / ".local" / "bin" / "ghostless"
+            launcher.parent.mkdir(parents=True, exist_ok=True)
+            launcher.write_text("#!/usr/bin/env bash\necho foreign-tool\n", encoding="utf-8")
+            completed = subprocess.run(
+                ["bash", str(ROOT / "setup"), "--agent", "cursor"],
+                check=False, capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+            self.assertIn("foreign-tool", launcher.read_text(encoding="utf-8"))
+            self.assertIn("not a ghostless launcher", completed.stdout)
+
     def test_launcher_version_is_offline(self) -> None:
         env = os.environ.copy()
         env["GHOSTLESS_NO_UPDATE"] = "1"

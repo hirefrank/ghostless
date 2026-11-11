@@ -90,6 +90,19 @@ class WeightTests(unittest.TestCase):
         self.assertIn("delve", stats["weighted"]["banList"])
         self.assertNotIn("leverage", _diction_text(pieces))
 
+    def test_gold_spoken_does_not_drop_bronze_voice(self) -> None:
+        pieces = [
+            Piece("s1.md", "gold", "spoken", None, 3, "And I go now. So I stop."),
+            Piece("s2.md", "gold", "spoken", None, 3, "But I stay."),
+            Piece("b.md", "bronze", "prose", "archive", 0.5, "one two three four five six seven eight nine ten."),
+        ]
+        stats = compile_stats(pieces, weights={"gold": 3, "silver": 1, "bronze": 0.5}, gold_voice_minimum=2)
+        # Two gold transcripts are not written prose; they must not make
+        # bronze format-only and flush the only written sample from voice.
+        self.assertFalse(stats["bronzeFormatOnly"])
+        self.assertIn("delve", stats["weighted"]["banList"])
+        self.assertIsNotNone(stats["weighted"]["metrics"]["medianSentenceLength"])
+
 
 class SampleProjectTests(unittest.TestCase):
     def test_sample_is_invented(self) -> None:
@@ -160,11 +173,23 @@ class JudgeTests(unittest.TestCase):
         self.assertTrue(closer["ok"])
 
     def test_structural_hit_is_review_not_automatic_failure(self) -> None:
-        stats = {"weighted": {"metrics": {}, "banList": []}}
-        report = judge_text("It's not a shortcut, it's a practice.", stats)
+        from ghostless.judge import draft_summary
+
+        draft = "It's not a shortcut, it's a practice."
+        # Give the draft its own metrics as targets so only the structural
+        # tell can move the score; that keeps this test focused on review-only.
+        stats = {"weighted": {"metrics": draft_summary(draft)["metrics"], "banList": []}}
+        report = judge_text(draft, stats)
         self.assertTrue(report["ok"])
         self.assertTrue(report["reviewRequired"])
         self.assertEqual(report["assessment"], "mechanical-only")
+
+    def test_empty_project_cannot_pass(self) -> None:
+        stats = {"weighted": {"metrics": {}, "banList": []}}
+        report = judge_text("An ordinary draft with a few sentences.", stats)
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["score"], 0)
+        self.assertIn("No usable voice data", report["error"])
 
     def test_section_targets_differ(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

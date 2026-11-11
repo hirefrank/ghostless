@@ -125,7 +125,7 @@ Weights live in `manifest.json`. Defaults:
 | silver | 1 | Recent writing, and transcribed speech unless you mark it gold. |
 | bronze | 0.5 | Older writing. |
 
-`goldVoiceMinimum` defaults to 10. Once that many gold pieces exist, bronze still counts toward paragraph length and drops out of voice: sentence length, contractions, I, openers, em dashes, questions, signature phrases, and the ban list. Both numbers are editable.
+`goldVoiceMinimum` defaults to 10. Once that many gold written pieces exist, bronze still counts toward paragraph length and drops out of voice: sentence length, contractions, I, openers, em dashes, questions, signature phrases, and the ban list. Gold transcripts do not count toward that threshold, because spoken lines set no written voice. Both numbers are editable.
 
 Spoken lines are their own layer. A file in `corpus/spoken/` or `transcripts/` counts only toward:
 
@@ -182,7 +182,11 @@ Those projects also aim at writing that sounds like a specific person. ghostless
 
 ## Privacy
 
-`init` gitignores `corpus/`, `transcripts/`, `gold/`, and the generated guide files. Leave them uncommitted. `export` without `--excerpts` contains the targets and the ban list. The release check is a GET of the public GitHub releases endpoint, and it is the only request the CLI makes.
+`init` gitignores `corpus/`, `transcripts/`, `gold/`, and the generated guide files. Leave them uncommitted.
+
+`export` writes a paste file that, even without `--excerpts`, contains your measured targets, the absent-tell ban list, your signature phrases, per-section targets, and the words you cut or added in `learn` edits. `--excerpts` adds short gold samples. Treat the paste file as your writing: it is meant for a chat project you control, not for sharing.
+
+The release check is a GET of the public GitHub releases endpoint, and it is the only request the CLI makes.
 
 Turn the check off with any of:
 

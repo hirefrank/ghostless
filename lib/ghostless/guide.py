@@ -30,7 +30,8 @@ def _render(
         lines.append(
             "Self-contained voice target for a writer. Paste this whole file into "
             "a Claude project or a ChatGPT project. It already holds the targets, "
-            "the ban list, and the rules. Nothing else on disk is required to follow it."
+            "the ban list, signature phrases, per-section targets, and the words "
+            "you cut or added in edits. Nothing else on disk is required to follow it."
         )
     else:
         lines.append("# Voice guide")
