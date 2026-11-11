@@ -213,7 +213,7 @@ def _edits(edits: object) -> list[str]:
     if not isinstance(learns, list) or not learns:
         return []
     lines = ["## What your edits do", ""]
-    lines.append("Each final you kept with `ghostless learn` is gold. The shifts below are before → after.")
+    lines.append("Each pair you kept with `ghostless learn` is edit evidence. A writer-first final is gold; an AI-first final is measured as edited until you `ghostless promote` it. The shifts below are before → after.")
     lines.append("")
     for item in learns:
         if not isinstance(item, dict):

@@ -1,4 +1,10 @@
-"""Store a before/after edit as gold and summarize what changed."""
+"""Store a before/after edit and summarize what changed.
+
+A pair is always kept as edit evidence. Where the final is measured depends on
+provenance: an AI-first final lands in the `edited` tier (model prose the
+writer revised) unless the writer promotes it to gold. A writer-first pair is
+gold from the start. See `placement_for` in `project.py`.
+"""
 
 from __future__ import annotations
 
@@ -10,11 +16,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ghostless.paths import ProjectError
-from ghostless.project import fresh_directory, parse_origin, slug_for
+from ghostless.project import (
+    fresh_directory,
+    parse_confirmation,
+    parse_origin,
+    placement_for,
+    provenance_json,
+    read_provenance,
+    slug_for,
+)
 from ghostless.stats import weighted_median
 from ghostless.text import measure, normalize, paragraphs, track_token, word_tokens
 
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+# Below this edit rate a final is mostly the model's prose. Promotion still
+# works, but the CLI says so before the writer counts it as gold.
+MOSTLY_MODEL_RATE = 0.25
 
 # Characters worth reporting when an edit changes structure but not words.
 # Apostrophes matter for contractions ("dont" -> "don't"); markdown marks
@@ -317,6 +335,9 @@ def learn_edit(
     section: str | None,
     origin: str,
     date: str | None = None,
+    model: str | None = None,
+    tool: str | None = None,
+    promote: bool = False,
 ) -> dict[str, object]:
     if not before.is_file():
         raise ProjectError(f"Before file not found: {before}")
@@ -343,10 +364,26 @@ def learn_edit(
     (destination / "before.md").write_text(_trailing_newline(before_text), encoding="utf-8")
     (destination / "after.md").write_text(_trailing_newline(after_text), encoding="utf-8")
     summary = diff_texts(before_text, after_text)
+    if promote:
+        confirmation = "promoted"
+    elif checked_origin == "writer-first":
+        # The first draft was the writer's, so the origin itself settles it.
+        confirmation = "origin"
+    else:
+        confirmation = "none"
+    provenance = provenance_json(
+        checked_origin,
+        confirmation=confirmation,
+        model=model,
+        tool=tool,
+    )
+    placement = placement_for(read_provenance({"provenance": provenance}, path=str(destination)))
     meta: dict[str, object] = {
         "date": date_text,
         "section": section,
+        # v0.1 mirror. `provenance` is canonical; this stays for old readers.
         "origin": checked_origin,
+        "provenance": provenance,
         "kind": "prose",
         "beforeFile": "before.md",
         "afterFile": "after.md",
@@ -357,7 +394,109 @@ def learn_edit(
         encoding="utf-8",
     )
     edits = refresh_edit_summary(root)
-    return {"slug": destination.name, "path": destination.relative_to(root).as_posix(), "meta": meta, "edits": edits}
+    return {
+        "slug": destination.name,
+        "path": destination.relative_to(root).as_posix(),
+        "meta": meta,
+        "edits": edits,
+        "origin": checked_origin,
+        "confirmation": confirmation,
+        "tier": placement,
+        "model": model,
+        "tool": tool,
+        "warning": _mostly_model_warning(
+            summary if placement == "gold" and checked_origin == "ai-first" else None
+        ),
+    }
+
+
+def promote_final(root: Path, slug: str, *, gold: bool = True) -> dict[str, object]:
+    """Deliberately move a learned final into (or back out of) gold.
+
+    Only provenance changes: `before.md`, `after.md`, and the edit receipt are
+    untouched, because the writer's changes are evidence either way.
+    """
+    meta_path = root / "gold" / slug / "meta.json"
+    if not meta_path.is_file():
+        raise ProjectError(f"No learned pair at gold/{slug}.")
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ProjectError(f"{meta_path}: {exc}") from exc
+    if not isinstance(meta, dict):
+        raise ProjectError(f"{meta_path} must be an object.")
+    provenance = read_provenance(meta, path=str(meta_path))
+    previous = placement_for(provenance)
+    if not gold and provenance.origin == "writer-first":
+        raise ProjectError(
+            f"gold/{slug} is writer-first, so it is gold through its origin. "
+            "Demote only an AI-first final."
+        )
+    if gold:
+        confirmation = "promoted"
+    else:
+        confirmation = "none"
+    checked = parse_confirmation(confirmation, path=str(meta_path))
+    block = provenance_json(
+        provenance.origin,
+        confirmation=checked,
+        model=provenance.model,
+        tool=provenance.tool,
+    )
+    meta["provenance"] = block
+    if provenance.origin is not None:
+        meta["origin"] = provenance.origin
+    meta_path.write_text(
+        json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    placement = placement_for(read_provenance(meta, path=str(meta_path)))
+    edits = refresh_edit_summary(root)
+    summary = _receipt_summary(meta_path.parent / "before.md", meta_path.parent / "after.md")
+    return {
+        "slug": slug,
+        "previous": previous,
+        "tier": placement,
+        "changed": placement != previous,
+        "origin": provenance.origin,
+        "confirmation": checked,
+        "model": provenance.model,
+        "tool": provenance.tool,
+        "meta": meta,
+        "edits": edits,
+        "warning": _mostly_model_warning(
+            summary
+            if placement == "gold" and provenance.origin in (None, "ai-first")
+            else None
+        ),
+    }
+
+
+def _receipt_summary(before: Path, after: Path) -> dict[str, object] | None:
+    if not before.is_file() or not after.is_file():
+        return None
+    return diff_texts(
+        before.read_text(encoding="utf-8"),
+        after.read_text(encoding="utf-8"),
+    )
+
+
+def _mostly_model_warning(summary: dict[str, object] | None) -> str | None:
+    if not summary:
+        return None
+    rate = summary.get("editRate")
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)):
+        return None
+    if float(rate) >= MOSTLY_MODEL_RATE:
+        return None
+    unchanged = summary.get("unchangedTokens")
+    total = summary.get("editRateDenominator")
+    return (
+        f"edit rate {rate} is below {MOSTLY_MODEL_RATE}: "
+        f"{unchanged} of {total} aligned tokens are still as the model wrote them, "
+        "so this final is mostly model prose. Gold weight will teach the guide "
+        "that voice. Promote only a final you rewrote in your own words."
+    )
 
 
 def refresh_edit_summary(root: Path) -> dict[str, object]:
@@ -378,12 +517,17 @@ def refresh_edit_summary(root: Path) -> dict[str, object]:
                 before_path.read_text(encoding="utf-8"),
                 after_path.read_text(encoding="utf-8"),
             )
+            provenance = read_provenance(meta, path=str(meta_path))
             learns.append(
                 {
                     "slug": meta_path.parent.name,
                     "date": meta.get("date"),
                     "section": meta.get("section"),
-                    "origin": meta.get("origin"),
+                    "origin": provenance.origin,
+                    "confirmation": provenance.confirmation,
+                    "model": provenance.model,
+                    "tool": provenance.tool,
+                    "tier": placement_for(provenance),
                     **summary,
                 }
             )
@@ -441,6 +585,12 @@ def render_edits_markdown(payload: dict[str, object]) -> str:
         lines.append(f"## {item.get('slug')}")
         lines.append("")
         lines.append(f"- Origin: {item.get('origin') or 'unspecified'}")
+        lines.append(f"- Measured as: {item.get('tier') or 'unknown'} ({_confirmation_note(item.get('confirmation'))})")
+        if item.get("model") or item.get("tool"):
+            lines.append(
+                f"- Model/tool: {item.get('model') or 'unnamed model'}"
+                f"{' via ' + str(item.get('tool')) if item.get('tool') else ''}"
+            )
         lines.append(f"- Section: {item.get('section') or 'unsectioned'}")
         lines.append(f"- Date: {item.get('date')}")
         lines.append(
@@ -530,6 +680,16 @@ def _format_number(value: object) -> str:
     if isinstance(value, float):
         return f"{value:.4f}".rstrip("0").rstrip(".")
     return str(value)
+
+
+def _confirmation_note(value: object) -> str:
+    match value:
+        case "origin":
+            return "the origin settles it"
+        case "promoted":
+            return "you promoted it"
+        case _:
+            return "not confirmed as yours"
 
 
 def _format_moves(value: object) -> str:

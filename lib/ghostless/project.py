@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Never
 
@@ -100,6 +101,22 @@ TRACKED_PATHS = (
 )
 
 Origin = Literal["ai-first", "writer-first"]
+# Provenance answers "where did the first draft come from?". It is recorded,
+# never measured. Corpus files default to `unaided`; a learned pair carries
+# whatever its meta.json says.
+ProvenanceOrigin = Literal["unaided", "writer-first", "ai-first"]
+# Confirmation is the writer's claim about the final. `origin` means the
+# provenance itself settles it (an unaided or writer-first draft is theirs).
+# `promoted` means they deliberately lifted an AI-first final into gold.
+Confirmation = Literal["none", "origin", "promoted"]
+
+
+@dataclass(frozen=True)
+class Provenance:
+    origin: ProvenanceOrigin | None
+    confirmation: Confirmation = "none"
+    model: str | None = None
+    tool: str | None = None
 
 
 def parse_origin(value: str, *, path: str) -> Origin:
@@ -112,6 +129,100 @@ def parse_origin(value: str, *, path: str) -> Origin:
             )
 
 
+def parse_provenance_origin(value: str, *, path: str) -> ProvenanceOrigin:
+    match value:
+        case "unaided" | "ai-first" | "writer-first":
+            return value
+        case _:
+            raise ProjectError(
+                f"{path}: provenance.origin must be 'unaided', 'writer-first', or "
+                f"'ai-first', got {value!r}"
+            )
+
+
+def parse_confirmation(value: str, *, path: str) -> Confirmation:
+    match value:
+        case "none" | "origin" | "promoted":
+            return value
+        case _:
+            raise ProjectError(
+                f"{path}: provenance.confirmation must be 'none', 'origin', or "
+                f"'promoted', got {value!r}"
+            )
+
+
+def read_provenance(meta: dict[str, object], *, path: str) -> Provenance:
+    """Read provenance from a learn `meta.json`, with v0.1 defaults.
+
+    v0.1 wrote only a top-level `origin`. A missing `origin` is left unknown:
+    the pair is measured as edited rather than granted gold, and build warns
+    about it. A v0.1 `writer-first` pair keeps gold, because the writer wrote
+    the first draft.
+    """
+    raw = meta.get("provenance")
+    if raw is not None and not isinstance(raw, dict):
+        raise ProjectError(f"{path}: provenance must be an object.")
+    nested = raw if isinstance(raw, dict) else {}
+    origin_value = nested.get("origin", meta.get("origin"))
+    if origin_value is None:
+        origin: ProvenanceOrigin | None = None
+    elif isinstance(origin_value, str):
+        origin = parse_provenance_origin(origin_value, path=path)
+    else:
+        raise ProjectError(f"{path}: provenance.origin must be a string.")
+    confirmation_value = nested.get("confirmation")
+    if confirmation_value is None:
+        confirmation: Confirmation = "origin" if origin == "writer-first" else "none"
+    elif isinstance(confirmation_value, str):
+        confirmation = parse_confirmation(confirmation_value, path=path)
+    else:
+        raise ProjectError(f"{path}: provenance.confirmation must be a string.")
+    return Provenance(
+        origin=origin,
+        confirmation=confirmation,
+        model=_optional_text(nested.get("model")),
+        tool=_optional_text(nested.get("tool")),
+    )
+
+
+def placement_for(provenance: Provenance) -> Tier:
+    """Which measured tier a learned final belongs in.
+
+    Gold is reserved for writing the writer stands behind. A writer-first draft
+    qualifies through its origin; an AI-first final qualifies only after an
+    explicit promotion. Unaided writing reaches gold through `corpus/gold`
+    and never passes through this function.
+    """
+    if provenance.confirmation == "promoted":
+        return "gold"
+    if provenance.origin == "writer-first" and provenance.confirmation == "origin":
+        return "gold"
+    return "edited"
+
+
+def provenance_json(
+    origin: str | None,
+    *,
+    confirmation: str,
+    model: str | None = None,
+    tool: str | None = None,
+) -> dict[str, object]:
+    return {
+        "origin": origin,
+        "confirmation": confirmation,
+        "model": _optional_text(model),
+        "tool": _optional_text(tool),
+    }
+
+
+def _optional_text(value: object) -> str | None:
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            return text
+    return None
+
+
 def _never(value: Never) -> Never:
     raise RuntimeError(f"unhandled variant: {value!r}")
 
@@ -120,7 +231,12 @@ def default_manifest() -> dict[str, object]:
     return {
         "kind": "ghostless",
         "version": 1,
-        "weights": {"gold": DEFAULT_WEIGHTS["gold"], "silver": DEFAULT_WEIGHTS["silver"], "bronze": DEFAULT_WEIGHTS["bronze"]},
+        "weights": {
+            "gold": DEFAULT_WEIGHTS["gold"],
+            "silver": DEFAULT_WEIGHTS["silver"],
+            "bronze": DEFAULT_WEIGHTS["bronze"],
+            "edited": DEFAULT_WEIGHTS["edited"],
+        },
         "goldVoiceMinimum": 10,
         "updateCheck": True,
         "failUnder": 70,
@@ -141,7 +257,7 @@ def load_manifest(root: Path) -> dict[str, object]:
     custom = raw.get("weights") or {}
     if not isinstance(custom, dict):
         raise ProjectError(f"{path}: weights must be an object.")
-    for key in ("gold", "silver", "bronze"):
+    for key in ("gold", "silver", "bronze", "edited"):
         if key not in custom:
             continue
         try:
@@ -151,7 +267,7 @@ def load_manifest(root: Path) -> dict[str, object]:
         if number <= 0:
             raise ProjectError(f"{path}: weights.{key} must be positive.")
         match key:
-            case "gold" | "silver" | "bronze":
+            case "gold" | "silver" | "bronze" | "edited":
                 weights[key] = number
             case _ as unexpected:
                 _never(unexpected)
@@ -397,6 +513,8 @@ def discover(root: Path, manifest: dict[str, object]) -> list[Piece]:
                     default_tier=tier,
                     default_kind=kind,
                     weights=weights,
+                    origin="unaided",
+                    confirmation="origin",
                 )
             )
     pieces.extend(_learned_pieces(root, weights))
@@ -430,6 +548,9 @@ def _piece_from_file(
     weights: dict[str, float],
     learned: bool = False,
     origin: str | None = None,
+    confirmation: str | None = None,
+    model: str | None = None,
+    tool: str | None = None,
     section_hint: str | None = None,
 ) -> Piece:
     try:
@@ -451,6 +572,9 @@ def _piece_from_file(
         text=body.strip(),
         origin=origin,
         learned=learned,
+        confirmation=confirmation,
+        model=model,
+        tool=tool,
     )
 
 
@@ -487,8 +611,7 @@ def _learned_pieces(root: Path, weights: dict[str, float]) -> list[Piece]:
         after = meta_path.parent / str(meta.get("afterFile") or "after.md")
         if not after.is_file():
             raise ProjectError(f"{meta_path} points at a missing after file.")
-        origin_raw = meta.get("origin")
-        origin = parse_origin(str(origin_raw), path=str(meta_path)) if origin_raw else None
+        provenance = read_provenance(meta, path=str(meta_path))
         section = meta.get("section")
         section_hint = section if isinstance(section, str) and section else None
         kind_raw = meta.get("kind")
@@ -498,11 +621,14 @@ def _learned_pieces(root: Path, weights: dict[str, float]) -> list[Piece]:
         piece = _piece_from_file(
             root,
             after,
-            default_tier="gold",
+            default_tier=placement_for(provenance),
             default_kind=default_kind,
             weights=weights,
             learned=True,
-            origin=origin,
+            origin=provenance.origin,
+            confirmation=provenance.confirmation,
+            model=provenance.model,
+            tool=provenance.tool,
             section_hint=section_hint,
         )
         pieces.append(piece)
@@ -554,6 +680,9 @@ def _apply_overrides(
             text=body.strip(),
             origin=existing.origin if existing else None,
             learned=existing.learned if existing else False,
+            confirmation=existing.confirmation if existing else None,
+            model=existing.model if existing else None,
+            tool=existing.tool if existing else None,
         )
     return list(by_path.values())
 
@@ -562,7 +691,7 @@ def _override_tier(value: str | None, default: Tier, *, path: str) -> Tier:
     if not value:
         return default
     match value:
-        case "gold" | "silver" | "bronze":
+        case "gold" | "silver" | "bronze" | "edited":
             return value
         case _:
             raise ProjectError(f"{path}: unknown tier {value!r}")
