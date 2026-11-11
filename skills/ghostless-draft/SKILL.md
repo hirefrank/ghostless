@@ -21,6 +21,7 @@ If that fails, ask the user where the project is, or run `ghostless init` in the
 ## Write
 
 - Match the weighted targets in the guide (sentence length, contractions, I, openers, paragraphs, em dashes, questions).
+- Reach a first-person target with observational and opinion statements ("I see this a lot", "I think", "I keep coming back to"). Never invent an anecdote to hit the number — no "I remember when..." stories the writer did not tell you. If the piece needs a story only the writer can tell, leave it as a placeholder for them.
 - Do not use the ban list.
 - Use a signature phrase only when it fits. Do not stuff them in.
 - If the piece has a section the guide knows, keep that section's targets in mind.

@@ -31,6 +31,62 @@ AGENTS = {
 COPY_MARKER = ".ghostless-installed"
 
 
+def npm_global_bin_dir() -> Path | None:
+    """The directory `npm i -g` puts the `ghostless` binary in, or None.
+
+    Asks npm for its prefix, falling back to NPM_CONFIG_PREFIX. Nothing is
+    guessed: a missing npm or an unreadable prefix means "cannot check".
+    """
+    prefix = os.environ.get("NPM_CONFIG_PREFIX")
+    npm = shutil.which("npm.cmd" if os.name == "nt" else "npm")
+    if npm is not None:
+        try:
+            completed = subprocess.run(
+                [npm, "config", "get", "prefix"],
+                check=False, capture_output=True, text=True, timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            completed = None
+        if completed is not None and completed.returncode == 0:
+            value = completed.stdout.strip()
+            if value and value != "undefined":
+                prefix = value
+    if not prefix:
+        return None
+    base = Path(prefix).expanduser()
+    return base if os.name == "nt" else base / "bin"
+
+
+def npm_bin_path_warning(bin_dir: Path | None = None) -> str | None:
+    """Warn when the npm global bin dir is not on PATH; None when it is or unknown."""
+    if bin_dir is None:
+        bin_dir = npm_global_bin_dir()
+    if bin_dir is None:
+        return None
+    entries = {
+        os.path.normcase(str(Path(entry).expanduser().resolve()))
+        for entry in os.environ.get("PATH", "").split(os.pathsep)
+        if entry
+    }
+    if os.path.normcase(str(bin_dir.resolve())) in entries:
+        return None
+    if os.name == "nt":
+        return (
+            f"npm global bin dir {bin_dir} is not on PATH, so `ghostless` will not be found. "
+            f"Add {bin_dir} to PATH."
+        )
+    return (
+        f"npm global bin dir {bin_dir} is not on PATH, so `ghostless` will not be found. "
+        f"Add it with: export PATH=\"{bin_dir}:$PATH\""
+    )
+
+
+def _print_path_warning() -> None:
+    warning = npm_bin_path_warning()
+    if warning:
+        print(f"PATH: {warning}")
+
+
 def agent_dir(name: str) -> Path:
     if name not in AGENTS:
         raise ProjectError(f"Unknown agent {name!r}. Run `ghostless agents` for choices.")
@@ -141,6 +197,7 @@ def install_skills(*, agent: str, force: bool, copy: bool, no_launcher: bool, ve
     with (home / "logs" / "setup.log").open("a", encoding="utf-8") as log:
         log.write(f"{datetime.now(timezone.utc).isoformat()} install-skills suite={root} installed={installed}\n")
     print(f"ghostless skills installed: {installed}; existing paths kept: {len(skipped)}")
+    _print_path_warning()
     if not no_launcher:
         print("CLI launcher: supplied by npm or the Python package")
     return 0
@@ -158,6 +215,7 @@ def doctor() -> int:
     print(f"Python: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
     print(f"Suite: {root or 'none'}")
     print(f"Data: {data_home()}")
+    _print_path_warning()
     if root is None:
         return 1
     for name in AGENTS:

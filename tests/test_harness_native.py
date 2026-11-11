@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -83,6 +85,59 @@ class NativeHarnessTests(unittest.TestCase):
         package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
         self.assertEqual(package["bin"]["ghostless"], "bin/ghostless.cjs")
         self.assertTrue((ROOT / "bin" / "ghostless.cjs").is_file())
+
+
+class PathWarningTests(unittest.TestCase):
+    def _fake_npm(self, base: Path, prefix: Path) -> Path:
+        """A stub `npm` that reports `prefix` for `npm config get prefix`."""
+        fakebin = base / "fakebin"
+        fakebin.mkdir()
+        npm = fakebin / "npm"
+        npm.write_text(f"#!/bin/sh\necho {prefix}\n", encoding="utf-8")
+        npm.chmod(0o755)
+        return fakebin
+
+    def test_bin_dir_detected_and_warning_when_missing(self) -> None:
+        from ghostless.harness import npm_bin_path_warning, npm_global_bin_dir
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            prefix = base / "prefix"
+            fakebin = self._fake_npm(base, prefix)
+            env = {"PATH": str(fakebin), "GHOSTLESS_HOME": str(base / "data")}
+            with patch.dict(os.environ, env):
+                # PATH holds only the stub, so prefix/bin is missing from it.
+                self.assertEqual(npm_global_bin_dir(), prefix / "bin")
+                warning = npm_bin_path_warning()
+                self.assertIsNotNone(warning)
+                self.assertIn(str(prefix / "bin"), warning)
+                self.assertIn('export PATH="', warning)
+                with patch.dict(
+                    os.environ,
+                    {"PATH": os.pathsep.join([str(fakebin), str(prefix / "bin")])},
+                ):
+                    self.assertIsNone(npm_bin_path_warning())
+
+    def test_no_npm_means_no_warning(self) -> None:
+        from ghostless.harness import npm_global_bin_dir
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"PATH": tmp}):
+                os.environ.pop("NPM_CONFIG_PREFIX", None)
+                self.assertIsNone(npm_global_bin_dir())
+
+    def test_doctor_warns_when_bin_dir_missing_from_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            prefix = base / "prefix"
+            fakebin = self._fake_npm(base, prefix)
+            env = {"PATH": str(fakebin), "GHOSTLESS_HOME": str(base / "data")}
+            with patch.dict(os.environ, env):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    self.assertEqual(main(["doctor"]), 0)
+            self.assertIn(str(prefix / "bin"), out.getvalue())
+            self.assertIn("export PATH=", out.getvalue())
 
 
 if __name__ == "__main__":
