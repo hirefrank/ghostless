@@ -59,6 +59,26 @@ class NativeHarnessTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("ghostless 0.1.0", completed.stdout)
 
+    @unittest.skipUnless(shutil.which("node"), "Node is needed for the npm launcher")
+    def test_node_launcher_uses_utf8_for_learn_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            project = base / "voice"
+            self.assertEqual(main(["init", str(project)]), 0)
+            before = base / "before.md"
+            after = base / "after.md"
+            before.write_text("I write.\n", encoding="utf-8")
+            after.write_text("I wrote this.\n", encoding="utf-8")
+            env = os.environ.copy()
+            env.update({"GHOSTLESS_PYTHON": sys.executable, "GHOSTLESS_NO_UPDATE": "1",
+                        "PYTHONIOENCODING": "ascii"})
+            completed = subprocess.run(
+                ["node", str(ROOT / "bin" / "ghostless.cjs"), "learn", "--before", str(before),
+                 "--after", str(after), "--project", str(project)],
+                cwd=base, env=env, check=False, capture_output=True, text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+
     def test_package_entry_is_portable_node_script(self) -> None:
         package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
         self.assertEqual(package["bin"]["ghostless"], "bin/ghostless.cjs")

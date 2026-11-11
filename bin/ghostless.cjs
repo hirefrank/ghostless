@@ -8,6 +8,8 @@ const env = {
   ...process.env,
   GHOSTLESS_SUITE: root,
   GHOSTLESS_LAUNCHER: 'npm',
+  PYTHONUTF8: '1',
+  PYTHONIOENCODING: 'utf-8',
   PYTHONPATH: [path.join(root, 'lib'), process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
 };
 
