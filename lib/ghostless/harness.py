@@ -7,7 +7,6 @@ requires Bash, so the same project and edit-session files work on Windows.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shutil
 import subprocess
@@ -67,7 +66,12 @@ def _root() -> Path:
 
 def _ephemeral_package(root: Path) -> bool:
     location = root.as_posix().lower()
-    return "/_npx/" in location or "/pnpm/dlx/" in location or "/.cache/pnpm/" in location
+    return (
+        "/_npx/" in location
+        or "/pnpm/dlx/" in location
+        or "/.cache/pnpm/" in location
+        or "/pnpm-cache/dlx/" in location  # Windows: %LOCALAPPDATA%\pnpm-cache\dlx
+    )
 
 
 def _owned(dest: Path, src: Path) -> bool:
@@ -210,7 +214,12 @@ def update(*, agent: str) -> int:
     npm = shutil.which("npm.cmd" if os.name == "nt" else "npm")
     if npm is None:
         raise ProjectError("npm is needed to update this installation.")
-    result = subprocess.run([npm, "install", "-g", "ghostless@latest"], check=False)
+    # Windows .cmd shims must run through the command interpreter.
+    if os.name == "nt":
+        command = ["cmd", "/c", npm, "install", "-g", "ghostless@latest"]
+    else:
+        command = [npm, "install", "-g", "ghostless@latest"]
+    result = subprocess.run(command, check=False)
     if result.returncode:
         return int(result.returncode)
     return install_skills(agent=agent, force=True, copy=False, no_launcher=False, verbose=False)
