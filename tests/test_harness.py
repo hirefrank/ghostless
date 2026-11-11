@@ -82,6 +82,31 @@ printf '%s\\n' \\
             config = (home / ".ghostless" / "config.json").read_text(encoding="utf-8")
             self.assertIn("updateCheck", config)
 
+    def test_reset_keeps_foreign_skill_directory(self) -> None:
+        with tempfile_home() as home:
+            env = os.environ.copy()
+            env["HOME"] = str(home)
+            env["GHOSTLESS_HOME"] = str(home / ".ghostless")
+            env["GHOSTLESS_NO_UPDATE"] = "1"
+            install = subprocess.run(
+                ["bash", str(ROOT / "setup"), "--agent", "cursor", "--no-launcher"],
+                check=False, capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(install.returncode, 0, install.stderr)
+            skills = home / ".cursor" / "skills"
+            foreign = skills / "ghostless-edit"
+            foreign.unlink()
+            foreign.mkdir()
+            (foreign / "SKILL.md").write_text("foreign skill", encoding="utf-8")
+            reset = subprocess.run(
+                [str(ROOT / "bin" / "ghostless"), "reset", "--agent", "cursor", "--yes"],
+                check=False, capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(reset.returncode, 0, reset.stderr)
+            self.assertTrue((foreign / "SKILL.md").is_file())
+            self.assertFalse((skills / "ghostless-draft").exists())
+            self.assertIn("kept", reset.stdout)
+
     def test_launcher_version_is_offline(self) -> None:
         env = os.environ.copy()
         env["GHOSTLESS_NO_UPDATE"] = "1"

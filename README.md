@@ -10,7 +10,7 @@ It works with any harness that loads [Agent Skills](https://agentskills.io): Cla
 
 ## Install
 
-Python 3.11+ is required. The package layout follows [network-jobs](https://github.com/hirefrank/network-jobs): an npm launcher, Python under `lib/`, skills symlinked into each harness it finds.
+Python 3.11+ is required. The npm package includes a bash launcher, Python code under `lib/`, and skills symlinked into detected agent harnesses.
 
 ```bash
 npm i -g ghostless@latest
@@ -113,7 +113,7 @@ ghostless reset [--yes] [--data]
 ghostless --version
 ```
 
-`judge` exits 1 when the score is under `failUnder` (default 70) or when the draft hits a banned tell or a structural tell. `setup` is an alias of `install-skills`.
+`judge` exits 1 when its mechanical score is under `failUnder` (default 70). Banned tells, tidy frames, and unresolved placeholders are flagged for review. The score does not check factual fidelity or establish that the draft sounds like you. `setup` is an alias of `install-skills`.
 
 ## The tier model
 
@@ -152,15 +152,15 @@ Spoken lines do not set paragraph length, em dashes, questions, signature phrase
 
 If you tag pieces with `section:` (or a subfolder), `build` writes per-section targets. `judge --section` uses them. The ban list stays global: a tell you use in any counted prose is not banned.
 
-The catalog is a fixed list of distinctive model tics (`delve`, `tapestry`, `furthermore`, `it's worth noting`, …). It is not applied blindly. If you use a tell, it is reported as in use and left off the ban list. A written sample under 200 words makes a strict list, and the guide says so.
+The catalog is a fixed list of distinctive model tics (`delve`, `tapestry`, `furthermore`, `it's worth noting`, …). If you use a tell, it is reported as in use and left off the ban list. Absence is weak evidence in a small corpus: below 1,500 written words, the guide marks the list provisional. Review a hit in context before changing a draft.
 
 `judge` also flags tidy structure that targets do not fully catch: "it's not X, it's Y" frames, single-word triplets (`clear, concise, and compelling`), and em dashes above the target.
 
 ## How a draft should behave
 
-The guide tells the model to hit the numbers, skip the ban list, and leave `[WRITER: your take]` where an opinion, quote, statistic, or anecdote belongs. The drafting skill runs `judge` afterward. The editing skill tightens your draft and shows a short change list. The capture skill runs `learn` when you say the piece is finished.
+The guide tells the model to use the measured targets, review the ban list, and leave `[WRITER: your take]` where an opinion, quote, statistic, or anecdote belongs. The drafting skill runs `judge` afterward. The editing skill tightens your draft and shows a short change list. The capture skill runs `learn` when you say the piece is finished.
 
-`learn` copies the two files to `gold/<date>-<section>/` with `meta.json` (`date`, `section`, `origin`). `origin` is `ai-first` when the before file is an AI draft (the default) or `writer-first` when you drafted first. The diff records tokens cut and added, the sentence-length shift, the contraction shift, and words you remove or add more than once. The final is gold from then on.
+`learn` stores each distinct before/after pair once under `gold/<date>-<section>/` with `meta.json` (`date`, `section`, `origin`). `origin` is `ai-first` when the before file is an AI draft (the default) or `writer-first` when you drafted first. The diff records tokens cut and added, the sentence-length shift, the contraction shift, and words you remove or add more than once. The final is gold from then on.
 
 ## How this differs
 
@@ -191,7 +191,7 @@ Turn the check off with any of:
 - `{"updateCheck": false}` in `~/.ghostless/config.json`
 - `"updateCheck": false` in the project manifest
 
-On a newer release, `update` refreshes the CLI and relinks skills so the skills cannot drift. A dirty git checkout is left unpulled. `ghostless update` does the same thing when you ask.
+On a newer release, the CLI prints an update notice. Run `ghostless update` to refresh the CLI and relink skills. A dirty git checkout is left unpulled.
 
 ## Skills
 

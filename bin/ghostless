@@ -77,43 +77,6 @@ want_help() {
   return 1
 }
 
-ghostless_try_autoupdate() {
-  if ghostless_is_npm_global_install "$ROOT"; then
-    if ! command -v npm >/dev/null 2>&1; then
-      echo "ghostless: npm is not on PATH." >&2
-      return 1
-    fi
-    npm i -g 'ghostless@latest' --prefer-online || return 1
-    bash "$ROOT/setup" --force || true
-    export GHOSTLESS_JUST_UPDATED=1
-    exec "$ROOT/bin/ghostless" "$@"
-  fi
-  if ghostless_is_packaged_install "$ROOT"; then
-    local runner
-    ghostless_purge_package_cache || true
-    ghostless_clear_dangling_suite_root || true
-    runner="$(ghostless_package_runner)" || return 1
-    export GHOSTLESS_JUST_UPDATED=1
-    # shellcheck disable=SC2086
-    $runner 'ghostless@latest' install-skills --force || true
-    # shellcheck disable=SC2086
-    exec $runner 'ghostless@latest' "$@"
-  fi
-  if [[ -d "$ROOT/.git" ]] && command -v git >/dev/null 2>&1; then
-    if ! git -C "$ROOT" diff --quiet || ! git -C "$ROOT" diff --cached --quiet; then
-      echo "ghostless: this checkout has uncommitted changes, so it was not pulled." >&2
-      return 1
-    fi
-    if ! git -C "$ROOT" pull --ff-only; then
-      echo "ghostless: git pull failed." >&2
-      return 1
-    fi
-  fi
-  bash "$ROOT/setup" --force || true
-  export GHOSTLESS_JUST_UPDATED=1
-  exec "$ROOT/bin/ghostless" "$@"
-}
-
 cmd_update() {
   if want_help "$@"; then
     usage_update
@@ -269,18 +232,32 @@ cmd_reset() {
     esac
   fi
 
-  local dir skill dest removed=0
+  local dir skill dest target removed=0
   for name in "${names[@]}"; do
     name="$(echo "$name" | xargs)"
     dir="$(ghostless_agent_dir "$name" || true)"
     [[ -z "$dir" ]] && continue
     for skill in "${GHOSTLESS_SKILL_IDS[@]}"; do
       dest="$dir/$skill"
-      if [[ -L "$dest" || -e "$dest" ]]; then
+      if [[ -L "$dest" ]]; then
+        target="$(readlink "$dest")"
+        if [[ "$target" == "$ROOT/skills/$skill" ]]; then
+          rm -f "$dest"
+        else
+          echo "kept $dest (not a ghostless link)"
+          continue
+        fi
+      elif [[ -d "$dest" && -f "$dest/.ghostless-installed" ]] &&
+           [[ "$(cat "$dest/.ghostless-installed")" == "ghostless:$skill" ]]; then
         rm -rf "$dest"
-        echo "removed $dest"
-        removed=$((removed + 1))
+      elif [[ -e "$dest" ]]; then
+        echo "kept $dest (not installed by ghostless)"
+        continue
+      else
+        continue
       fi
+      echo "removed $dest"
+      removed=$((removed + 1))
     done
   done
   if [[ "$wipe_data" -eq 1 && -e "$DATA_HOME" ]]; then
@@ -306,10 +283,7 @@ maybe_autoupdate() {
   decision="$(python3 -m ghostless.updatecheck 2>/dev/null || true)"
   case "$decision" in
     update\ *)
-      echo "ghostless: ${decision#update } is available. Updating and refreshing skills…" >&2
-      if ! ghostless_try_autoupdate "$@"; then
-        echo "ghostless: auto-update did not finish. Continuing with this version." >&2
-      fi
+      echo "ghostless: ${decision#update } is available. Run 'ghostless update' to install it." >&2
       ;;
   esac
 }

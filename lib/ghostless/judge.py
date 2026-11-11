@@ -116,11 +116,13 @@ def judge_text(
     structure_penalty = min(24, 8 * sum(1 for item in structure if item["kind"] != "em-dash"))
     penalty += ban_penalty + structure_penalty
     score = max(0, 100 - penalty)
-    failed = score < fail_under or bool(banned) or bool(structure)
+    failed = score < fail_under
     return {
         "ok": not failed,
         "score": score,
         "failUnder": fail_under,
+        "reviewRequired": bool(banned or structure or placeholders),
+        "assessment": "mechanical-only",
         "section": target_label,
         "checks": checks,
         "banned": banned,
@@ -134,7 +136,7 @@ def judge_text(
 def format_report(report: dict[str, object]) -> str:
     status = "pass" if report.get("ok") else "fail"
     lines = [
-        f"ghostless judge: {report.get('score')}/100 ({status})",
+        f"ghostless mechanical check: {report.get('score')}/100 ({status})",
         f"section: {report.get('section')}",
     ]
     error = report.get("error")
@@ -142,6 +144,9 @@ def format_report(report: dict[str, object]) -> str:
         lines.append(error)
         lines.append("")
         return "\n".join(lines)
+    lines.append("This checks measured patterns; it does not verify facts or whether the draft sounds like the writer.")
+    if report.get("reviewRequired"):
+        lines.append("Review flagged patterns and placeholders before publishing.")
     lines.extend(["", "Targets"])
     checks = report.get("checks")
     if isinstance(checks, list) and checks:

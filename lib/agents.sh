@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared agent skill directory map for ghostless.
-# Paths match the network-jobs harness list: Claude Code, Cursor, Codex,
-# OpenCode, Pi, Gemini CLI, Hermes, Muse, and the generic agents dir.
+# Supported harnesses: Claude Code, Cursor, Codex, OpenCode, Pi,
+# Gemini CLI, Hermes, Muse, and the generic agents dir.
 # shellcheck shell=bash
 
 GHOSTLESS_AGENT_IDS=(

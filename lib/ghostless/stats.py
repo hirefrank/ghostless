@@ -305,10 +305,10 @@ def compile_stats(
             "Spoken lines do not decide bans."
         )
     diction_words = _diction_words(weighted)
-    if 0 < diction_words < 200:
+    if 0 < diction_words < 1500:
         warnings.append(
-            "The written sample is under 200 words. The ban list is strict: "
-            "any catalog tell you have not used yet is banned."
+            "The written sample is under 1,500 words. The absent-tell list is provisional; "
+            "review hits in context rather than treating absence as a firm rule."
         )
 
     return {

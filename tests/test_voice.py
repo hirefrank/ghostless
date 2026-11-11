@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "lib"))
 from ghostless.cli import build_voice, main  # noqa: E402
 from ghostless.judge import judge_text  # noqa: E402
 from ghostless.learn import diff_texts, learn_edit  # noqa: E402
+from ghostless.paths import ProjectError  # noqa: E402
 from ghostless.project import discover, init_project, load_manifest  # noqa: E402
 from ghostless.stats import Piece, compile_stats, pools_for, summarize, weighted_median  # noqa: E402
 from ghostless.text import measure, split_sentences  # noqa: E402
@@ -158,6 +159,13 @@ class JudgeTests(unittest.TestCase):
         self.assertFalse(closer["structure"])
         self.assertTrue(closer["ok"])
 
+    def test_structural_hit_is_review_not_automatic_failure(self) -> None:
+        stats = {"weighted": {"metrics": {}, "banList": []}}
+        report = judge_text("It's not a shortcut, it's a practice.", stats)
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["reviewRequired"])
+        self.assertEqual(report["assessment"], "mechanical-only")
+
     def test_section_targets_differ(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "voice"
@@ -210,6 +218,16 @@ class LearnTests(unittest.TestCase):
             self.assertEqual(meta["origin"], "ai-first")
             self.assertEqual(meta["section"], "notes")
             self.assertEqual(meta["date"], "2026-01-02")
+            with self.assertRaisesRegex(ProjectError, "already learned"):
+                learn_edit(
+                    project,
+                    before=before_path,
+                    after=after_path,
+                    section="notes",
+                    origin="ai-first",
+                    date="2026-01-02",
+                )
+            after_path.write_text("I'm done. I really don't wander.", encoding="utf-8")
             second = learn_edit(
                 project,
                 before=before_path,

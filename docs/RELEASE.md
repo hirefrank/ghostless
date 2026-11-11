@@ -4,7 +4,7 @@ v0.1 is ready to publish and is not published. npm and PyPI both need the mainta
 
 ## npm (supported install)
 
-The install path matches `hirefrank/network-jobs`: an npm package whose `bin` is a bash launcher, with the voice logic in Python under `lib/ghostless/` and skills under `skills/`.
+The npm package includes a bash launcher under `bin/`, the voice logic under `lib/ghostless/`, and agent skills under `skills/`.
 
 1. Bump `version` in `package.json`, `pyproject.toml`, and `ghostless.__version__` together. `bash tests/run.sh` fails when they disagree.
 2. Add a `CHANGELOG.md` section `## vX.Y.Z — YYYY-MM-DD`.

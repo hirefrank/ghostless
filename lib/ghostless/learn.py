@@ -72,9 +72,16 @@ def learn_edit(
     if not DATE_RE.fullmatch(date_text):
         raise ProjectError("--date must be YYYY-MM-DD.")
     slug = _slug(date_text, section)
-    destination = _fresh_dir(root / "gold", slug)
     before_text = before.read_text(encoding="utf-8")
     after_text = after.read_text(encoding="utf-8")
+    for existing in sorted((root / "gold").glob("*/meta.json")):
+        prior_before = existing.parent / "before.md"
+        prior_after = existing.parent / "after.md"
+        if prior_before.is_file() and prior_after.is_file():
+            if (prior_before.read_text(encoding="utf-8").rstrip("\n") == before_text.rstrip("\n")
+                    and prior_after.read_text(encoding="utf-8").rstrip("\n") == after_text.rstrip("\n")):
+                raise ProjectError(f"This edit pair was already learned in {existing.parent.name}.")
+    destination = _fresh_dir(root / "gold", slug)
     destination.mkdir(parents=True, exist_ok=False)
     (destination / "before.md").write_text(_trailing_newline(before_text), encoding="utf-8")
     (destination / "after.md").write_text(_trailing_newline(after_text), encoding="utf-8")
@@ -126,10 +133,8 @@ def refresh_edit_summary(root: Path) -> dict[str, object]:
     removals: Counter[str] = Counter()
     additions: Counter[str] = Counter()
     for item in learns:
-        for entry in _word_entries(item.get("removedWords")):
-            removals[entry[0]] += entry[1]
-        for entry in _word_entries(item.get("addedWords")):
-            additions[entry[0]] += entry[1]
+        removals.update({word for word, _ in _word_entries(item.get("removedWords"))})
+        additions.update({word for word, _ in _word_entries(item.get("addedWords"))})
     payload: dict[str, object] = {
         "learns": learns,
         "repeatedRemovals": _repeated(removals),

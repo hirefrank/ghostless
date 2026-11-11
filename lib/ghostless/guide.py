@@ -97,8 +97,8 @@ def _render(
 
 def _rules(stats: dict[str, object], *, paste: bool) -> list[str]:
     lines = ["## Rules", ""]
-    lines.append("- Hit the targets above. They are counts from the writer's own text.")
-    lines.append("- Do not use a word or phrase on the ban list.")
+    lines.append("- Use the targets above as diagnostics. They are counts from the writer's own text, not a measure of writing quality.")
+    lines.append("- Review words and phrases on the absent-tell list in context, especially with a small corpus.")
     lines.append(
         "- Do not invent quotes, statistics, anecdotes, or opinions. "
         "Where the piece needs the writer's take, leave `[WRITER: your take]` and say what is missing."

@@ -192,6 +192,7 @@ install_skill() {
   if [[ "$COPY_MODE" -eq 1 ]]; then
     rm -rf "$dest"
     cp -R "$src" "$dest"
+    printf 'ghostless:%s\n' "$(basename "$src")" > "$dest/.ghostless-installed"
     say "copied  $dest"
   else
     ln -sfn "$src" "$dest"

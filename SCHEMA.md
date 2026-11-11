@@ -69,7 +69,7 @@ Sentence mix: short is 1–10 words, medium 11–20, long 21+. The median is the
 
 Signature phrases are 2- and 3-word sequences that appear at least twice in the diction pool, not made of function words.
 
-The ban list is the catalog in `ghostless.tells.AI_TELLS` minus any tell that appears in the diction pool. A small written sample makes a long ban list. Spoken lines never remove a tell from the ban list. Tells that do appear are listed as in use so they are not banned.
+The absent-tell list is the catalog in `ghostless.tells.AI_TELLS` minus any tell that appears in the diction pool. A written sample under 1,500 words makes the list provisional; review each hit in context. Spoken lines never remove a tell from the ban list. Tells that do appear are listed as in use so they are not banned.
 
 `build` writes weighted targets and the same pools at weight 1 (unweighted), plus a per-tier breakdown. The per-tier bronze numbers still include bronze voice, so you can see what the threshold dropped. `judge` uses the weighted targets. `--section` swaps in that section's weighted targets. The ban list stays global.
 
@@ -86,7 +86,7 @@ The ban list is the catalog in `ghostless.tells.AI_TELLS` minus any tell that ap
 }
 ```
 
-`origin` is `ai-first` (an AI draft the writer edited) or `writer-first` (the writer drafted first). Both finals are gold. `edits-summary.json` rolls up tokens removed and added, the sentence-length shift, the contraction shift, and words cut or added more than once.
+`origin` is `ai-first` (an AI draft the writer edited) or `writer-first` (the writer drafted first). Both finals are gold. `edits-summary.json` rolls up tokens removed and added, the sentence-length shift, the contraction shift, and words cut or added in more than one distinct edit pair. Identical before/after pairs cannot be learned twice.
 
 ## Suite data
 

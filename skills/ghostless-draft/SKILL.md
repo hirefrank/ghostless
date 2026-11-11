@@ -40,4 +40,4 @@ ghostless judge draft.md
 ghostless judge draft.md --section notes
 ```
 
-Fix banned words, "it's not X, it's Y" frames, tidy triplets, and em dashes past the target. Do not "fix" a placeholder by guessing the opinion. Show the draft and the judge summary. One revision pass is enough unless the user asks for another.
+Review flagged words, tidy frames, and em dashes in context. The mechanical score does not check factual fidelity or prove the draft sounds like the writer. Do not "fix" a placeholder by guessing the opinion. Show the draft and the judge summary. One revision pass is enough unless the user asks for another.
