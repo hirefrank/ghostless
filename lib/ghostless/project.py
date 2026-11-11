@@ -338,7 +338,7 @@ def save_note(root: Path, *, kind: str, text: str) -> dict[str, object]:
     name = {"style": "STYLE.md", "audience": "AUDIENCE.md"}.get(kind)
     if name is None:
         raise ProjectError("save needs --style or --audience.")
-    rule = text.strip()
+    rule = " ".join(text.split())
     if not rule:
         raise ProjectError("The rule text must not be empty.")
     path = root / name

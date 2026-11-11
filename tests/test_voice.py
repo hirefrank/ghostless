@@ -240,6 +240,27 @@ class NotesTests(unittest.TestCase):
             style = (project / "STYLE.md").read_text(encoding="utf-8")
             self.assertEqual(style.count("Every claim needs a source"), 2)
 
+    def test_save_collapses_newlines_to_a_single_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            init_project(project, git=False)
+            self.assertEqual(
+                main(["save", "--style", "Every claim\nneeds a source.", "--project", str(project)]),
+                0,
+            )
+            style = (project / "STYLE.md").read_text(encoding="utf-8")
+            self.assertIn("Every claim needs a source.", style)
+            self.assertNotIn("Every claim\n", style)
+            # Same-day idempotency holds once the rule is collapsed.
+            self.assertEqual(
+                main(["save", "--style", "Every claim\nneeds a source.", "--project", str(project)]),
+                0,
+            )
+            self.assertEqual(
+                (project / "STYLE.md").read_text(encoding="utf-8").count("Every claim needs a source."),
+                1,
+            )
+
     def test_save_rejects_empty_rule(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "voice"
