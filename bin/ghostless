@@ -33,9 +33,9 @@ Options are passed through to install-skills:
   --verbose, -v
   --help, -h
 
-Auto-update runs at most once a day on other commands. Skip it with
-GHOSTLESS_NO_UPDATE=1 or "updateCheck": false in ~/.ghostless/config.json
-or the project manifest. The check does not upload your writing.
+The release check runs at most once a day and prints an update notice.
+Disable the check with GHOSTLESS_NO_UPDATE=1 or "updateCheck": false
+in ~/.ghostless/config.json or the project manifest. No writing is uploaded.
 EOF
 }
 
