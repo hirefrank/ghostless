@@ -2,7 +2,7 @@
 
 ghostless is a local CLI and a set of agent skills that measure how you write, then judge AI drafts against those numbers. Every edit you keep becomes part of the measure.
 
-Your corpus, transcripts, and edits stay on disk. The only network call is an optional once-a-day check for a new release, and that call sends no writing.
+Your corpus, transcripts, and edits stay on disk. `init` gives the voice directory its own local Git history, and you can attach a private remote when you choose. ghostless never adds a remote or pushes. The only network call is an optional once-a-day check for a new release, and that call sends no writing.
 
 Inspired by Nat Eliason's article [How to Build an AI Writing System That Actually Sounds Like You](https://x.com/nateliason/status/2115803497773904292).
 
@@ -63,6 +63,25 @@ Put your own writing in:
 | `corpus/bronze/` | Older writing. Weight 0.5. |
 | `corpus/spoken/` | Transcribed speech, your lines only. |
 
+The voice directory is a voice-data repository. `corpus/`, `transcripts/`, `gold/`, `sessions/`, and `holdouts/` are meant to be committed; generated guides, stats, drafts, and raw media are ignored, so a rebuild leaves `git status` clean. `init` runs `git init` and adds no remote.
+
+```bash
+git status
+git add -- manifest.json .gitignore corpus transcripts gold sessions holdouts
+git commit -m "Start voice-data history"
+```
+
+To back it up or move it to another machine, attach a private remote yourself:
+
+```bash
+git remote add origin <private-repo-url>
+git push -u origin HEAD
+```
+
+Pushing sends your writing to that host. ghostless never creates a remote or pushes.
+
+Upgrading a v0.1 voice directory? Run `ghostless migrate --project voice`. It replaces the old ignore block, adds the new directories, and stages nothing.
+
 Then:
 
 ```bash
@@ -97,7 +116,8 @@ ghostless build
 ## Commands
 
 ```bash
-ghostless init [dir] | ghostless init --here
+ghostless init [dir] [--no-git] | ghostless init --here
+ghostless migrate [--project DIR] [--no-git]
 ghostless build [--project DIR] [--json]
 ghostless judge draft.md [--section NAME] [--project DIR] [--json]
 ghostless learn --before a.md --after b.md [--section NAME] [--origin ai-first|writer-first] [--date YYYY-MM-DD]
@@ -182,7 +202,9 @@ Those projects also aim at writing that sounds like a specific person. ghostless
 
 ## Privacy
 
-`init` gitignores `corpus/`, `transcripts/`, `gold/`, and the generated guide files. Leave them uncommitted.
+Storage is local by default. The voice directory, `~/.ghostless/` installer state, and generated guides live on this machine. `init` writes a `.gitignore` that treats `corpus/`, `transcripts/`, `gold/`, `sessions/`, and `holdouts/` as the voice-data repository and ignores generated guides, stats, drafts, temp files, and raw media. Nothing is staged, committed, or pushed for you, and a rebuild never dirties the working tree.
+
+Remote storage is optional and explicit. A private host receives your writing only when you add a remote and push. `ghostless migrate` upgrades a v0.1 project by removing the old "do not commit" ignore block and writing the new rules; it stages and commits nothing, so you can review `git status` first. On a directory that was previously outside Git, prefer the path-scoped `git add -- manifest.json .gitignore corpus transcripts gold sessions holdouts` over `git add -A`.
 
 `export` writes a paste file that, even without `--excerpts`, contains your measured targets, the absent-tell ban list, your signature phrases, per-section targets, and the words you cut or added in `learn` edits. `--excerpts` adds short gold samples. Treat the paste file as your writing: it is meant for a chat project you control, not for sharing.
 

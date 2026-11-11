@@ -9,11 +9,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ghostless.paths import ProjectError
-from ghostless.project import parse_origin
+from ghostless.project import fresh_directory, parse_origin, slug_for
 from ghostless.stats import weighted_median
 from ghostless.text import measure, track_token, word_tokens
 
-SLUG_RE = re.compile(r"[^a-z0-9]+")
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
@@ -71,7 +70,7 @@ def learn_edit(
     date_text = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if not DATE_RE.fullmatch(date_text):
         raise ProjectError("--date must be YYYY-MM-DD.")
-    slug = _slug(date_text, section)
+    slug = slug_for(date_text, section)
     before_text = before.read_text(encoding="utf-8")
     after_text = after.read_text(encoding="utf-8")
     for existing in sorted((root / "gold").glob("*/meta.json")):
@@ -81,7 +80,7 @@ def learn_edit(
             if (prior_before.read_text(encoding="utf-8").rstrip("\n") == before_text.rstrip("\n")
                     and prior_after.read_text(encoding="utf-8").rstrip("\n") == after_text.rstrip("\n")):
                 raise ProjectError(f"This edit pair was already learned in {existing.parent.name}.")
-    destination = _fresh_dir(root / "gold", slug)
+    destination = fresh_directory(root / "gold", slug)
     destination.mkdir(parents=True, exist_ok=False)
     (destination / "before.md").write_text(_trailing_newline(before_text), encoding="utf-8")
     (destination / "after.md").write_text(_trailing_newline(after_text), encoding="utf-8")
@@ -225,25 +224,6 @@ def _rate(count: int, words: int) -> float | None:
     if words <= 0:
         return None
     return round(1000.0 * count / words, 4)
-
-
-def _slug(date_text: str, section: str | None) -> str:
-    slug = date_text
-    if section:
-        extra = SLUG_RE.sub("-", section.casefold()).strip("-")
-        if extra:
-            slug = f"{date_text}-{extra}"
-    return slug
-
-
-def _fresh_dir(parent: Path, slug: str) -> Path:
-    candidate = parent / slug
-    if not candidate.exists():
-        return candidate
-    number = 2
-    while (parent / f"{slug}-{number}").exists():
-        number += 1
-    return parent / f"{slug}-{number}"
 
 
 def _trailing_newline(text: str) -> str:
