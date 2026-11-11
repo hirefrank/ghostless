@@ -113,6 +113,12 @@ ghostless learn --before before.md --after after.md --section notes
 ghostless build
 ```
 
+An AI-first final lands in the `edited` tier, not gold. Promote it once you have made it yours:
+
+```bash
+ghostless learn --before before.md --after after.md --section notes --promote
+```
+
 ## Commands
 
 ```bash
@@ -120,7 +126,8 @@ ghostless init [dir] [--no-git] | ghostless init --here
 ghostless migrate [--project DIR] [--no-git]
 ghostless build [--project DIR] [--json]
 ghostless judge draft.md [--section NAME] [--project DIR] [--json]
-ghostless learn --before a.md --after b.md [--section NAME] [--origin ai-first|writer-first] [--date YYYY-MM-DD]
+ghostless learn --before a.md --after b.md [--section NAME] [--origin ai-first|writer-first] [--model NAME] [--tool NAME] [--promote] [--date YYYY-MM-DD]
+ghostless promote SLUG [--demote] [--project DIR]
 ghostless export [--excerpts] [--out PATH] [--project DIR]
 ghostless install-skills [--agent auto|all|name,...] [--force] [--copy] [--no-launcher] [-v]
 ghostless update [--agent ...]
@@ -141,11 +148,14 @@ Weights live in `manifest.json`. Defaults:
 
 | Tier | Weight | What belongs there |
 | --- | --- | --- |
-| gold | 3 | Your unaided drafts, unaided dictations, and the finals you produce with `learn`. |
+| gold | 3 | Your unaided drafts, unaided dictations, and `learn` finals you wrote first or promoted. |
 | silver | 1 | Recent writing, and transcribed speech unless you mark it gold. |
 | bronze | 0.5 | Older writing. |
+| edited | 0.5 | AI-first finals you revised but have not promoted. |
 
-`goldVoiceMinimum` defaults to 10. Once that many gold written pieces exist, bronze still counts toward paragraph length and drops out of voice: sentence length, contractions, I, openers, em dashes, questions, signature phrases, and the ban list. Gold transcripts do not count toward that threshold, because spoken lines set no written voice. Both numbers are editable.
+`goldVoiceMinimum` defaults to 10. Once that many gold written pieces exist, bronze still counts toward paragraph length and drops out of voice: sentence length, contractions, I, openers, em dashes, questions, signature phrases, and the ban list. Gold transcripts do not count toward that threshold, because spoken lines set no written voice. Neither do AI-first finals, which are `edited` until you promote them. Both numbers are editable.
+
+An `edited` final is mostly the model's prose, so it never sets sentence length, contractions, I, openers, em dashes, questions, signature phrases, or the ban list. It shapes paragraph length only, and the whole edited pool is capped at 25% of the weight of your own prose. What *you* changed is kept as edit evidence: the diff, the words you cut and added, and the before → after shift show up in the guide's "what your edits do" section either way. See [Provenance and promotion](#provenance-and-promotion).
 
 Spoken lines are their own layer. A file in `corpus/spoken/` or `transcripts/` counts only toward:
 
@@ -180,7 +190,29 @@ The catalog is a fixed list of distinctive model tics (`delve`, `tapestry`, `fur
 
 The guide tells the model to use the measured targets, review the ban list, and leave `[WRITER: your take]` where an opinion, quote, statistic, or anecdote belongs. The drafting skill runs `judge` afterward. The editing skill tightens your draft and shows a short change list. The capture skill runs `learn` when you say the piece is finished.
 
-`learn` stores each distinct before/after pair once under `gold/<date>-<section>/` with `meta.json` (`date`, `section`, `origin`). `origin` is `ai-first` when the before file is an AI draft (the default) or `writer-first` when you drafted first. The diff records tokens cut and added, the sentence-length shift, the contraction shift, and words you remove or add more than once. The final is gold from then on.
+`learn` stores each distinct before/after pair once under `gold/<date>-<section>/` with `meta.json` (`date`, `section`, `origin`, `provenance`). `origin` is `ai-first` when the before file is an AI draft (the default) or `writer-first` when you drafted first. The diff records tokens cut and added, the sentence-length shift, the contraction shift, and words you remove or add more than once.
+
+Where the final is measured depends on who wrote the first draft and whether you confirm it:
+
+- `writer-first` is gold: the sentences started as yours.
+- `ai-first` is `edited`: the final is still mostly the model's prose. It never sets voice targets or the ban list, and its paragraph weight is capped so a pile of lightly edited drafts cannot outvote your corpus.
+- `ghostless promote <slug>` lifts one AI-first final into gold after you have rewritten it in your own words. It prints the edit rate, warns when the final is still mostly model prose, and shows the gold count and bronze threshold before and after.
+
+The pair itself is kept either way. Promotion changes provenance, not evidence: the diff and vocabulary still feed the guide's "what your edits do" section.
+
+## Provenance and promotion
+
+Provenance is recorded separately from the measured statistics, so a number never implies a claim about authorship.
+
+```bash
+ghostless learn --before draft.md --after final.md --section notes --model claude-sonnet-4-5 --tool cursor
+ghostless promote 2026-01-02-notes
+ghostless promote 2026-01-02-notes --demote
+```
+
+`meta.json` stores `origin` (`ai-first` or `writer-first`), `confirmation` (`none`, `origin`, or `promoted`), and the optional `model` and `tool` you name. AI-first finals are `edited` until promoted, however many you learn. `build` warns when AI-first finals are present so they never inflate gold counts silently.
+
+Pairs learned by v0.1 need no rewrite. `build` reads them with a default: `writer-first` stays gold, `ai-first` becomes `edited`, and a pair with no recorded origin is treated as edited with a warning. Promote the ones you stand behind.
 
 ## How this differs
 
@@ -188,9 +220,9 @@ The targets are counts from your files.
 
 Three pieces are new relative to a static "write like me" prompt:
 
-1. **Tiered weighting.** The manifest decides whose sentences move the targets. Gold outweighs silver, silver outweighs bronze, and bronze stops voting on voice once you have enough gold.
+1. **Tiered weighting.** The manifest decides whose sentences move the targets. Gold outweighs silver, silver outweighs bronze, and bronze stops voting on voice once you have enough gold. AI-first finals sit in their own capped `edited` tier until you promote them.
 2. **A spoken layer.** Transcribed speech informs rhythm and person, and it does not set format or the ban list.
-3. **Edit learning.** The thing you did to an AI draft is stored and measured, and the final joins gold. The guide's "what your edits do" section is that history.
+3. **Edit learning.** The thing you did to an AI draft is stored and measured, and the writer's own finals join gold. The guide's "what your edits do" section is that history.
 
 ## Related work
 

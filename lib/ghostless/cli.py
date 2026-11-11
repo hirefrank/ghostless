@@ -13,7 +13,7 @@ from pathlib import Path
 from ghostless.export import write_export
 from ghostless.guide import render_guide
 from ghostless.judge import format_report, judge_text
-from ghostless.learn import learn_edit, load_edit_summary, refresh_edit_summary
+from ghostless.learn import learn_edit, load_edit_summary, promote_final, refresh_edit_summary
 from ghostless.paths import ProjectError, data_home, find_project, suite_root, version
 from ghostless.project import (
     TRACKED_PATHS,
@@ -23,6 +23,8 @@ from ghostless.project import (
     init_project,
     load_manifest,
     migrate_project,
+    placement_for,
+    read_provenance,
 )
 from ghostless.stats import compile_stats
 
@@ -83,18 +85,37 @@ def main(argv: list[str] | None = None) -> int:
     _add_project(judge_parser)
     judge_parser.add_argument("--json", action="store_true")
 
-    learn_parser = sub.add_parser("learn", help="Store a before/after edit as gold")
+    learn_parser = sub.add_parser("learn", help="Store a before/after edit and its provenance")
     learn_parser.add_argument("--before", required=True, help="Earlier draft (often the AI draft)")
     learn_parser.add_argument("--after", required=True, help="Writer's final")
-    learn_parser.add_argument("--section", help="Section tag stored on the gold piece")
+    learn_parser.add_argument("--section", help="Section tag stored on the learned piece")
     learn_parser.add_argument(
         "--origin",
         default="ai-first",
         choices=("ai-first", "writer-first"),
-        help="ai-first: AI draft then the writer's edit. writer-first: the writer drafted first.",
+        help="ai-first: AI draft then the writer's edit (default). writer-first: the writer drafted first.",
+    )
+    learn_parser.add_argument("--model", help="Model that wrote the first draft, when known")
+    learn_parser.add_argument("--tool", help="Tool or harness that produced the first draft, when known")
+    learn_parser.add_argument(
+        "--promote",
+        action="store_true",
+        help="Count this final as gold now instead of edited. Prints what that changes.",
     )
     learn_parser.add_argument("--date", help="YYYY-MM-DD (default: today, UTC)")
     _add_project(learn_parser)
+
+    promote_parser = sub.add_parser(
+        "promote",
+        help="Deliberately count a learned final as gold (or return it to edited)",
+    )
+    promote_parser.add_argument("slug", help="Pair id under gold/, e.g. 2026-01-02-notes")
+    promote_parser.add_argument(
+        "--demote",
+        action="store_true",
+        help="Move it back to the edited tier without deleting the edit receipt",
+    )
+    _add_project(promote_parser)
 
     export_parser = sub.add_parser("export", help="Write one paste-ready voice guide")
     export_parser.add_argument(
@@ -161,6 +182,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             return _cmd_judge(args)
         case "learn":
             return _cmd_learn(args)
+        case "promote":
+            return _cmd_promote(args)
         case "export":
             return _cmd_export(args)
         case "locate":
@@ -213,6 +236,14 @@ def _cmd_migrate(args: argparse.Namespace) -> int:
         print("  .gitignore: already on the voice-data layout")
     if isinstance(created, list) and created:
         print(f"  created {', '.join(str(item) for item in created)}")
+    placements = _learned_placements(root)
+    if placements["gold"] or placements["edited"]:
+        print(
+            f"  gold/: {placements['gold']} pair(s) stay gold, "
+            f"{placements['edited']} AI-first pair(s) are measured as edited"
+        )
+        if placements["edited"]:
+            print("  Promote one you stand behind: ghostless promote <slug>")
     state = _report_git(root, skip=args.no_git)
     print("Nothing was staged, committed, or pushed, and no remote was added.")
     if state in ("created", "existing"):
@@ -299,6 +330,9 @@ def _cmd_learn(args: argparse.Namespace) -> int:
         section=args.section,
         origin=args.origin,
         date=args.date,
+        model=args.model,
+        tool=args.tool,
+        promote=args.promote,
     )
     meta = result["meta"]
     if not isinstance(meta, dict):
@@ -306,6 +340,9 @@ def _cmd_learn(args: argparse.Namespace) -> int:
         return 0
     print(f"gold/{result['slug']}")
     print(f"  origin {meta.get('origin')}  section {meta.get('section') or 'unsectioned'}")
+    if result.get("model") or result.get("tool"):
+        print(f"  model/tool {result.get('model') or 'unnamed model'}"
+              f"{' via ' + str(result.get('tool')) if result.get('tool') else ''}")
     print(
         f"  words {meta.get('wordsBefore')} → {meta.get('wordsAfter')} "
         f"(removed {meta.get('wordsRemoved')}, added {meta.get('wordsAdded')})"
@@ -324,8 +361,90 @@ def _cmd_learn(args: argparse.Namespace) -> int:
         f"  contractions per 1k {meta.get('contractionsPer1kBefore')} → "
         f"{meta.get('contractionsPer1kAfter')}"
     )
-    print("  after.md is now gold. Run ghostless build to fold it into the guide.")
+    print(f"  measured as {result.get('tier')} ({_placement_note(str(result.get('tier')))})")
+    warning = result.get("warning")
+    if isinstance(warning, str):
+        print(f"  warning: {warning}")
+    print("  The before/after pair is kept either way, and its diff feeds the guide's edit section.")
+    if result.get("tier") == "gold":
+        print("  after.md is gold. Run ghostless build to fold it into the guide.")
+    else:
+        print(
+            "  after.md is edited, not gold: it shapes paragraph length only and never the "
+            "ban list or rhythm."
+        )
+        print(f"  To count it as gold later: ghostless promote {result.get('slug')}")
     return 0
+
+
+def _cmd_promote(args: argparse.Namespace) -> int:
+    root = _project(args.project)
+    manifest = load_manifest(root)
+    minimum = manifest["goldVoiceMinimum"]
+    before = _gold_prose_pieces(root)
+    result = promote_final(root, args.slug, gold=not args.demote)
+    after = _gold_prose_pieces(root)
+    tier = result.get("tier")
+    print(f"gold/{result.get('slug')}")
+    if result.get("changed"):
+        print(f"  {result.get('previous')} → {tier}")
+    else:
+        print(f"  unchanged: already {tier}")
+    print(
+        f"  origin {result.get('origin') or 'unspecified'}, confirmation "
+        f"{result.get('confirmation')}"
+    )
+    warning = result.get("warning")
+    if isinstance(warning, str):
+        print(f"  warning: {warning}")
+    if isinstance(minimum, int):
+        print(
+            f"  gold prose pieces: {before} → {after} (threshold {minimum}; "
+            f"bronze is {'format-only' if after >= minimum else 'still in voice'})"
+        )
+    if tier == "gold":
+        print("  This final now counts at gold weight and toward goldVoiceMinimum.")
+    else:
+        print(
+            "  This final is back in the edited tier. Its edit receipt and vocabulary "
+            "evidence stay in place."
+        )
+    print("Run ghostless build to fold the change into the guide.")
+    return 0
+
+
+def _gold_prose_pieces(root: Path) -> int:
+    pieces = discover(root, load_manifest(root))
+    return sum(1 for piece in pieces if piece.tier == "gold" and piece.kind == "prose")
+
+
+def _learned_placements(root: Path) -> dict[str, int]:
+    """How v0.1 and current pairs land under the provenance defaults."""
+    counts = {"gold": 0, "edited": 0}
+    folder = root / "gold"
+    if not folder.is_dir():
+        return counts
+    for meta_path in sorted(folder.glob("*/meta.json")):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if not isinstance(meta, dict):
+                continue
+            provenance = read_provenance(meta, path=str(meta_path))
+        except (OSError, json.JSONDecodeError, ProjectError):
+            # A malformed pair fails loudly at build time, not during migrate.
+            continue
+        counts[placement_for(provenance)] += 1
+    return counts
+
+
+def _placement_note(tier: str) -> str:
+    match tier:
+        case "gold":
+            return "gold weight, counts toward the bronze threshold"
+        case "edited":
+            return "paragraph length only, capped, not gold"
+        case _:
+            return tier
 
 
 def _cmd_export(args: argparse.Namespace) -> int:
@@ -461,9 +580,14 @@ def _format_build(root: Path, stats: dict[str, object]) -> str:
             f"gold {prose.get('gold', 0) if isinstance(prose, dict) else 0}, "
             f"silver {prose.get('silver', 0) if isinstance(prose, dict) else 0}, "
             f"bronze {prose.get('bronze', 0) if isinstance(prose, dict) else 0}, "
+            f"edited {prose.get('edited', 0) if isinstance(prose, dict) else 0}, "
             f"spoken {spoken_total}"
         ),
         f"bronze format-only: {'yes' if stats.get('bronzeFormatOnly') else 'no'}",
+        (
+            "gold prose pieces: "
+            f"{stats.get('goldPieces', 0)} of {stats.get('goldVoiceMinimum')} to drop bronze from voice"
+        ),
         (
             "median sentence: "
             f"{weighted.get('medianSentenceLength')} words "

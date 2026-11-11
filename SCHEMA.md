@@ -13,7 +13,7 @@ corpus/silver/          tracked    weight 1, prose. Recent writing.
 corpus/bronze/          tracked    weight 0.5, prose. Older writing.
 corpus/spoken/          tracked    spoken layer. Default tier silver.
 transcripts/            tracked    same as corpus/spoken.
-gold/<date-slug>/       tracked    a learn pair: before.md, after.md, meta.json
+gold/<date-slug>/       tracked    the edit library: before.md, after.md, meta.json
 sessions/<session-id>/  tracked    an in-progress edit session (see below)
 holdouts/               tracked    writing kept out of the build on purpose
 voice-guide.md          ignored    written by build
@@ -29,7 +29,7 @@ raw/                    ignored    source recordings and video
 | Path | Git | Read by build |
 | --- | --- | --- |
 | `manifest.json`, `corpus/`, `transcripts/` | tracked | yes |
-| `gold/` (finished edit pairs) | tracked | yes, the `after` files |
+| `gold/` (edit pairs) | tracked | yes, the `after` files, as gold or edited by provenance |
 | `sessions/` (in-progress edits) | tracked | no |
 | `holdouts/` | tracked | no |
 | generated guides, stats, summaries, exports | ignored | `judge` and `export` read them when present |
@@ -62,7 +62,7 @@ sessions/<session-id>/
 }
 ```
 
-`origin` is `ai-first` or `writer-first` (same values as `learn`). `status` is `open` while the writer is still editing, `final` when they are done, and `promoted` once the pair has been copied into `gold/`.
+`origin` is `ai-first` or `writer-first` (same values as `learn`), and it is only a claim about the first draft. It does not by itself decide whether the final is gold; see [Provenance](#provenance). `status` is `open` while the writer is still editing, `final` when they are done, and `promoted` once the pair has been copied into the `gold/` edit library.
 
 `<session-id>` is `YYYY-MM-DD[-<section>][-N]`:
 
@@ -94,6 +94,8 @@ v0.1 wrote a block that ignored `corpus/`, `transcripts/`, and `gold/`. `migrate
 
 It prints the path-scoped `git add` to run after reviewing `git status`. On a directory whose writing was kept out of Git before, prefer that explicit path list over `git add -A`.
 
+`migrate` also reports how existing pairs land: writer-first pairs stay gold, and AI-first pairs are measured as edited until you promote them. No `meta.json` is rewritten; the default is applied on read. See [Provenance](#provenance).
+
 A private remote is optional and always explicit:
 
 ```bash
@@ -114,7 +116,7 @@ Text files are `.md`, `.markdown`, and `.txt`. `README.md` is skipped. A subfold
 {
   "kind": "ghostless",
   "version": 1,
-  "weights": { "gold": 3, "silver": 1, "bronze": 0.5 },
+  "weights": { "gold": 3, "silver": 1, "bronze": 0.5, "edited": 0.5 },
   "goldVoiceMinimum": 10,
   "updateCheck": true,
   "failUnder": 70,
@@ -124,11 +126,13 @@ Text files are `.md`, `.markdown`, and `.txt`. `README.md` is skipped. A subfold
 
 | Field | Meaning |
 | --- | --- |
-| `weights` | Positive multipliers. Defaults above. |
-| `goldVoiceMinimum` | Once this many gold written pieces exist, bronze is format-only. Spoken gold does not count. |
+| `weights` | Positive multipliers for `gold`, `silver`, `bronze`, and `edited`. Defaults above. |
+| `goldVoiceMinimum` | Once this many gold written pieces exist, bronze is format-only. Spoken gold and edited AI-first finals do not count. |
 | `updateCheck` | `false` turns off the daily release check when you run from this project. |
 | `failUnder` | `judge` exits 1 below this score, and when there is no usable voice data to compare against. Banned tells and structural tells lower the score and set `reviewRequired`, but do not fail on their own. |
 | `pieces` | Optional explicit `{path, tier, section, kind}` rows. They override discovery. |
+
+`gold`, `silver`, and `bronze` hold writing the writer stands behind. `edited` holds AI-first finals: model prose the writer revised but has not promoted. An old manifest without an `edited` weight gets the default of 0.5.
 
 Frontmatter on a source file is a simple `key: value` block:
 
@@ -144,11 +148,13 @@ kind: spoken
 
 ## Pools
 
-| Pool | Metrics | Spoken | Bronze after the gold threshold |
-| --- | --- | --- | --- |
-| rhythm | median sentence length, sentence-length mix, contractions per 1k, I per 1k, And/But/So openers | counts, at its tier weight | excluded |
-| diction | em dashes per 1k, questions per 1k, signature phrases, ban list | excluded | excluded |
-| format | median paragraph length | excluded | counts |
+| Pool | Metrics | Spoken | Bronze after the gold threshold | Edited AI-first finals |
+| --- | --- | --- | --- | --- |
+| rhythm | median sentence length, sentence-length mix, contractions per 1k, I per 1k, And/But/So openers | counts, at its tier weight | excluded | excluded |
+| diction | em dashes per 1k, questions per 1k, signature phrases, ban list | excluded | excluded | excluded |
+| format | median paragraph length | excluded | counts | counts, capped (see below) |
+
+An `edited` piece is the `after` file of a learned AI-first pair that the writer has not promoted. Its words are mostly the model's, so it never sets rhythm, signature phrases, or the ban list. It informs paragraph length only, and the whole edited pool is capped at 25% of the weight of the writer-authored prose (`gold` + `silver` + `bronze`). One unevidenced AI draft cannot outvote the corpus, and neither can fifty. The writer's *changes* still count as edit evidence: the diff stays in `meta.json`, `edits-summary.json`, and the guide's "what your edits do" section regardless of tier. A section that holds only edited finals is not offered as a section target; `judge --section` on it fails the same way an unknown section does.
 
 Sentence mix: short is 1–10 words, medium 11–20, long 21+. The median is the smallest value whose cumulative weight reaches half the weight in that pool.
 
@@ -158,6 +164,51 @@ The absent-tell list is the catalog in `ghostless.tells.AI_TELLS` minus any tell
 
 `build` writes weighted targets and the same pools at weight 1 (unweighted), plus a per-tier breakdown. The per-tier bronze numbers still include bronze voice, so you can see what the threshold dropped. `judge` uses the weighted targets. `--section` swaps in that section's weighted targets. The ban list stays global.
 
+`voice-stats.json` also carries `goldPieces`, an `edited` block (pieces, configured weight, counted weight, cap share), a `provenance` count by origin, and per-file `origin`, `confirmation`, `model`, and `tool` in `files[]`.
+
+## Provenance
+
+Provenance is recorded, never measured. It answers two separate questions:
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `origin` | `unaided`, `writer-first`, `ai-first` | Where the first draft came from. |
+| `confirmation` | `none`, `origin`, `promoted` | What the writer says about the final. |
+| `model` | free text or `null` | The model that wrote the first draft, when known. |
+| `tool` | free text or `null` | The harness or app that produced it, when known. |
+
+Corpus files are `unaided` and confirmed by their origin, because they are the writer's own files. A learned pair carries whatever its `meta.json` says. Placement follows from provenance:
+
+| Origin | Confirmation | Tier |
+| --- | --- | --- |
+| `unaided` | `origin` | `gold` (the tier comes from the folder) |
+| `writer-first` | `origin` or `promoted` | `gold` |
+| `ai-first` | `none` | `edited` |
+| `ai-first` | `promoted` | `gold` |
+| unknown (no `origin`) | `none` | `edited` |
+
+Promotion is explicit:
+
+```bash
+ghostless learn --before a.md --after b.md --promote
+ghostless promote 2026-01-02-notes
+ghostless promote 2026-01-02-notes --demote
+```
+
+`promote` prints the edit rate, a warning when the final is still mostly model prose (below a 0.25 edit rate), the gold prose count before and after, and whether bronze just became format-only. Demoting returns the pair to `edited` and keeps the receipt. A `writer-first` pair is gold through its origin; demote only applies to AI-first finals.
+
+### v0.1 pairs
+
+v0.1 wrote `origin` and nothing else. There is no rewrite step: `build` applies this default on read.
+
+| v0.1 `meta.json` | Placement |
+| --- | --- |
+| `origin: writer-first` | `gold` (confirmation is treated as `origin`) |
+| `origin: ai-first` | `edited` (confirmation is treated as `none`) |
+| no `origin` | `edited`, and `build` warns that the pair has no recorded origin |
+
+The old pair still supplies edit evidence either way. Run `ghostless promote <slug>` to lift a specific AI-first final into gold; `ghostless learn --promote` does the same for a new pair.
+
 ## learn meta.json
 
 ```json
@@ -165,13 +216,19 @@ The absent-tell list is the catalog in `ghostless.tells.AI_TELLS` minus any tell
   "date": "2026-01-02",
   "section": "notes",
   "origin": "ai-first",
+  "provenance": {
+    "origin": "ai-first",
+    "confirmation": "none",
+    "model": "claude-sonnet-4-5",
+    "tool": "cursor"
+  },
   "kind": "prose",
   "beforeFile": "before.md",
   "afterFile": "after.md"
 }
 ```
 
-`origin` is `ai-first` (an AI draft the writer edited) or `writer-first` (the writer drafted first). Both finals are gold. Identical before/after pairs cannot be learned twice.
+`provenance` is canonical. The top-level `origin` is a v0.1 mirror kept in sync for older readers. `origin` is `ai-first` (an AI draft the writer edited) or `writer-first` (the writer drafted first); `model` and `tool` are optional and there is no fixed vocabulary. An AI-first final is measured as `edited` unless its `provenance.confirmation` is `promoted`; a writer-first final is gold. Identical before/after pairs cannot be learned twice.
 
 `meta.json` also carries an edit receipt:
 
