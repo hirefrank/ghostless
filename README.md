@@ -128,6 +128,7 @@ ghostless build [--project DIR] [--json]
 ghostless judge draft.md [--section NAME] [--project DIR] [--json]
 ghostless learn --before a.md --after b.md [--section NAME] [--origin ai-first|writer-first] [--model NAME] [--tool NAME] [--promote] [--date YYYY-MM-DD]
 ghostless promote SLUG [--demote] [--project DIR]
+ghostless eval [--holdout N] [--seed N] [--project DIR] [--json]
 ghostless export [--excerpts] [--out PATH] [--project DIR]
 ghostless install-skills [--agent auto|all|name,...] [--force] [--copy] [--no-launcher] [-v]
 ghostless update [--agent ...]
@@ -141,6 +142,16 @@ ghostless --version
 ```
 
 `judge` exits 1 when its mechanical score is under `failUnder` (default 70). Banned tells, tidy frames, and unresolved placeholders are flagged for review. The score does not check factual fidelity or establish that the draft sounds like you. `setup` is an alias of `install-skills`.
+
+`judge` also reports how much corpus it is comparing against: pieces, measured words, written prose words, and sentences. When the sample is small (under 1,500 words or fewer than three pieces) it marks the score low-confidence instead of showing a bare number. The guide has the same sample-size block, so a thin corpus is visible before you trust a score.
+
+`ghostless eval` checks that the score means something. It holds out part of the corpus, builds targets from the rest, judges the held-out pieces, and reports whether the score tracks your edits. With learned pairs, it compares each held-out pair's score with that pair's edit rate (edited token positions divided by aligned positions, the same measure `learn` stores): higher scores should come with lighter edits. With no learned pairs it holds out gold prose pieces instead and reports only whether the targets generalize.
+
+```bash
+ghostless eval [--holdout N] [--seed N] [--project DIR] [--json]
+```
+
+`eval` exits 1 when there is not enough corpus to hold anything out. The split is seeded (`--seed`, default 0), so a rerun is reproducible.
 
 ## The tier model
 
@@ -179,6 +190,8 @@ Spoken lines do not set paragraph length, em dashes, questions, signature phrase
 - Share of sentences opening with And, But, or So
 - Signature phrases that show up at least twice in the written voice pool
 - A ban list made only of catalog AI-tell words and phrases that never appear in that written pool
+
+Measurement reads prose, not formatting. Before counting, it strips YAML frontmatter, fenced and inline code, link and image syntax (link text stays; URLs and image alt text do not), bare URLs, HTML tags and comments, heading lines, list and blockquote markers, horizontal rules, and table rules. A prose-only file measures exactly as it did before; a link URL or a code sample can no longer move a target.
 
 If you tag pieces with `section:` (or a subfolder), `build` writes per-section targets. `judge --section` uses them. The ban list stays global: a tell you use in any counted prose is not banned.
 
@@ -267,7 +280,7 @@ On a newer release, the CLI prints an update notice. Run `ghostless update` to r
 bash tests/run.sh
 ```
 
-Tests cover the stats, the tier and spoken rules, `judge`, `learn`, export, and skill linking into a fake home. The sample corpus is invented. CI runs that suite on Python 3.11, 3.12, and 3.13.
+Tests cover the stats, the tier and spoken rules, corpus cleanup, `judge` confidence, held-out evaluation, `learn`, export, and skill linking into a fake home. The sample corpus is invented. CI runs that suite on Python 3.11, 3.12, and 3.13.
 
 Paths, the manifest, and the stats JSON are in [SCHEMA.md](SCHEMA.md).
 

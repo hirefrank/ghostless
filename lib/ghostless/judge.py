@@ -30,6 +30,14 @@ DISTRIBUTION_MIN_SENTENCES = 8
 EM_DASH_ABS = 1.5
 PLACEHOLDER_RE = re.compile(r"\[WRITER:[^\]]*\]", re.IGNORECASE)
 
+# Sample-size thresholds for the confidence block. 1,500 words matches the
+# provisional-ban-list warning build already writes. Below it, a score is a
+# smoke test; below the high-water marks it is usable but noisy.
+CONFIDENCE_MIN_WORDS = 1500
+CONFIDENCE_MIN_PIECES = 3
+CONFIDENCE_HIGH_WORDS = 5000
+CONFIDENCE_HIGH_PIECES = 10
+
 METRIC_LABELS = {
     "medianSentenceLength": "median sentence length",
     "contractionsPer1k": "contractions per 1k",
@@ -62,6 +70,7 @@ def judge_text(
 ) -> dict[str, object]:
     targets, target_label = _targets(stats, section)
     target_metrics = _metrics(targets)
+    confidence = corpus_confidence(stats, section)
     if not text.strip():
         return {
             "ok": False,
@@ -74,6 +83,8 @@ def judge_text(
             "placeholders": [],
             "draft": {},
             "targets": target_metrics,
+            "confidence": confidence,
+            "lowConfidence": not confidence["trustworthy"],
             "error": "Draft is empty.",
         }
     if not _has_comparable_targets(target_metrics):
@@ -88,6 +99,8 @@ def judge_text(
             "placeholders": [],
             "draft": {},
             "targets": target_metrics,
+            "confidence": confidence,
+            "lowConfidence": not confidence["trustworthy"],
             "error": (
                 "No usable voice data yet. Add writing to corpus/ (or transcripts/) "
                 "and run `ghostless build`, then judge again."
@@ -147,6 +160,8 @@ def judge_text(
         "placeholders": placeholders,
         "draft": draft_metrics,
         "targets": target_metrics,
+        "confidence": confidence,
+        "lowConfidence": not confidence["trustworthy"],
     }
 
 
@@ -161,6 +176,20 @@ def format_report(report: dict[str, object]) -> str:
         lines.append(error)
         lines.append("")
         return "\n".join(lines)
+    confidence = report.get("confidence")
+    if isinstance(confidence, dict):
+        lines.append(
+            f"corpus: {confidence.get('pieces')} pieces, "
+            f"{confidence.get('words')} measured words "
+            f"({confidence.get('writtenWords')} written), "
+            f"{confidence.get('sentences')} sentences"
+        )
+        note = confidence.get("note")
+        level = confidence.get("level")
+        if isinstance(note, str) and note:
+            lines.append(f"confidence: {level} — {note}")
+        else:
+            lines.append(f"confidence: {level}")
     lines.append("This checks measured patterns; it does not verify facts or whether the draft sounds like the writer.")
     if report.get("reviewRequired"):
         lines.append("Review flagged patterns and placeholders before publishing.")
@@ -201,6 +230,98 @@ def format_report(report: dict[str, object]) -> str:
         lines.append(f"Placeholders left for the writer: {len(placeholders)}")
     lines.append("")
     return "\n".join(lines)
+
+
+def corpus_confidence(stats: dict[str, object], section: str | None = None) -> dict[str, object]:
+    """How much corpus is behind a score, and whether it is enough to trust.
+
+    Counts are unweighted so they describe the real sample rather than the
+    weighted target. `words` is everything measured for rhythm (written prose
+    plus spoken lines); `writtenWords` is the prose pool that sets the ban list
+    and diction targets. A section reports that section's pieces and metrics.
+    """
+    block = _unweighted_block(stats, section)
+    metrics = _metrics(block)
+    words = _count(metrics.get("rhythmWords"))
+    written = _count(metrics.get("dictionWords"))
+    sentences = _count(metrics.get("rhythmSentences"))
+    pieces = _piece_count(stats, section)
+    if written <= 0:
+        level = "low"
+        note = (
+            "No written prose in the sample. Only rhythm targets can be compared; "
+            "add prose to corpus/ for a full score."
+        )
+    elif words < CONFIDENCE_MIN_WORDS or pieces < CONFIDENCE_MIN_PIECES:
+        level = "low"
+        note = (
+            f"Small sample: {words} measured words in {pieces} piece(s). "
+            f"Below {CONFIDENCE_MIN_WORDS} words or {CONFIDENCE_MIN_PIECES} pieces, "
+            "treat the score as a smoke test, not a verdict."
+        )
+    elif words < CONFIDENCE_HIGH_WORDS or pieces < CONFIDENCE_HIGH_PIECES:
+        level = "medium"
+        note = (
+            f"Moderate sample: {words} measured words in {pieces} pieces. "
+            "More gold writing would make the score steadier."
+        )
+    else:
+        level = "high"
+        note = ""
+    return {
+        "level": level,
+        "trustworthy": level != "low",
+        "pieces": pieces,
+        "words": words,
+        "writtenWords": written,
+        "sentences": sentences,
+        "minimums": {"words": CONFIDENCE_MIN_WORDS, "pieces": CONFIDENCE_MIN_PIECES},
+        "note": note,
+    }
+
+
+def _unweighted_block(stats: dict[str, object], section: str | None) -> dict[str, object]:
+    if section:
+        sections = stats.get("sections")
+        if isinstance(sections, dict):
+            entry = sections.get(section)
+            if isinstance(entry, dict):
+                block = entry.get("unweighted")
+                if isinstance(block, dict) and _metrics(block):
+                    return block
+                weighted = entry.get("weighted")
+                if isinstance(weighted, dict) and _metrics(weighted):
+                    return weighted
+    block = stats.get("unweighted")
+    if isinstance(block, dict) and _metrics(block):
+        return block
+    return _block(stats.get("weighted"))
+
+
+def _piece_count(stats: dict[str, object], section: str | None) -> int:
+    if section:
+        sections = stats.get("sections")
+        if isinstance(sections, dict):
+            entry = sections.get(section)
+            if isinstance(entry, dict):
+                value = entry.get("pieces")
+                if not isinstance(value, bool) and isinstance(value, (int, float)):
+                    return int(value)
+    counts = stats.get("counts")
+    if isinstance(counts, dict):
+        total = counts.get("total")
+        if not isinstance(total, bool) and isinstance(total, (int, float)):
+            return int(total)
+    files = stats.get("files")
+    if isinstance(files, list):
+        return len(files)
+    return 0
+
+
+def _count(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return int(round(float(value)))
 
 
 def _targets(stats: dict[str, object], section: str | None) -> tuple[dict[str, object], str]:

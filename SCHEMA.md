@@ -166,6 +166,17 @@ The absent-tell list is the catalog in `ghostless.tells.AI_TELLS` minus any tell
 
 `voice-stats.json` also carries `goldPieces`, an `edited` block (pieces, configured weight, counted weight, cap share), a `provenance` count by origin, and per-file `origin`, `confirmation`, `model`, and `tool` in `files[]`.
 
+### Corpus cleanup
+
+Measurement reads prose, not formatting. Every measure (`words`, `paragraphs`, `count_em_dashes`, `split_sentences`, `measure`) runs `text.strip_non_prose` first, which:
+
+- removes YAML frontmatter, HTML comments, and fenced code (including tilde fences and an unclosed final fence),
+- removes inline code, images (including alt text), footnote references, and link reference definitions,
+- unwraps Markdown links (inline and reference) to their text and drops the URL,
+- removes autolinks, bare URLs, HTML tags, ATX heading lines, blockquote markers, list markers, task boxes, horizontal rules, and table rules; table pipes become spaces.
+
+Link text is kept because the writer wrote it. Emphasis markers are kept so `learn` still reports an emphasis-only revision as a structural change. For text with none of this syntax the result is exactly `normalize(text)`, so existing prose measurements do not move.
+
 ## Provenance
 
 Provenance is recorded, never measured. It answers two separate questions:
@@ -208,6 +219,74 @@ v0.1 wrote `origin` and nothing else. There is no rewrite step: `build` applies 
 | no `origin` | `edited`, and `build` warns that the pair has no recorded origin |
 
 The old pair still supplies edit evidence either way. Run `ghostless promote <slug>` to lift a specific AI-first final into gold; `ghostless learn --promote` does the same for a new pair.
+
+
+## judge report and confidence
+
+`judge_text` returns the score plus a `confidence` block describing the sample behind the targets, and a top-level `lowConfidence` boolean:
+
+```json
+{
+  "score": 75,
+  "confidence": {
+    "level": "low",
+    "trustworthy": false,
+    "pieces": 5,
+    "words": 167,
+    "writtenWords": 145,
+    "sentences": 14,
+    "minimums": { "words": 1500, "pieces": 3 },
+    "note": "Small sample: 167 measured words in 5 piece(s). ..."
+  },
+  "lowConfidence": true
+}
+```
+
+Counts come from the unweighted block, so they describe the real sample rather than the weighted target. `words` is everything measured for rhythm (written prose plus spoken lines); `writtenWords` is the prose pool that sets diction and the ban list. `--section` reports that section's pieces and metrics. Levels:
+
+| Level | Condition | Meaning |
+| --- | --- | --- |
+| low | no written prose, or fewer than 1,500 measured words, or fewer than 3 pieces | score is a smoke test, not a verdict |
+| medium | under 5,000 words or under 10 pieces | usable, but noisy |
+| high | 5,000+ words and 10+ pieces | sample supports the score |
+
+`voice-guide.md` carries the same numbers under `## Sample size`, and the human-readable judge report prints a `corpus:` line and a `confidence:` line.
+
+## Held-out evaluation
+
+`ghostless eval` (module `ghostless.eval`) tests whether the score predicts acceptance rather than adding metrics.
+
+1. Read every `gold/<slug>/` pair and recompute its edit rate from `before.md` and `after.md` with `ghostless.learn.diff_texts` (#10). `meta.json` is not trusted for this, so old pairs stay on the current definition.
+2. Split the pairs into train and holdout with a seeded shuffle (`--seed`, default 0; `--holdout`, default about a third, at least one).
+3. Build targets from the corpus with the held-out pairs' `after.md` pieces removed. Held-out finals never enter training.
+4. Judge each held-out `before` draft against those targets, then compare scores with the pairs' edit rates. A pair with an edit rate at or below 0.15 counts as accepted.
+5. Report Pearson and Spearman correlation (Spearman is the direction used, because it is rank-based), the mean score for accepted vs revised drafts, and the item-level rows. A score that predicts acceptance correlates negatively with edit rate.
+
+With no learned pairs, `eval` holds out gold prose pieces instead, judges them, and reports mean score and pass rate. That is only a generalization check: `acceptance` is `null` and no correlation is claimed.
+
+```json
+{
+  "ok": true,
+  "mode": "edits",
+  "seed": 0,
+  "totalCount": 4,
+  "holdoutCount": 3,
+  "train": { "pieces": 1, "words": 24, "sentences": 4, "confidence": "low" },
+  "holdout": { "pieces": 3, "judged": 3, "meanScore": 72.67, "meanEditRate": 0.3, "passRate": 0.67 },
+  "correlation": { "pearson": -1.0, "spearman": -1.0, "n": 3 },
+  "acceptance": {
+    "threshold": 0.15,
+    "accepted": { "count": 2, "meanScore": 100.0 },
+    "revised": { "count": 1, "meanScore": 18.0 },
+    "scoreGap": 82.0
+  },
+  "direction": "negative",
+  "verdict": "Higher scores came with lighter edits (r=-1.00, n=3).",
+  "items": []
+}
+```
+
+Correlations need at least three judged pairs; below that the fields are `null` and the verdict says so. `eval` exits 1 when there is not enough corpus to hold anything out.
 
 ## learn meta.json
 
