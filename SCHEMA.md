@@ -339,7 +339,7 @@ Correlations need at least three judged pairs; below that the fields are `null` 
 
 ## Suite data
 
-`~/.ghostless/` (or `GHOSTLESS_HOME`) holds the installer state: `suite-root`, `version`, `config.json`, `last-update-check`, `logs/`. It is not the corpus. `config.json` `{"updateCheck": false}` disables the release check on this machine. `GHOSTLESS_NO_UPDATE=1` and `GHOSTLESS_UPDATE_CHECK=0` do the same.
+`~/.ghostless/` (or `GHOSTLESS_HOME`) holds the installer state: `suite-root` for persistent installs, `version`, `config.json`, `last-update-check`, `logs/`. It is not the corpus. A one-off npx/pnpm run copies skills and does not replace `suite-root` with its temporary cache path. `config.json` `{"updateCheck": false}` disables the release check on this machine. `GHOSTLESS_NO_UPDATE=1` and `GHOSTLESS_UPDATE_CHECK=0` do the same.
 
 Skill links, from `lib/agents.sh`:
 

@@ -13,6 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@unittest.skipIf(os.name == "nt", "legacy Bash launcher tests run on Unix only")
 class HarnessTests(unittest.TestCase):
     def test_agent_directories_match_the_suite_map(self) -> None:
         script = """

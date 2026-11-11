@@ -4,14 +4,13 @@
   "description": "Local voice guide for AI drafts that sound like you. Learns from your edits.",
   "license": "MIT",
   "bin": {
-    "ghostless": "bin/ghostless"
+    "ghostless": "bin/ghostless.cjs"
   },
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "test": "bash tests/run.sh",
-    "prepack": "find . -path ./node_modules -prune -o -name '__pycache__' -type d -prune -exec rm -rf {} +"
+    "test": "node tests/run.cjs"
   },
   "files": [
     "bin/",
