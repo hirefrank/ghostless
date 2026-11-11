@@ -415,6 +415,7 @@ def _cmd_judge(args: argparse.Namespace) -> int:
         stats,
         section=args.section,
         fail_under=fail_under,
+        placeholder=manifest.get("placeholder") if isinstance(manifest.get("placeholder"), str) else None,
     )
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False))
@@ -841,6 +842,8 @@ def build_voice(root: Path) -> dict[str, object]:
     stats["generatedAt"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     fail_under = manifest.get("failUnder")
     stats["failUnder"] = fail_under if isinstance(fail_under, int) else 70
+    placeholder = manifest.get("placeholder")
+    stats["placeholder"] = placeholder if isinstance(placeholder, str) else None
     # A derived snapshot for the guide. `rules.json` stays the source of truth
     # for decisions, and build never writes it.
     stats["rules"] = rules_summary(root, edits=edits)

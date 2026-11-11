@@ -107,9 +107,11 @@ def _rules(stats: dict[str, object], *, paste: bool) -> list[str]:
     lines = ["## Rules", ""]
     lines.append("- Use the targets above as diagnostics. They are counts from the writer's own text, not a measure of writing quality.")
     lines.append("- Review words and phrases on the absent-tell list in context, especially with a small corpus.")
+    token = stats.get("placeholder")
+    token = token if isinstance(token, str) and token else "WRITER"
     lines.append(
         "- Do not invent quotes, statistics, anecdotes, or opinions. "
-        "Where the piece needs the writer's take, leave `[WRITER: your take]` and say what is missing."
+        f"Where the piece needs the writer's take, leave `[{token}: your take]` and say what is missing."
     )
     lines.append("- Avoid the tidy frames models default to: \"it's not X, it's Y\", neat triplets, and em dashes stacked past the target.")
     if stats.get("bronzeFormatOnly"):
