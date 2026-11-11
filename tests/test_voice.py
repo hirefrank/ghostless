@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -20,7 +23,16 @@ from ghostless.cli import build_voice, main  # noqa: E402
 from ghostless.judge import judge_text  # noqa: E402
 from ghostless.learn import diff_texts, learn_edit  # noqa: E402
 from ghostless.paths import ProjectError  # noqa: E402
-from ghostless.project import discover, init_project, load_manifest  # noqa: E402
+from ghostless.project import (  # noqa: E402
+    GITIGNORE_MARKER,
+    LEGACY_GITIGNORE_BLOCK,
+    LEGACY_GITIGNORE_MARKER,
+    discover,
+    init_project,
+    load_manifest,
+    migrate_project,
+    new_session_id,
+)
 from ghostless.stats import Piece, compile_stats, pools_for, summarize, weighted_median  # noqa: E402
 from ghostless.text import measure, split_sentences  # noqa: E402
 from ghostless.tells import structural_tells  # noqa: E402
@@ -279,21 +291,181 @@ class LearnTests(unittest.TestCase):
 
 
 class ProjectTests(unittest.TestCase):
-    def test_init_gitignore_and_refuses_second_time(self) -> None:
+    def test_init_writes_data_repo_rules_and_local_git(self) -> None:
+        _require_git(self)
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "voice"
             self.assertEqual(main(["init", str(project)]), 0)
             ignore = (project / ".gitignore").read_text(encoding="utf-8")
-            self.assertIn("corpus/", ignore)
-            self.assertIn("transcripts/", ignore)
-            self.assertIn("gold/", ignore)
+            self.assertIn(GITIGNORE_MARKER, ignore)
+            self.assertNotIn(LEGACY_GITIGNORE_MARKER, ignore)
+            self.assertTrue((project / ".git").is_dir())
+            self.assertEqual(_git(project, "remote").stdout.strip(), "")
+            # The writing, finished edit pairs, sessions, and holdouts are tracked.
+            for tracked in (
+                "manifest.json",
+                "corpus/gold/desk.md",
+                "corpus/silver/recent.md",
+                "transcripts/talk.md",
+                "gold/2026-01-02-notes/after.md",
+                "sessions/2026-01-02-notes/before.md",
+                "holdouts/kept.md",
+            ):
+                self.assertFalse(_ignored(project, tracked), tracked)
+            # Generated output, drafts, temp files, and raw media stay out.
+            for ignored in (
+                "voice-stats.json",
+                "voice-guide.md",
+                "voice-guide.paste.md",
+                "notes.paste.md",
+                "edits-summary.json",
+                "edits-summary.md",
+                "stats/summary.json",
+                "exports/guide.md",
+                "drafts/ai.md",
+                "raw/take.wav",
+                "take.mp3",
+                "take.m4a",
+                "clip.mp4",
+                "notes.md.tmp",
+                ".DS_Store",
+            ):
+                self.assertTrue(_ignored(project, ignored), ignored)
             manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["kind"], "ghostless")
             self.assertEqual(manifest["weights"]["gold"], 3)
             self.assertEqual(manifest["goldVoiceMinimum"], 10)
             self.assertEqual(main(["init", str(project)]), 2)
             # Appending twice must not duplicate the block.
-            self.assertEqual(ignore.count("corpus/"), 1)
+            self.assertEqual(ignore.count(GITIGNORE_MARKER), 1)
+
+    def test_init_can_skip_git(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            self.assertEqual(main(["init", "--no-git", str(project)]), 0)
+            self.assertFalse((project / ".git").exists())
+            ignore = (project / ".gitignore").read_text(encoding="utf-8")
+            self.assertIn(GITIGNORE_MARKER, ignore)
+
+    def test_rebuild_does_not_dirty_git(self) -> None:
+        _require_git(self)
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            init_project(project)
+            (project / "corpus" / "gold" / "desk.md").write_text(
+                "I write at the desk.\n\nI stop when the coffee is cold.\n",
+                encoding="utf-8",
+            )
+            _commit_all(project)
+            self.assertEqual(_git(project, "status", "--porcelain").stdout, "")
+
+            self.assertEqual(main(["build", "--project", str(project)]), 0)
+            self.assertEqual(main(["export", "--project", str(project)]), 0)
+            self.assertTrue((project / "voice-stats.json").is_file())
+            self.assertTrue((project / "voice-guide.md").is_file())
+            self.assertTrue((project / "voice-guide.paste.md").is_file())
+            self.assertEqual(_git(project, "status", "--porcelain").stdout, "")
+
+    def test_migrate_v01_project_keeps_writing_out_of_git(self) -> None:
+        _require_git(self)
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _write_v01_project(Path(tmp) / "voice")
+            before = (project / ".gitignore").read_text(encoding="utf-8")
+            self.assertIn(LEGACY_GITIGNORE_MARKER, before)
+
+            self.assertEqual(main(["migrate", "--project", str(project)]), 0)
+            ignore = (project / ".gitignore").read_text(encoding="utf-8")
+            self.assertNotIn(LEGACY_GITIGNORE_MARKER, ignore)
+            self.assertIn(GITIGNORE_MARKER, ignore)
+            self.assertEqual(ignore.count(GITIGNORE_MARKER), 1)
+            # Rules the writer wrote themselves survive.
+            self.assertIn("node_modules/", ignore)
+
+            # Nothing was staged, committed, or pushed by the migration.
+            self.assertEqual(_git(project, "ls-files").stdout.strip(), "")
+            self.assertEqual(_git(project, "diff", "--cached", "--name-only").stdout.strip(), "")
+            self.assertNotEqual(_git(project, "rev-parse", "--verify", "HEAD").returncode, 0)
+            self.assertEqual(_git(project, "remote").stdout.strip(), "")
+
+            # Writing and finished edit pairs are trackable; generated files,
+            # drafts, and raw media are still ignored.
+            for tracked in (
+                "corpus/gold/desk.md",
+                "gold/2026-01-02-notes/before.md",
+                "gold/2026-01-02-notes/after.md",
+            ):
+                self.assertFalse(_ignored(project, tracked), tracked)
+            for ignored in ("voice-stats.json", "drafts/ai.md", "raw/take.wav", "notes.md.tmp"):
+                self.assertTrue(_ignored(project, ignored), ignored)
+
+            # Missing v0.1 directories were added, and nothing was deleted.
+            self.assertTrue((project / "corpus" / "silver" / ".gitkeep").is_file())
+            self.assertTrue((project / "transcripts" / ".gitkeep").is_file())
+            self.assertTrue((project / "sessions" / ".gitkeep").is_file())
+            self.assertTrue((project / "holdouts" / ".gitkeep").is_file())
+            self.assertTrue((project / "corpus" / "gold" / "desk.md").is_file())
+
+            # A second run is a no-op.
+            self.assertEqual(main(["migrate", "--project", str(project)]), 0)
+            self.assertEqual((project / ".gitignore").read_text(encoding="utf-8"), ignore)
+
+    def test_init_refuses_a_v01_ignore_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _write_v01_project(Path(tmp) / "voice")
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                code = main(["init", str(project), "--force"])
+            self.assertEqual(code, 2)
+            self.assertIn("ghostless migrate", stderr.getvalue())
+            self.assertFalse((project / ".git").exists())
+
+    def test_migrate_refuses_a_hand_edited_v01_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _write_v01_project(Path(tmp) / "voice")
+            (project / ".gitignore").write_text(
+                LEGACY_GITIGNORE_BLOCK.replace("gold/\n", ""),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ProjectError, "was edited"):
+                migrate_project(project)
+            # Fail closed: the edited rules are left exactly as they were.
+            self.assertNotIn(
+                GITIGNORE_MARKER,
+                (project / ".gitignore").read_text(encoding="utf-8"),
+            )
+
+    def test_sessions_and_holdouts_are_not_measured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            init_project(project, git=False)
+            (project / "corpus" / "gold" / "desk.md").write_text("I write.\n", encoding="utf-8")
+            (project / "sessions" / "2026-01-02-notes").mkdir(parents=True)
+            (project / "sessions" / "2026-01-02-notes" / "before.md").write_text(
+                "An AI draft.\n", encoding="utf-8"
+            )
+            (project / "holdouts" / "kept.md").write_text("Held out.\n", encoding="utf-8")
+            pieces = discover(project, load_manifest(project))
+            self.assertEqual([piece.path for piece in pieces], ["corpus/gold/desk.md"])
+
+    def test_session_ids_follow_the_learn_slug(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            init_project(project, git=False)
+            self.assertEqual(
+                new_session_id(project, date="2026-01-02", section="Field Notes"),
+                "2026-01-02-field-notes",
+            )
+            (project / "sessions" / "2026-01-02-field-notes").mkdir()
+            self.assertEqual(
+                new_session_id(project, date="2026-01-02", section="Field Notes"),
+                "2026-01-02-field-notes-2",
+            )
+            self.assertEqual(
+                new_session_id(project, date="2026-01-03"),
+                "2026-01-03",
+            )
+            with self.assertRaisesRegex(ProjectError, "YYYY-MM-DD"):
+                new_session_id(project, date="01/02/2026")
 
     def test_export_excerpts_are_opt_in(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -393,6 +565,102 @@ class UpdatePlanTests(unittest.TestCase):
 def _diction_text(pieces: list[Piece]) -> str:
     summary = summarize(pieces, bronze_format_only=True, use_weights=True)
     return " ".join(summary["tellsInUse"])
+
+
+def _require_git(test: unittest.TestCase) -> None:
+    if shutil.which("git") is None:
+        test.skipTest("git is not installed")
+
+
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _ignored(cwd: Path, relative: str) -> bool:
+    """True when .gitignore matches the path, using Git's own matcher."""
+    result = _git(cwd, "check-ignore", "--no-index", "-q", relative)
+    if result.returncode not in (0, 1):
+        raise AssertionError(result.stderr)
+    return result.returncode == 0
+
+
+def _commit_all(root: Path) -> None:
+    added = _git(root, "add", "-A")
+    if added.returncode != 0:
+        raise AssertionError(added.stderr)
+    committed = _git(
+        root,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "-q",
+        "-m",
+        "test: voice data",
+    )
+    if committed.returncode != 0:
+        raise AssertionError(committed.stderr)
+
+
+def _write_v01_project(root: Path) -> Path:
+    """A representative v0.1 project: old ignore block, writing, generated output."""
+    for relative in ("corpus/gold", "corpus/silver", "corpus/bronze", "corpus/spoken", "transcripts"):
+        (root / relative).mkdir(parents=True)
+    pair = root / "gold" / "2026-01-02-notes"
+    pair.mkdir(parents=True)
+    (root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "kind": "ghostless",
+                "version": 1,
+                "weights": {"gold": 3, "silver": 1, "bronze": 0.5},
+                "goldVoiceMinimum": 10,
+                "updateCheck": True,
+                "failUnder": 70,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (root / "corpus" / "gold" / "desk.md").write_text(
+        "I write at the desk.\n\nI stop when the coffee is cold.\n",
+        encoding="utf-8",
+    )
+    (pair / "before.md").write_text("I write at my desk.\n", encoding="utf-8")
+    (pair / "after.md").write_text("I write at the desk.\n", encoding="utf-8")
+    (pair / "meta.json").write_text(
+        json.dumps(
+            {
+                "date": "2026-01-02",
+                "section": "notes",
+                "origin": "ai-first",
+                "kind": "prose",
+                "beforeFile": "before.md",
+                "afterFile": "after.md",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (root / "voice-stats.json").write_text("{}\n", encoding="utf-8")
+    (root / "voice-guide.md").write_text("# voice guide\n", encoding="utf-8")
+    (root / "drafts").mkdir()
+    (root / "drafts" / "ai.md").write_text("An AI draft.\n", encoding="utf-8")
+    (root / "raw").mkdir()
+    (root / "raw" / "take.wav").write_bytes(b"RIFF")
+    (root / ".gitignore").write_text(
+        "node_modules/\n\n" + LEGACY_GITIGNORE_BLOCK,
+        encoding="utf-8",
+    )
+    return root
 
 
 class VersionFileTests(unittest.TestCase):

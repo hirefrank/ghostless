@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The voice directory is a voice-data Git repository: `init` writes ignore rules that track selected writing, finished edit pairs, sessions, and holdouts while ignoring generated guides, stats, drafts, temp files, and raw media, then creates local history with no remote and no commit.
+- `ghostless migrate` upgrades a v0.1 voice directory (old "do not commit" ignore block) and stages nothing, so writing that was previously outside Git is reviewed before it is committed.
+- Local storage and an optional private remote are documented separately. ghostless never adds a remote or pushes.
+
 ## v0.1.0 — 2026-11-11
 
 - `init`, `build`, `judge`, `learn`, `export`, `install-skills`, and `update`.

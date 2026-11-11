@@ -15,7 +15,15 @@ from ghostless.guide import render_guide
 from ghostless.judge import format_report, judge_text
 from ghostless.learn import learn_edit, load_edit_summary, refresh_edit_summary
 from ghostless.paths import ProjectError, data_home, find_project, suite_root, version
-from ghostless.project import discover, init_project, load_manifest
+from ghostless.project import (
+    TRACKED_PATHS,
+    discover,
+    ensure_local_git,
+    git_toplevel,
+    init_project,
+    load_manifest,
+    migrate_project,
+)
 from ghostless.stats import compile_stats
 
 EPILOG = """
@@ -48,6 +56,22 @@ def main(argv: list[str] | None = None) -> int:
     init_parser.add_argument("directory", nargs="?", help="Project directory (default: ./voice)")
     init_parser.add_argument("--here", action="store_true", help="Use the current directory")
     init_parser.add_argument("--force", action="store_true", help="Rewrite manifest defaults")
+    init_parser.add_argument(
+        "--no-git",
+        action="store_true",
+        help="Do not create local Git history (ignore rules are still written)",
+    )
+
+    migrate_parser = sub.add_parser(
+        "migrate",
+        help="Upgrade a v0.1 voice directory to the voice-data repository layout",
+    )
+    _add_project(migrate_parser)
+    migrate_parser.add_argument(
+        "--no-git",
+        action="store_true",
+        help="Do not create local Git history (ignore rules are still written)",
+    )
 
     build_parser = sub.add_parser("build", help="Compute weighted stats and write voice-guide.md")
     _add_project(build_parser)
@@ -129,6 +153,8 @@ def _dispatch(args: argparse.Namespace) -> int:
     match command:
         case "init":
             return _cmd_init(args)
+        case "migrate":
+            return _cmd_migrate(args)
         case "build":
             return _cmd_build(args)
         case "judge":
@@ -161,16 +187,65 @@ def _cmd_init(args: argparse.Namespace) -> int:
         directory = Path(args.directory)
     else:
         directory = Path.cwd() / "voice"
-    created = init_project(directory, force=args.force)
+    created = init_project(directory, force=args.force, git=False)
     print(f"Created {created.resolve()}")
     print("  manifest.json")
     print("  corpus/gold  corpus/silver  corpus/bronze  corpus/spoken")
-    print("  transcripts/  gold/")
+    print("  transcripts/  gold/  sessions/  holdouts/")
+    _report_git(created, skip=args.no_git)
     print("Next:")
     print("  Put your own writing in corpus/gold (best), corpus/silver, and corpus/bronze.")
     print("  Put transcripts of your speech in corpus/spoken (your lines only).")
     print("  ghostless build")
     return 0
+
+
+def _cmd_migrate(args: argparse.Namespace) -> int:
+    root = _project(args.project)
+    result = migrate_project(root)
+    created = result.get("created")
+    print(f"Voice data: {root}")
+    if result.get("legacy_removed"):
+        print("  .gitignore: removed the v0.1 block that kept corpus/, transcripts/, and gold/ out of Git")
+    if result.get("changed"):
+        print("  .gitignore: now tracks writing and ignores generated files, drafts, and raw media")
+    else:
+        print("  .gitignore: already on the voice-data layout")
+    if isinstance(created, list) and created:
+        print(f"  created {', '.join(str(item) for item in created)}")
+    _report_git(root, skip=args.no_git)
+    print("Nothing was staged, committed, or pushed, and no remote was added.")
+    print("Next, review what Git would track, then add it on purpose:")
+    print(f"  cd {root}")
+    print("  git status")
+    print("  git add -- " + " ".join(TRACKED_PATHS))
+    print('  git commit -m "Start voice-data history"')
+    print("Optional private remote. Pushing sends your writing to that host:")
+    print("  git remote add origin <private-repo-url>")
+    print("  git push -u origin HEAD")
+    return 0
+
+
+def _report_git(root: Path, *, skip: bool) -> None:
+    if skip:
+        print("Git: skipped (--no-git). No repository was created.")
+        return
+    state = ensure_local_git(root)
+    match state:
+        case "created":
+            print(f"Git: created local history at {root} (no remote, nothing pushed).")
+        case "existing":
+            print(f"Git: using the existing local repository at {root} (no remote, nothing pushed).")
+        case "unavailable":
+            print("Git: unavailable; install git to version this voice data.")
+        case _ if state.startswith("parent:"):
+            print(
+                f"Git: {root} is inside the existing repository at {state.removeprefix('parent:')}; "
+                "no nested repository was created."
+            )
+        case _:
+            print(f"Git: {state}")
+    print("  Nothing was staged or committed. Commit when you choose.")
 
 
 def _cmd_build(args: argparse.Namespace) -> int:
