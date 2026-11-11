@@ -136,6 +136,7 @@ ghostless promote SLUG [--demote] [--project DIR]
 ghostless start draft.md [--section NAME] [--origin ai-first|writer-first] [--source REF] [--project DIR] [--json]
 ghostless finish [final.md] [--session ID] [--note TEXT] [--project DIR] [--json]
 ghostless sessions [--project DIR] [--json]
+ghostless rules [list|confirm|reject|retire] [ID] [--section NAME] [--project DIR] [--json]
 ghostless snapshot --session ID [--project DIR]
 ghostless eval [--holdout N] [--seed N] [--project DIR] [--json]
 ghostless export [--excerpts] [--out PATH] [--project DIR]
@@ -236,6 +237,20 @@ Where the final is measured depends on who wrote the first draft and whether you
 - `ghostless promote <slug>` lifts one AI-first final into gold after you have rewritten it in your own words. It prints the edit rate, warns when the final is still mostly model prose, and shows the gold count and bronze threshold before and after.
 
 The pair itself is kept either way. Promotion changes provenance, not evidence: the diff and vocabulary still feed the guide's "what your edits do" section.
+
+### Voice rules from edits
+
+Edit history can suggest guidance, but one changed word is not a rule. `build` mines recurring cuts and additions (`cut:delve`, `add:honestly`) and treats them as hypotheses until you decide. A word becomes a candidate only after it appears in three distinct finished pieces (`"rules": {"minimumSupport": 3}` in `manifest.json` changes the threshold). Nothing becomes an active rule without your confirmation:
+
+```bash
+ghostless rules
+ghostless rules confirm cut:delve --section notes
+ghostless rules reject add:honestly
+ghostless rules retire cut:very
+ghostless build
+```
+
+`confirm` records the receipt references it rests on. `reject` is permanent: a rejected rule is not reintroduced by later rebuilds. Decisions live in tracked `rules.json`; rebuilds read it and never rewrite it. The guide's `## Voice rules` section lists confirmed rules separately from hypotheses, and measured targets stay under `## Targets`.
 
 ## Provenance and promotion
 

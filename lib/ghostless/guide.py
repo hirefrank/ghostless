@@ -45,6 +45,7 @@ def _render(
         )
     lines.append("")
     lines.extend(_rules(stats, paste=paste))
+    lines.extend(_voice_rules(stats))
     lines.append("## Targets")
     lines.append("")
     lines.append("| Metric | Weighted | Unweighted |")
@@ -126,6 +127,110 @@ def _rules(stats: dict[str, object], *, paste: bool) -> list[str]:
         lines.append("- Corpus files stay on this machine. Do not upload them.")
     lines.append("")
     return lines
+
+
+def _voice_rules(stats: dict[str, object]) -> list[str]:
+    block = _block(stats.get("rules"))
+    lines = ["## Voice rules", ""]
+    if not block:
+        lines.append(
+            "No rule data in this build. Run `ghostless build` to mine candidates from "
+            "your edit receipts."
+        )
+        lines.append("")
+        return lines
+    minimum = block.get("minimumSupport")
+    if isinstance(minimum, bool) or not isinstance(minimum, int):
+        minimum = 3
+    lines.append(
+        f"Rules come from your edit receipts, not from the measured targets. A word becomes "
+        f"a candidate only after it recurs across {minimum} distinct pieces, and it is active "
+        "only after you confirm it. Measured targets live under Targets. Hypotheses are not "
+        "instructions; they are waiting for your decision."
+    )
+    lines.append("")
+
+    confirmed = block.get("confirmed")
+    confirmed = confirmed if isinstance(confirmed, list) else []
+    lines.append("### Confirmed rules")
+    lines.append("")
+    if confirmed:
+        for item in confirmed:
+            if isinstance(item, dict):
+                lines.append(_rule_line(item, confirmed=True))
+    else:
+        lines.append("None yet. Review a hypothesis, then run `ghostless rules confirm <id>`.")
+    lines.append("")
+
+    hypotheses = block.get("hypotheses")
+    hypotheses = hypotheses if isinstance(hypotheses, list) else []
+    lines.append("### Hypotheses (unconfirmed, not active)")
+    lines.append("")
+    if hypotheses:
+        for item in hypotheses:
+            if not isinstance(item, dict):
+                continue
+            lines.append(_rule_line(item, confirmed=False))
+            examples = item.get("examples")
+            if isinstance(examples, list):
+                for example in examples[:1]:
+                    if not isinstance(example, dict):
+                        continue
+                    before = str(example.get("before_snippet") or "").strip()
+                    after = str(example.get("after_snippet") or "").strip()
+                    if before or after:
+                        lines.append(
+                            f"  - {example.get('slug')}: \"{before}\" → \"{after}\""
+                        )
+            counterexamples = item.get("counterexamples")
+            if isinstance(counterexamples, list) and counterexamples:
+                lines.append(
+                    f"  - Counterexample: {len(counterexamples)} piece(s) kept the word, "
+                    "so read the pattern before trusting it."
+                )
+    else:
+        lines.append("None yet. A pattern needs repeated support before it appears here.")
+    lines.append("")
+
+    suppressed = [
+        item
+        for key in ("rejected", "retired")
+        for item in (block.get(key) if isinstance(block.get(key), list) else [])
+        if isinstance(item, dict)
+    ]
+    if suppressed:
+        parts = [
+            f"{item.get('id')} ({item.get('status')})"
+            for item in suppressed
+            if item.get("id")
+        ]
+        lines.append("Rejected or retired (not active): " + ", ".join(parts) + ".")
+        lines.append("")
+    return lines
+
+
+def _rule_line(item: dict[str, object], *, confirmed: bool) -> str:
+    kind = str(item.get("kind") or "cut")
+    verb = "Cut" if kind == "cut" else "Add"
+    word = item.get("word") or item.get("id") or "?"
+    support = item.get("support")
+    scope = item.get("scope")
+    detail: list[str] = []
+    if isinstance(support, int) and not isinstance(support, bool):
+        detail.append(f"{support} piece(s)")
+    sections = item.get("sections")
+    if isinstance(sections, list) and sections:
+        detail.append("sections: " + ", ".join(str(name) for name in sections))
+    if confirmed:
+        detail.append(f"scope: {scope}" if isinstance(scope, str) and scope else "scope: all sections")
+        at = item.get("confirmedAt")
+        if isinstance(at, str) and at:
+            detail.append(f"confirmed {at[:10]}")
+        receipts = item.get("receipts")
+        if isinstance(receipts, list) and receipts:
+            detail.append("receipts: " + ", ".join(str(receipt) for receipt in receipts[:4]))
+    suffix = f" ({'; '.join(detail)})" if detail else ""
+    return f"- {verb} `{word}`{suffix}"
 
 
 def _sample_size(stats: dict[str, object]) -> list[str]:

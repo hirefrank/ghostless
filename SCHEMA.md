@@ -15,6 +15,7 @@ corpus/spoken/          tracked    spoken layer. Default tier silver.
 transcripts/            tracked    same as corpus/spoken.
 gold/<date-slug>/       tracked    the edit library: before.md, after.md, meta.json
 sessions/<session-id>/  tracked    an in-progress edit session (see below)
+rules.json              tracked    writer decisions about mined voice rules
 holdouts/               tracked    writing kept out of the build on purpose
 voice-guide.md          ignored    written by build
 voice-stats.json        ignored    written by build
@@ -31,6 +32,7 @@ raw/                    ignored    source recordings and video
 | `manifest.json`, `corpus/`, `transcripts/` | tracked | yes |
 | `gold/` (edit pairs) | tracked | yes, the `after` files, as gold or edited by provenance |
 | `sessions/` (in-progress edits) | tracked | no |
+| `rules.json` (voice-rule decisions) | tracked | yes, as confirmed rules |
 | `holdouts/` | tracked | no |
 | generated guides, stats, summaries, exports | ignored | `judge` and `export` read them when present |
 | `drafts/`, `raw/`, temp files | ignored | no |
@@ -143,6 +145,7 @@ Text files are `.md`, `.markdown`, and `.txt`. `README.md` is skipped. A subfold
 | `weights` | Positive multipliers for `gold`, `silver`, `bronze`, and `edited`. Defaults above. |
 | `goldVoiceMinimum` | Once this many gold written pieces exist, bronze is format-only. Spoken gold and edited AI-first finals do not count. |
 | `updateCheck` | `false` turns off the daily release check when you run from this project. |
+| `rules` | Optional `{"minimumSupport": N}`. Distinct pieces a cut/add word must recur in before it becomes a rule candidate. Default 3. |
 | `failUnder` | `judge` exits 1 below this score, and when there is no usable voice data to compare against. Banned tells and structural tells lower the score and set `reviewRequired`, but do not fail on their own. |
 | `pieces` | Optional explicit `{path, tier, section, kind}` rows. They override discovery. |
 
@@ -178,7 +181,7 @@ The absent-tell list is the catalog in `ghostless.tells.AI_TELLS` minus any tell
 
 `build` writes weighted targets and the same pools at weight 1 (unweighted), plus a per-tier breakdown. The per-tier bronze numbers still include bronze voice, so you can see what the threshold dropped. `judge` uses the weighted targets. `--section` swaps in that section's weighted targets. The ban list stays global.
 
-`voice-stats.json` also carries `goldPieces`, an `edited` block (pieces, configured weight, counted weight, cap share), a `provenance` count by origin, and per-file `origin`, `confirmation`, `model`, and `tool` in `files[]`.
+`voice-stats.json` also carries `goldPieces`, an `edited` block (pieces, configured weight, counted weight, cap share), a `provenance` count by origin, per-file `origin`, `confirmation`, `model`, and `tool` in `files[]`, and a derived `rules` snapshot (see [Voice rules](#voice-rules)).
 
 ### Corpus cleanup
 
@@ -336,6 +339,62 @@ Correlations need at least three judged pairs; below that the fields are `null` 
 | `paragraphsBefore`, `paragraphsAfter`, `sentencesBefore`, `sentencesAfter` | Structural counts for the same receipt. |
 
 `removedWords` and `addedWords` stay bag-of-words vocabulary lists for the repeated cut/add rollups. `wordsRemoved` and `wordsAdded` are sequence-aware: each is deletions or insertions plus replacements. `edits-summary.json` rolls up those counts, the sentence-length shift, the contraction shift, the edit rate, moves, structure, and words cut or added in more than one distinct edit pair.
+
+## Voice rules
+
+`build` mines `edits-summary.json` for words the writer cuts or adds across distinct finished pieces. A word is a *candidate* only after it recurs in `rules.minimumSupport` distinct pieces (default 3). One or two edits are never enough. Even a qualifying candidate is only a hypothesis until the writer confirms it.
+
+Two pattern kinds exist in v0.1:
+
+| Id | Meaning |
+| --- | --- |
+| `cut:<word>` | the writer removes `<word>` |
+| `add:<word>` | the writer adds `<word>` |
+
+Structural patterns (repeated paragraph moves, punctuation changes) are not candidates yet; `mine_candidates` in `lib/ghostless/rules.py` is the single place to extend.
+
+Each candidate carries `support` (distinct pieces), `pieces`, `sections`, `origins`, up to three `examples` (`{slug, receipt, before_snippet, after_snippet}`), and up to three `counterexamples` (`{slug, receipt, snippet}`: pieces that had the word on the relevant side but did not make the edit). `receipt` points at `sessions/<id>/receipt.json` when a finished session produced the pair, otherwise at `gold/<slug>`.
+
+`rules.json` at the project root is tracked and is the single source of truth for decisions. `build` reads it; only `ghostless rules` writes it.
+
+```json
+{
+  "kind": "ghostless-rules",
+  "version": 1,
+  "confirmed": {
+    "cut:delve": {
+      "at": "2026-11-11T09:00:00Z",
+      "receipts": ["sessions/2026-01-02-notes/receipt.json", "gold/2026-01-04-notes"],
+      "pieces": ["2026-01-02-notes", "2026-01-04-notes", "2026-01-06-notes"]
+    }
+  },
+  "rejected": {
+    "add:honestly": { "at": "2026-11-11T09:05:00Z" }
+  },
+  "retired": {
+    "cut:very": { "at": "2026-11-11T09:10:00Z" }
+  },
+  "scope": {
+    "cut:delve": "notes"
+  }
+}
+```
+
+Status resolution, in order:
+
+1. a `rejected` or `retired` decision wins and is never reintroduced by a rebuild;
+2. then `confirmed`;
+3. otherwise the candidate is a `hypothesis` once it has enough support.
+
+```bash
+ghostless rules                                  # confirmed, hypotheses, suppressed
+ghostless rules confirm cut:delve --section notes
+ghostless rules reject add:honestly
+ghostless rules retire cut:very
+ghostless build
+```
+
+`confirm` records the receipt references the decision rests on. `--section` scopes a confirmed rule. `build` writes the derived snapshot to `voice-stats.json` under `rules` and renders `## Voice rules` in `voice-guide.md`, keeping confirmed rules, hypotheses, and the measured targets visibly separate.
 
 ## Suite data
 
