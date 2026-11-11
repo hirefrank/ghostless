@@ -88,6 +88,16 @@ def _make_pair(root: Path, date: str, before: str) -> None:
     )
 
 
+def _make_corpus(root: Path) -> None:
+    """Writer-authored gold so the held-out eval has voice to train on."""
+    (root / "corpus" / "gold" / "desk.md").write_text(WRITER, encoding="utf-8")
+    (root / "corpus" / "gold" / "walk.md").write_text(
+        "I take the long way home. So the walk clears my head.\n\n"
+        "And I leave the phone behind when I go.",
+        encoding="utf-8",
+    )
+
+
 class CorpusCleanupTests(unittest.TestCase):
     def test_prose_only_text_is_unchanged(self) -> None:
         prose = "I don't wait. And I'm done.\n\nSo we stop."
@@ -286,6 +296,7 @@ class EvalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "voice"
             init_project(root, git=False)
+            _make_corpus(root)
             # Two accepted drafts and two heavily revised ones. Holding out
             # three of four always leaves one of each in the holdout.
             _make_pair(root, "2026-01-01", WRITER)
