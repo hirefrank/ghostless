@@ -1,0 +1,397 @@
+"""Voice commands. Skill install, update, and doctor live on the bash launcher."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+from ghostless.export import write_export
+from ghostless.guide import render_guide
+from ghostless.judge import format_report, judge_text
+from ghostless.learn import learn_edit, load_edit_summary, refresh_edit_summary
+from ghostless.paths import ProjectError, data_home, find_project, suite_root, version
+from ghostless.project import discover, init_project, load_manifest
+from ghostless.stats import compile_stats
+
+EPILOG = """
+Launcher commands:
+  install-skills    Link skills into detected harnesses
+  update            Install the latest release and relink skills
+  doctor            Check Python, the data dir, and skill links
+  agents            List harnesses and skill directories
+  routing           Print a project-instruction snippet
+  reset             Remove installed skill links
+  uninstall         reset --data
+
+Disable the daily release check with GHOSTLESS_NO_UPDATE=1, GHOSTLESS_UPDATE_CHECK=0,
+~/.ghostless/config.json {"updateCheck": false}, or "updateCheck": false in the manifest.
+The check only GETs the public GitHub release. It does not send your writing.
+"""
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="ghostless",
+        description="Measure a local writing corpus and judge drafts against that voice.",
+        epilog=EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("-V", "--version", action="store_true", help="Print the version and exit")
+    sub = parser.add_subparsers(dest="command")
+
+    init_parser = sub.add_parser("init", help="Create a voice project directory and manifest")
+    init_parser.add_argument("directory", nargs="?", help="Project directory (default: ./voice)")
+    init_parser.add_argument("--here", action="store_true", help="Use the current directory")
+    init_parser.add_argument("--force", action="store_true", help="Rewrite manifest defaults")
+
+    build_parser = sub.add_parser("build", help="Compute weighted stats and write voice-guide.md")
+    _add_project(build_parser)
+    build_parser.add_argument("--json", action="store_true", help="Print voice-stats.json")
+
+    judge_parser = sub.add_parser("judge", help="Score a draft against the voice guide")
+    judge_parser.add_argument("draft", help="Draft markdown file")
+    judge_parser.add_argument("--section", help="Use targets for this section")
+    _add_project(judge_parser)
+    judge_parser.add_argument("--json", action="store_true")
+
+    learn_parser = sub.add_parser("learn", help="Store a before/after edit as gold")
+    learn_parser.add_argument("--before", required=True, help="Earlier draft (often the AI draft)")
+    learn_parser.add_argument("--after", required=True, help="Writer's final")
+    learn_parser.add_argument("--section", help="Section tag stored on the gold piece")
+    learn_parser.add_argument(
+        "--origin",
+        default="ai-first",
+        choices=("ai-first", "writer-first"),
+        help="ai-first: AI draft then the writer's edit. writer-first: the writer drafted first.",
+    )
+    learn_parser.add_argument("--date", help="YYYY-MM-DD (default: today, UTC)")
+    _add_project(learn_parser)
+
+    export_parser = sub.add_parser("export", help="Write one paste-ready voice guide")
+    export_parser.add_argument(
+        "--excerpts",
+        action="store_true",
+        help="Include a few short gold excerpts (off by default)",
+    )
+    export_parser.add_argument("--out", help="Output path (default: voice-guide.paste.md)")
+    _add_project(export_parser)
+
+    sub.add_parser("locate", help="Print the voice project directory")
+    which_parser = sub.add_parser("which", help="Print suite, data, and project paths")
+    _add_project(which_parser)
+
+    skills_parser = sub.add_parser("install-skills", help="Link skills into detected harnesses")
+    skills_parser.add_argument("args", nargs=argparse.REMAINDER)
+    setup_parser = sub.add_parser("setup", help="Alias for install-skills")
+    setup_parser.add_argument("args", nargs=argparse.REMAINDER)
+    for name, help_text in (
+        ("update", "Install the latest release and relink skills"),
+        ("doctor", "Check Python, the data dir, and skill links"),
+        ("agents", "List harnesses and skill directories"),
+        ("routing", "Print a project-instruction snippet"),
+        ("reset", "Remove installed skill links"),
+        ("uninstall", "Remove skill links and ~/.ghostless"),
+    ):
+        launcher_parser = sub.add_parser(name, help=help_text)
+        launcher_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        code = exc.code
+        return int(code) if isinstance(code, int) else 2
+
+    if args.version:
+        print(f"ghostless {version()}")
+        return 0
+    if not args.command:
+        parser.print_help()
+        return 0
+    try:
+        return _dispatch(args)
+    except ProjectError as exc:
+        print(f"ghostless: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"ghostless: {exc}", file=sys.stderr)
+        return 2
+
+
+def _dispatch(args: argparse.Namespace) -> int:
+    command = args.command
+    match command:
+        case "init":
+            return _cmd_init(args)
+        case "build":
+            return _cmd_build(args)
+        case "judge":
+            return _cmd_judge(args)
+        case "learn":
+            return _cmd_learn(args)
+        case "export":
+            return _cmd_export(args)
+        case "locate":
+            print(find_project())
+            return 0
+        case "which":
+            return _cmd_which(args)
+        case "install-skills" | "setup":
+            return _cmd_install_skills(args.args)
+        case "update" | "doctor" | "agents" | "routing" | "reset" | "uninstall":
+            return _cmd_launcher(command, args.args)
+        case _:
+            print(f"ghostless: unknown command {command}", file=sys.stderr)
+            return 2
+
+
+def _cmd_init(args: argparse.Namespace) -> int:
+    if args.here and args.directory:
+        print("ghostless: pass either a directory or --here.", file=sys.stderr)
+        return 2
+    if args.here:
+        directory = Path.cwd()
+    elif args.directory:
+        directory = Path(args.directory)
+    else:
+        directory = Path.cwd() / "voice"
+    created = init_project(directory, force=args.force)
+    print(f"Created {created.resolve()}")
+    print("  manifest.json")
+    print("  corpus/gold  corpus/silver  corpus/bronze  corpus/spoken")
+    print("  transcripts/  gold/")
+    print("Next:")
+    print("  Put your own writing in corpus/gold (best), corpus/silver, and corpus/bronze.")
+    print("  Put transcripts of your speech in corpus/spoken (your lines only).")
+    print("  ghostless build")
+    return 0
+
+
+def _cmd_build(args: argparse.Namespace) -> int:
+    root = _project(args.project)
+    stats = build_voice(root)
+    if args.json:
+        print(json.dumps(stats, indent=2, ensure_ascii=False))
+    else:
+        print(_format_build(root, stats))
+    return 0
+
+
+def _cmd_judge(args: argparse.Namespace) -> int:
+    root = _project(args.project)
+    draft_path = Path(args.draft)
+    if not draft_path.is_file():
+        print(f"ghostless: draft not found: {draft_path}", file=sys.stderr)
+        return 2
+    stats = _load_stats(root)
+    manifest = load_manifest(root)
+    fail_under = manifest.get("failUnder")
+    if not isinstance(fail_under, int):
+        fail_under = 70
+    report = judge_text(
+        draft_path.read_text(encoding="utf-8"),
+        stats,
+        section=args.section,
+        fail_under=fail_under,
+    )
+    if args.json:
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+    else:
+        print(format_report(report), end="")
+    return 0 if report.get("ok") else 1
+
+
+def _cmd_learn(args: argparse.Namespace) -> int:
+    root = _project(args.project)
+    result = learn_edit(
+        root,
+        before=Path(args.before),
+        after=Path(args.after),
+        section=args.section,
+        origin=args.origin,
+        date=args.date,
+    )
+    meta = result["meta"]
+    if not isinstance(meta, dict):
+        print(f"Stored gold/{result['slug']}", file=sys.stderr)
+        return 0
+    print(f"gold/{result['slug']}")
+    print(f"  origin {meta.get('origin')}  section {meta.get('section') or 'unsectioned'}")
+    print(
+        f"  words {meta.get('wordsBefore')} → {meta.get('wordsAfter')} "
+        f"(removed {meta.get('wordsRemoved')}, added {meta.get('wordsAdded')})"
+    )
+    print(
+        f"  sentence length {meta.get('medianSentenceLengthBefore')} → "
+        f"{meta.get('medianSentenceLengthAfter')}"
+    )
+    print(
+        f"  contractions per 1k {meta.get('contractionsPer1kBefore')} → "
+        f"{meta.get('contractionsPer1kAfter')}"
+    )
+    print("  after.md is now gold. Run ghostless build to fold it into the guide.")
+    return 0
+
+
+def _cmd_export(args: argparse.Namespace) -> int:
+    root = _project(args.project)
+    stats = _load_stats(root)
+    destination = write_export(
+        root,
+        stats,
+        excerpts=args.excerpts,
+        out=Path(args.out) if args.out else None,
+    )
+    print(destination)
+    if args.excerpts:
+        print("Included short gold excerpts.")
+    else:
+        print("Excerpts omitted. Pass --excerpts to include short gold samples.")
+    return 0
+
+
+def _cmd_which(args: argparse.Namespace) -> int:
+    root = suite_root()
+    print(f"suite={root if root is not None else 'none'}")
+    print(f"data={data_home()}")
+    print(f"version={version()}")
+    try:
+        project = _project(args.project) if args.project else find_project()
+    except ProjectError:
+        print("project=none")
+        return 0
+    print(f"project={project}")
+    return 0
+
+
+def _cmd_launcher(command: str, extra: list[str]) -> int:
+    """Hand installer commands to the bash launcher, which owns symlinks and npm."""
+    root = suite_root()
+    if root is None or not (root / "bin" / "ghostless").is_file():
+        print(
+            f"ghostless: `{command}` needs the full suite (npm install or a git checkout).",
+            file=sys.stderr,
+        )
+        return 1
+    env = os.environ.copy()
+    env["GHOSTLESS_FROM_BIN"] = "1"
+    completed = subprocess.run(
+        [str(root / "bin" / "ghostless"), command, *extra],
+        check=False,
+        env=env,
+    )
+    return int(completed.returncode)
+
+
+def _cmd_install_skills(extra: list[str]) -> int:
+    root = suite_root()
+    if root is None or not (root / "setup").is_file():
+        print(
+            "ghostless: install-skills needs the full suite (npm install or a git checkout).",
+            file=sys.stderr,
+        )
+        return 1
+    completed = subprocess.run(["bash", str(root / "setup"), *extra], check=False)
+    return int(completed.returncode)
+
+
+def build_voice(root: Path) -> dict[str, object]:
+    manifest = load_manifest(root)
+    pieces = discover(root, manifest)
+    edits = refresh_edit_summary(root)
+    if not edits.get("learns"):
+        edits = load_edit_summary(root)
+    raw_weights = manifest["weights"]
+    if not isinstance(raw_weights, dict):
+        raise ProjectError("manifest weights are missing.")
+    weights = {str(key): float(value) for key, value in raw_weights.items()}
+    minimum = manifest["goldVoiceMinimum"]
+    if not isinstance(minimum, int):
+        raise ProjectError("goldVoiceMinimum is missing.")
+    stats = compile_stats(
+        pieces,
+        weights=weights,
+        gold_voice_minimum=minimum,
+        edits=edits,
+    )
+    stats["generatedAt"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    fail_under = manifest.get("failUnder")
+    stats["failUnder"] = fail_under if isinstance(fail_under, int) else 70
+    (root / "voice-stats.json").write_text(
+        json.dumps(stats, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    (root / "voice-guide.md").write_text(render_guide(stats), encoding="utf-8")
+    return stats
+
+
+def _load_stats(root: Path) -> dict[str, object]:
+    path = root / "voice-stats.json"
+    if not path.is_file():
+        print("No voice-stats.json yet. Building first.", file=sys.stderr)
+        return build_voice(root)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ProjectError("voice-stats.json is unreadable. Run ghostless build.")
+    return data
+
+
+def _project(explicit: str | None) -> Path:
+    if explicit:
+        return find_project(Path(explicit))
+    return find_project()
+
+
+def _add_project(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--project", help="Voice project directory (default: search from cwd)")
+
+
+def _format_build(root: Path, stats: dict[str, object]) -> str:
+    counts = stats.get("counts") if isinstance(stats.get("counts"), dict) else {}
+    prose = counts.get("prose") if isinstance(counts, dict) and isinstance(counts.get("prose"), dict) else {}
+    spoken = counts.get("spoken") if isinstance(counts, dict) and isinstance(counts.get("spoken"), dict) else {}
+    spoken_total = 0
+    if isinstance(spoken, dict):
+        for value in spoken.values():
+            if isinstance(value, int):
+                spoken_total += value
+    weighted = _metrics(stats.get("weighted"))
+    unweighted = _metrics(stats.get("unweighted"))
+    ban = _block(stats.get("weighted")).get("banList")
+    ban_count = len(ban) if isinstance(ban, list) else 0
+    lines = [
+        f"voice guide: {root / 'voice-guide.md'}",
+        (
+            "pieces: "
+            f"gold {prose.get('gold', 0) if isinstance(prose, dict) else 0}, "
+            f"silver {prose.get('silver', 0) if isinstance(prose, dict) else 0}, "
+            f"bronze {prose.get('bronze', 0) if isinstance(prose, dict) else 0}, "
+            f"spoken {spoken_total}"
+        ),
+        f"bronze format-only: {'yes' if stats.get('bronzeFormatOnly') else 'no'}",
+        (
+            "median sentence: "
+            f"{weighted.get('medianSentenceLength')} words "
+            f"(unweighted {unweighted.get('medianSentenceLength')})"
+        ),
+        f"ban list: {ban_count}",
+    ]
+    warnings = stats.get("warnings")
+    if isinstance(warnings, list):
+        for warning in warnings:
+            if isinstance(warning, str):
+                lines.append(f"note: {warning}")
+    return "\n".join(lines)
+
+
+def _block(value: object) -> dict[str, object]:
+    return value if isinstance(value, dict) else {}
+
+
+def _metrics(value: object) -> dict[str, object]:
+    metrics = _block(value).get("metrics")
+    return metrics if isinstance(metrics, dict) else {}

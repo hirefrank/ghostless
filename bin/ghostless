@@ -1,0 +1,359 @@
+#!/usr/bin/env bash
+# ghostless — local voice CLI. Setup and updates live here; measurements live in Python.
+set -euo pipefail
+
+_SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$_SOURCE" ]]; do
+  _DIR="$(cd -P "$(dirname "$_SOURCE")" && pwd)"
+  _SOURCE="$(readlink "$_SOURCE")"
+  [[ "$_SOURCE" != /* ]] && _SOURCE="$_DIR/$_SOURCE"
+done
+ROOT="$(cd "$(dirname "$_SOURCE")/.." && pwd)"
+unset _SOURCE _DIR
+# shellcheck source=lib/agents.sh
+source "$ROOT/lib/agents.sh"
+
+export GHOSTLESS_SUITE="$ROOT"
+export GHOSTLESS_FROM_BIN=1
+export PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}"
+DATA_HOME="${GHOSTLESS_HOME:-$HOME/.ghostless}"
+
+usage_update() {
+  cat <<'EOF'
+Usage: ghostless update [options]
+
+Fetch the latest release and relink skills so the installed skills match the CLI.
+
+npm -g installs run:  npm i -g @hirefrank/ghostless@latest
+npx installs purge the cached copy and run the latest package.
+A git checkout pulls --ff-only when the tree is clean.
+
+Options are passed through to install-skills:
+  --agent <list>   auto (default), all, or claude-code,cursor,…
+  --verbose, -v
+  --help, -h
+
+Auto-update runs at most once a day on other commands. Skip it with
+GHOSTLESS_NO_UPDATE=1 or "updateCheck": false in ~/.ghostless/config.json
+or the project manifest. The check does not upload your writing.
+EOF
+}
+
+usage_doctor() {
+  cat <<'EOF'
+Usage: ghostless doctor
+
+Check python3, the data directory, and whether skill links resolve.
+Exit 0 when the install looks usable.
+EOF
+}
+
+usage_reset() {
+  cat <<'EOF'
+Usage: ghostless reset [options]
+       ghostless uninstall [options]
+
+Remove installed skill links. The npm package and the launcher stay
+until you remove them yourself. The command prints those steps.
+
+Options:
+  --agent <list>   auto (default), all, or claude-code,cursor,…
+  --data           Also delete ~/.ghostless (not your voice project)
+  --yes, -y        Skip confirmation
+  --help, -h
+
+uninstall is reset --data. Your voice project (corpus, gold, transcripts)
+is a separate directory and is not deleted.
+EOF
+}
+
+want_help() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -h|--help|help) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+ghostless_try_autoupdate() {
+  if ghostless_is_npm_global_install "$ROOT"; then
+    if ! command -v npm >/dev/null 2>&1; then
+      echo "ghostless: npm is not on PATH." >&2
+      return 1
+    fi
+    npm i -g '@hirefrank/ghostless@latest' --prefer-online || return 1
+    bash "$ROOT/setup" --force || true
+    export GHOSTLESS_JUST_UPDATED=1
+    exec "$ROOT/bin/ghostless" "$@"
+  fi
+  if ghostless_is_packaged_install "$ROOT"; then
+    local runner
+    ghostless_purge_package_cache || true
+    ghostless_clear_dangling_suite_root || true
+    runner="$(ghostless_package_runner)" || return 1
+    export GHOSTLESS_JUST_UPDATED=1
+    # shellcheck disable=SC2086
+    $runner '@hirefrank/ghostless@latest' install-skills --force || true
+    # shellcheck disable=SC2086
+    exec $runner '@hirefrank/ghostless@latest' "$@"
+  fi
+  if [[ -d "$ROOT/.git" ]] && command -v git >/dev/null 2>&1; then
+    if ! git -C "$ROOT" diff --quiet || ! git -C "$ROOT" diff --cached --quiet; then
+      echo "ghostless: this checkout has uncommitted changes, so it was not pulled." >&2
+      return 1
+    fi
+    if ! git -C "$ROOT" pull --ff-only; then
+      echo "ghostless: git pull failed." >&2
+      return 1
+    fi
+  fi
+  bash "$ROOT/setup" --force || true
+  export GHOSTLESS_JUST_UPDATED=1
+  exec "$ROOT/bin/ghostless" "$@"
+}
+
+cmd_update() {
+  if want_help "$@"; then
+    usage_update
+    return 0
+  fi
+  local -a setup_args=("$@")
+  local has_force=0 arg
+  if ((${#setup_args[@]})); then
+    for arg in "${setup_args[@]}"; do
+      [[ "$arg" == "--force" ]] && has_force=1
+    done
+  fi
+  if [[ "$has_force" -eq 0 ]]; then
+    setup_args+=(--force)
+  fi
+
+  if ghostless_is_npm_global_install "$ROOT"; then
+    echo "Updating npm-global install (@hirefrank/ghostless)…"
+    if command -v npm >/dev/null 2>&1 && npm i -g '@hirefrank/ghostless@latest' --prefer-online; then
+      exec "$ROOT/setup" "${setup_args[@]}"
+    fi
+    echo "error: npm update failed — run: npm i -g @hirefrank/ghostless@latest" >&2
+    return 1
+  fi
+  if ghostless_is_packaged_install "$ROOT"; then
+    local runner
+    echo "Updating from the registry…"
+    ghostless_purge_package_cache || true
+    ghostless_clear_dangling_suite_root || true
+    runner="$(ghostless_package_runner)" || {
+      echo "error: neither pnpm nor npx is usable" >&2
+      return 1
+    }
+    # shellcheck disable=SC2086
+    exec $runner '@hirefrank/ghostless@latest' install-skills "${setup_args[@]}"
+  fi
+  if [[ -d "$ROOT/.git" ]] && command -v git >/dev/null 2>&1; then
+    echo "Updating local checkout at $ROOT …"
+    if git -C "$ROOT" diff --quiet && git -C "$ROOT" diff --cached --quiet; then
+      git -C "$ROOT" pull --ff-only || echo "warning: git pull failed — continuing with this tree" >&2
+    else
+      echo "warning: uncommitted changes — skipping git pull" >&2
+    fi
+  else
+    echo "Relinking skills from $ROOT …"
+  fi
+  exec "$ROOT/setup" "${setup_args[@]}"
+}
+
+cmd_doctor() {
+  if want_help "$@"; then
+    usage_doctor
+    return 0
+  fi
+  local ok=1
+  echo "==> ghostless doctor"
+  echo "    Suite: $ROOT"
+  echo "    Data:  $DATA_HOME"
+  if [[ -f "$DATA_HOME/version" ]]; then
+    echo "    Recorded version: $(cat "$DATA_HOME/version")"
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    echo "OK  python3 ($(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))'))"
+    echo "OK  ghostless $(python3 -c 'from ghostless.paths import version; print(version())')"
+  else
+    echo "MISS python3"
+    ok=0
+  fi
+  if [[ -f "$DATA_HOME/config.json" ]]; then
+    echo "OK  $DATA_HOME/config.json"
+  else
+    echo "TIP  no $DATA_HOME/config.json yet — run ghostless install-skills"
+  fi
+  echo
+  echo "==> Skill links"
+  local line name dir status skill linked
+  while IFS= read -r line; do
+    IFS=$'\t' read -r name dir status <<<"$line"
+    [[ -z "$dir" ]] && continue
+    linked=0
+    for skill in "${GHOSTLESS_SKILL_IDS[@]}"; do
+      if [[ -e "$dir/$skill/SKILL.md" ]]; then
+        linked=$((linked + 1))
+      fi
+    done
+    if [[ -n "$status" ]]; then
+      echo "$name: $linked/${#GHOSTLESS_SKILL_IDS[@]} skills in $dir (detected)"
+    else
+      echo "$name: not detected ($dir)"
+    fi
+  done < <(ghostless_list_agents)
+  echo
+  if [[ "$ok" -eq 1 ]]; then
+    echo "Doctor: OK"
+    return 0
+  fi
+  echo "Doctor: issues found"
+  return 1
+}
+
+cmd_agents() {
+  if want_help "$@"; then
+    echo "Usage: ghostless agents"
+    echo "List supported harnesses, skill directories, and detection status."
+    return 0
+  fi
+  ghostless_list_agents
+}
+
+cmd_reset() {
+  local agents_csv="auto" wipe_data=0 yes=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --agent|--agents) agents_csv="$2"; shift 2 ;;
+      --data) wipe_data=1; shift ;;
+      -y|--yes) yes=1; shift ;;
+      -h|--help) usage_reset; return 0 ;;
+      *)
+        echo "Unknown arg: $1" >&2
+        return 1
+        ;;
+    esac
+  done
+
+  local -a names=()
+  local name
+  case "$agents_csv" in
+    all) names=("${GHOSTLESS_AGENT_IDS[@]}") ;;
+    auto)
+      while IFS= read -r name; do
+        [[ -n "$name" ]] && names+=("$name")
+      done < <(ghostless_detect_agents)
+      ;;
+    *) IFS=',' read -ra names <<<"$agents_csv" ;;
+  esac
+
+  echo "This will remove ghostless skill links for: ${names[*]}"
+  if [[ "$wipe_data" -eq 1 ]]; then
+    echo "  and data dir $DATA_HOME"
+  fi
+  echo "Voice projects on disk are left alone."
+  if [[ "$yes" -ne 1 ]]; then
+    if [[ ! -t 0 ]]; then
+      echo "error: non-interactive shell — pass --yes" >&2
+      return 1
+    fi
+    printf "Continue? [y/N] "
+    local answer
+    read -r answer
+    case "$answer" in
+      y|Y|yes|YES) ;;
+      *) echo "Aborted."; return 1 ;;
+    esac
+  fi
+
+  local dir skill dest removed=0
+  for name in "${names[@]}"; do
+    name="$(echo "$name" | xargs)"
+    dir="$(ghostless_agent_dir "$name" || true)"
+    [[ -z "$dir" ]] && continue
+    for skill in "${GHOSTLESS_SKILL_IDS[@]}"; do
+      dest="$dir/$skill"
+      if [[ -L "$dest" || -e "$dest" ]]; then
+        rm -rf "$dest"
+        echo "removed $dest"
+        removed=$((removed + 1))
+      fi
+    done
+  done
+  if [[ "$wipe_data" -eq 1 && -e "$DATA_HOME" ]]; then
+    rm -rf "$DATA_HOME"
+    echo "removed $DATA_HOME"
+  fi
+  echo "Reset complete ($removed skill paths removed)."
+  echo "The CLI itself is still installed."
+  if ghostless_is_npm_global_install "$ROOT"; then
+    echo "  npm uninstall -g @hirefrank/ghostless"
+  fi
+  local launcher
+  while IFS= read -r launcher; do
+    [[ -n "$launcher" ]] && printf '  rm -f %q\n' "$launcher"
+  done < <(ghostless_launcher_paths)
+}
+
+maybe_autoupdate() {
+  if [[ "${GHOSTLESS_NO_UPDATE:-}" == "1" || "${GHOSTLESS_UPDATE_CHECK:-1}" == "0" || "${GHOSTLESS_JUST_UPDATED:-}" == "1" ]]; then
+    return 0
+  fi
+  local decision
+  decision="$(python3 -m ghostless.updatecheck 2>/dev/null || true)"
+  case "$decision" in
+    update\ *)
+      echo "ghostless: ${decision#update } is available. Updating and refreshing skills…" >&2
+      if ! ghostless_try_autoupdate "$@"; then
+        echo "ghostless: auto-update did not finish. Continuing with this version." >&2
+      fi
+      ;;
+  esac
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  ""|-h|--help|help|-V|--version|version)
+    exec python3 -m ghostless "$@"
+    ;;
+  update)
+    shift
+    cmd_update "$@"
+    exit $?
+    ;;
+esac
+
+maybe_autoupdate "$@"
+
+case "$cmd" in
+  install-skills|setup)
+    shift
+    exec "$ROOT/setup" "$@"
+    ;;
+  doctor)
+    shift
+    cmd_doctor "$@"
+    ;;
+  agents)
+    shift
+    cmd_agents "$@"
+    ;;
+  reset)
+    shift
+    cmd_reset "$@"
+    ;;
+  uninstall)
+    shift
+    cmd_reset --data "$@"
+    ;;
+  routing)
+    shift
+    cat "$ROOT/docs/AGENTS.md.snippet"
+    ;;
+  *)
+    exec python3 -m ghostless "$@"
+    ;;
+esac

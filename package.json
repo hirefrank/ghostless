@@ -1,0 +1,47 @@
+{
+  "name": "@hirefrank/ghostless",
+  "version": "0.1.0",
+  "description": "Local voice guide for AI drafts that sound like you. Learns from your edits.",
+  "license": "MIT",
+  "bin": {
+    "ghostless": "bin/ghostless"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "bash tests/run.sh",
+    "prepack": "find . -path ./node_modules -prune -o -name '__pycache__' -type d -prune -exec rm -rf {} +"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "tests/",
+    "skills/",
+    "docs/",
+    "fixtures/",
+    "setup",
+    "SCHEMA.md",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "pyproject.toml"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hirefrank/ghostless.git"
+  },
+  "homepage": "https://github.com/hirefrank/ghostless",
+  "keywords": [
+    "skills",
+    "claude-code",
+    "cursor",
+    "codex",
+    "writing",
+    "voice",
+    "agent-skills"
+  ]
+}
