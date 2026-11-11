@@ -200,7 +200,11 @@ fn cli_command() -> Command {
 
 fn run_cli(args: &[&str], input: Option<&str>) -> Result<String, String> {
     let mut command = cli_command();
-    command.args(args).env("GHOSTLESS_NO_UPDATE", "1");
+    command.args(args)
+        .env("GHOSTLESS_NO_UPDATE", "1")
+        // Keep the CLI on UTF-8 stdin/stdout on every OS (Windows defaults to
+        // the locale, which would double-encode non-ASCII working text).
+        .env("PYTHONUTF8", "1");
     if input.is_some() { command.stdin(Stdio::piped()); }
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().map_err(|error| format!("Cannot launch ghostless CLI: {error}"))?;
