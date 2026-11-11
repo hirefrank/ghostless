@@ -1,0 +1,13 @@
+{
+  "events": [
+    {"t": 0.10, "type": "tap", "x": 710, "y": 135},
+    {"t": 0.20, "type": "key", "name": "a", "cmd": true},
+    {"t": 0.30, "type": "type", "text": "I changed this draft. Café stays. And the ending is mine.", "every": 0.01},
+    {"t": 1.05, "type": "tap", "x": 160, "y": 700},
+    {"t": 1.15, "type": "type", "text": "I cut the filler.", "every": 0.02},
+    {"t": 1.65, "type": "key", "name": "s", "cmd": true},
+    {"t": 1.85, "type": "tap", "x": 920, "y": 30},
+    {"t": 2.05, "type": "tap", "x": 1080, "y": 30},
+    {"t": 2.25, "type": "mark", "name": "end"}
+  ]
+}

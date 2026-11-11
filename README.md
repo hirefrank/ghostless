@@ -128,6 +128,10 @@ ghostless build [--project DIR] [--json]
 ghostless judge draft.md [--section NAME] [--project DIR] [--json]
 ghostless learn --before a.md --after b.md [--section NAME] [--origin ai-first|writer-first] [--model NAME] [--tool NAME] [--promote] [--date YYYY-MM-DD]
 ghostless promote SLUG [--demote] [--project DIR]
+ghostless start draft.md [--section NAME] [--origin ai-first|writer-first] [--source REF] [--project DIR] [--json]
+ghostless finish [final.md] [--session ID] [--note TEXT] [--project DIR] [--json]
+ghostless sessions [--project DIR] [--json]
+ghostless snapshot --session ID [--project DIR]
 ghostless eval [--holdout N] [--seed N] [--project DIR] [--json]
 ghostless export [--excerpts] [--out PATH] [--project DIR]
 ghostless install-skills [--agent auto|all|name,...] [--force] [--copy] [--no-launcher] [-v]
@@ -204,6 +208,21 @@ The catalog is a fixed list of distinctive model tics (`delve`, `tapestry`, `fur
 The guide tells the model to use the measured targets, review the ban list, and leave `[WRITER: your take]` where an opinion, quote, statistic, or anecdote belongs. The drafting skill runs `judge` afterward. The editing skill tightens your draft and shows a short change list. The capture skill runs `learn` when you say the piece is finished.
 
 `learn` stores each distinct before/after pair once under `gold/<date>-<section>/` with `meta.json` (`date`, `section`, `origin`, `provenance`). `origin` is `ai-first` when the before file is an AI draft (the default) or `writer-first` when you drafted first. The diff records tokens cut and added, the sentence-length shift, the contraction shift, and words you remove or add more than once.
+
+### Edit sessions
+
+For a resumable, editor-agnostic workflow, capture an immutable baseline and finish it later from any Markdown editor:
+
+```bash
+ghostless start draft.md --project voice --source https://example.org/reference
+# Edit the printed sessions/<id>/after.md in any Markdown editor.
+ghostless finish --session <id> --project voice
+ghostless build --project voice
+```
+
+`start` copies the draft to `before.md` (immutable) and `after.md` (the working copy). `finish` writes a final, learns the pair into `gold/` once, and records an edit receipt with provenance, content hashes, and the measured shift. Repeating `finish` with the same final returns the same receipt; changing it after finish needs a new session. `ghostless sessions` lists them. The native Rune desktop editor in [`editor/`](editor/) shows the original beside the working copy, a word-level diff, and notes over this same session format; see [docs/EDITOR.md](docs/EDITOR.md).
+
+`learn --before --after` remains available for pairs captured outside a session.
 
 Where the final is measured depends on who wrote the first draft and whether you confirm it:
 

@@ -45,24 +45,35 @@ Tracked is not uploaded. A file is only sent somewhere when the writer adds a re
 
 ```text
 sessions/<session-id>/
-  session.json    id, date, section, origin, status, beforeFile, afterFile
-  before.md       the AI draft or earlier version
-  after.md        the writer's current final
+  session.json    id, createdAt, section, origin, sources, status, before/after files, baseline hash
+  before.md       the immutable original (AI draft or earlier version)
+  after.md        the recoverable working copy; the final once finished
+  notes.md        optional writer notes on why the edit happened
+  receipt.json    written by finish: provenance, hashes, learned path, measured shifts
 ```
 
 ```json
 {
+  "kind": "ghostless-edit-session",
+  "version": 1,
   "id": "2026-01-02-notes",
-  "date": "2026-01-02",
+  "createdAt": "2026-01-02T13:00:00Z",
   "section": "notes",
   "origin": "ai-first",
+  "sources": ["https://example.org/reference"],
+  "sourceDraftName": "draft.md",
   "status": "open",
   "beforeFile": "before.md",
-  "afterFile": "after.md"
+  "afterFile": "after.md",
+  "notesFile": "notes.md",
+  "receiptFile": "receipt.json",
+  "beforeSha256": "…"
 }
 ```
 
-`origin` is `ai-first` or `writer-first` (same values as `learn`), and it is only a claim about the first draft. It does not by itself decide whether the final is gold; see [Provenance](#provenance). `status` is `open` while the writer is still editing, `final` when they are done, and `promoted` once the pair has been copied into the `gold/` edit library.
+`ghostless start <draft>` creates the session and copies the draft into both `before.md` and `after.md`. `before.md` is immutable; `snapshot` and `finish` verify its SHA-256. `after.md` is the working copy: the desktop editor autosaves it, and `finish` uses it as the final unless an explicit `final` path is passed. `finish` learns the pair into `gold/` through `learn`, so the session and its learned pair share a name and a diff.
+
+`origin` is `ai-first` or `writer-first` (the same values as `learn`), and it is only a claim about the first draft. It does not by itself decide whether the final is gold; see [Provenance](#provenance). `sources` are portable references the writer supplies; source files are never copied. `status` is `open` while the writer is still editing and `final` after finish.
 
 `<session-id>` is `YYYY-MM-DD[-<section>][-N]`:
 
@@ -70,7 +81,9 @@ sessions/<session-id>/
 - the section, lowercased with non-alphanumeric runs collapsed to `-` and trimmed (omitted when there is no section),
 - `-2`, `-3`, … only when that id already exists under `sessions/`.
 
-`learn` uses the same slug for `gold/`. Ids are never reused; callers ask `ghostless.project.new_session_id(root, date=..., section=...)` for an unused one. An editor writes `session.json`; `build` ignores `sessions/` entirely. The session is not evidence until the writer finishes it, at which point `learn` copies the final into `gold/`. A session in `sessions/` is tracked, so committing it commits the AI draft too; leave scratch drafts in ignored `drafts/` instead.
+`learn` uses the same slug for `gold/`. Ids are never reused; `start` asks `ghostless.project.new_session_id(root, date=..., section=...)` for an unused one. `build` ignores `sessions/` entirely. The session is not evidence until the writer finishes it, at which point `finish` learns the pair into `gold/`. A session in `sessions/` is tracked, so committing it commits the AI draft too; leave scratch drafts in ignored `drafts/` instead.
+
+Finishing is idempotent: `finish` with the same final returns the same receipt and never learns the pair twice. Changing the final after finish requires a new session. `ghostless sessions --project DIR` lists sessions; `ghostless learn --before --after` remains available for pairs outside a session.
 
 `holdouts/` is tracked and never read by `build` or `judge`. Use it for writing you want to keep out of the measurement while testing whether the guide generalizes.
 

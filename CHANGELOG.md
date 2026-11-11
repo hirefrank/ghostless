@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `ghostless start`/`finish`/`sessions`/`snapshot` capture an immutable draft, a recoverable working copy, optional notes, and an edit receipt in `sessions/<id>/`. Finish learns the pair into `gold/` once and is idempotent; the id follows the `learn` slug (`YYYY-MM-DD[-section][-N]`).
+- A native Rune desktop editor in `editor/` shows the original beside the working copy, a word-level diff, and notes over the same session format, and finishes through the CLI.
 - The voice directory is a voice-data Git repository: `init` writes ignore rules that track selected writing, finished edit pairs, sessions, and holdouts while ignoring generated guides, stats, drafts, temp files, and raw media, then creates local history with no remote and no commit.
 - `ghostless migrate` upgrades a v0.1 voice directory (old "do not commit" ignore block) and stages nothing, so writing that was previously outside Git is reviewed before it is committed.
 - Local storage and an optional private remote are documented separately. ghostless never adds a remote or pushes.
