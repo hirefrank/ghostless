@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLE = ROOT / "fixtures" / "sample-voice"
@@ -22,7 +23,7 @@ sys.path.insert(0, str(ROOT / "lib"))
 from ghostless.cli import build_voice, main  # noqa: E402
 from ghostless.judge import judge_text  # noqa: E402
 from ghostless.learn import diff_texts, learn_edit  # noqa: E402
-from ghostless.paths import ProjectError  # noqa: E402
+from ghostless.paths import ProjectError, find_project_with_source
 from ghostless.project import (  # noqa: E402
     GITIGNORE_MARKER,
     LEGACY_GITIGNORE_BLOCK,
@@ -1077,6 +1078,115 @@ class ProjectTests(unittest.TestCase):
                 ),
                 2,
             )
+
+
+class DefaultProjectTests(unittest.TestCase):
+    def test_precedence_explicit_env_cwd_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            default = base / "default-voice"
+            nearby = base / "nearby-voice"
+            init_project(default, git=False)
+            init_project(nearby, git=False)
+            elsewhere = base / "elsewhere"
+            elsewhere.mkdir()
+            with patch.dict(os.environ, {"GHOSTLESS_HOME": str(home)}):
+                self.assertEqual(main(["use", str(default)]), 0)
+                self.assertEqual(
+                    json.loads((home / "config.json").read_text())["defaultProject"],
+                    str(default.resolve()),
+                )
+                old = Path.cwd()
+                try:
+                    os.chdir(elsewhere)
+                    # No manifest above, no env: the default wins.
+                    self.assertEqual(
+                        find_project_with_source(), (default.resolve(), "defaultProject")
+                    )
+                    # A cwd manifest beats the default.
+                    os.chdir(nearby)
+                    self.assertEqual(
+                        find_project_with_source(), (nearby.resolve(), "cwd")
+                    )
+                    # The env var beats the cwd manifest.
+                    with patch.dict(os.environ, {"GHOSTLESS_PROJECT": str(default)}):
+                        self.assertEqual(
+                            find_project_with_source(), (default.resolve(), "GHOSTLESS_PROJECT")
+                        )
+                        # An explicit path beats the env var.
+                        self.assertEqual(
+                            find_project_with_source(nearby), (nearby.resolve(), "--project")
+                        )
+                finally:
+                    os.chdir(old)
+
+    def test_use_preserves_other_config_keys_and_rejects_non_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            home.mkdir()
+            (home / "config.json").write_text('{"updateCheck": false}\n', encoding="utf-8")
+            project = base / "voice"
+            init_project(project, git=False)
+            plain = base / "plain"
+            plain.mkdir()
+            with patch.dict(os.environ, {"GHOSTLESS_HOME": str(home)}):
+                self.assertEqual(main(["use", str(project)]), 0)
+                config = json.loads((home / "config.json").read_text())
+                self.assertEqual(config["updateCheck"], False)
+                self.assertEqual(config["defaultProject"], str(project.resolve()))
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    self.assertEqual(main(["use", str(plain)]), 2)
+                self.assertEqual(
+                    json.loads((home / "config.json").read_text())["defaultProject"],
+                    str(project.resolve()),
+                )
+
+    def test_stale_default_project_fails_loudly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            home.mkdir()
+            stale = base / "gone"
+            stale.mkdir()
+            (home / "config.json").write_text(
+                json.dumps({"defaultProject": str(stale)}), encoding="utf-8"
+            )
+            old = Path.cwd()
+            try:
+                os.chdir(base)
+                with patch.dict(os.environ, {"GHOSTLESS_HOME": str(home)}):
+                    with self.assertRaises(ProjectError) as caught:
+                        find_project_with_source()
+                self.assertIn("Default project", str(caught.exception))
+            finally:
+                os.chdir(old)
+
+    def test_locate_and_doctor_show_which_source_won(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            project = base / "my-voice"
+            init_project(project, git=False)
+            elsewhere = base / "elsewhere"
+            elsewhere.mkdir()
+            with patch.dict(os.environ, {"GHOSTLESS_HOME": str(home)}):
+                self.assertEqual(main(["use", str(project)]), 0)
+                old = Path.cwd()
+                try:
+                    os.chdir(elsewhere)
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        self.assertEqual(main(["locate"]), 0)
+                    self.assertIn(f"{project.resolve()} (via defaultProject)", out.getvalue())
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        self.assertEqual(main(["doctor"]), 0)
+                    self.assertIn(f"Project: {project.resolve()} (via defaultProject)", out.getvalue())
+                finally:
+                    os.chdir(old)
 
 
 class UpdatePlanTests(unittest.TestCase):

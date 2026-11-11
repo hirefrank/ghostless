@@ -427,6 +427,24 @@ ghostless build
 
 `~/.ghostless/` (or `GHOSTLESS_HOME`) holds the installer state: `suite-root` for persistent installs, `version`, `config.json`, `last-update-check`, `logs/`. It is not the corpus. A one-off npx/pnpm run copies skills and does not replace `suite-root` with its temporary cache path. `config.json` `{"updateCheck": false}` disables the release check on this machine. `GHOSTLESS_NO_UPDATE=1` and `GHOSTLESS_UPDATE_CHECK=0` do the same.
 
+### Default project
+
+When the voice data lives somewhere other than the working directory, `ghostless use` remembers it:
+
+```bash
+ghostless use ~/voice
+# Default project: /Users/frank/voice
+```
+
+That writes `defaultProject` into `~/.ghostless/config.json`, keeping every other key in the file. Project resolution, in order:
+
+1. `--project` on the command line,
+2. `GHOSTLESS_PROJECT`,
+3. a `manifest.json` found by walking up from the working directory (including a `voice/` subfolder),
+4. `defaultProject` from the home config.
+
+`ghostless locate` and `ghostless doctor` print which source won, e.g. `Project: /Users/frank/voice (via defaultProject)`. A `defaultProject` that no longer points at a ghostless project fails loudly and names the fix (`ghostless use` at the right directory) instead of silently falling through.
+
 Skill links, from `lib/agents.sh`:
 
 | Harness | Skills directory |
