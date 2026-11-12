@@ -401,6 +401,10 @@ def _compare_em_dash(target: object, actual: object) -> dict[str, object] | None
     if not isinstance(target, (int, float)) or not isinstance(actual, (int, float)):
         return None
     slack = max(EM_DASH_ABS, abs(float(target)) * 0.5)
+    if float(target) == 0:
+        # A target of 0 bans em dashes outright (e.g. an override pinning
+        # emDashesPer1k to 0): no slack, so any use reads high.
+        slack = 0.0
     low = max(0.0, float(target) - slack)
     high = float(target) + slack
     status = "ok"

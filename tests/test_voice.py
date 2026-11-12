@@ -401,6 +401,23 @@ class JudgeTests(unittest.TestCase):
         check = next(item for item in calm["checks"] if item["metric"] == "emDashesPer1k")
         self.assertEqual(check["status"], "ok")
 
+    def test_override_zero_bans_a_single_em_dash(self) -> None:
+        # Regression: the old 1.5-per-1k slack let a single dash in a
+        # ~1000-word draft score ok even with the target pinned to 0.
+        body = "I write short lines. " * 250
+        draft = body + "One line — with a dash."
+        stats = self._stats_from_draft(draft)
+        report = judge_text(draft, stats, overrides={"emDashesPer1k": 0})
+        check = next(item for item in report["checks"] if item["metric"] == "emDashesPer1k")
+        self.assertEqual(check["target"], 0)
+        # Inside the old slack band, so this only passes without the slack.
+        self.assertGreater(check["actual"], 0)
+        self.assertLess(check["actual"], 1.5)
+        self.assertEqual(check["high"], 0)
+        self.assertEqual(check["status"], "high")
+        self.assertGreater(check["penalty"], 0)
+        self.assertTrue(any(item["kind"] == "em-dash" for item in report["structure"]))
+
     def test_override_pins_target_in_guide_and_judge(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "voice"
