@@ -150,6 +150,8 @@ Text files are `.md`, `.markdown`, and `.txt`. `README.md` is skipped. A subfold
 | `updateCheck` | `false` turns off the daily release check when you run from this project. |
 | `rules` | Optional `{"minimumSupport": N}`. Distinct pieces a cut/add word must recur in before it becomes a rule candidate. Default 3. |
 | `failUnder` | `judge` exits 1 below this score, and when there is no usable voice data to compare against. Banned tells and structural tells lower the score and set `reviewRequired`, but do not fail on their own. |
+| `overrides` | Optional `{metric: number}` pins that replace a measured target in `judge`, `eval`, and the voice guide. Use it when the corpus encodes a habit the writer wants gone: `{"emDashesPer1k": 0}` makes any em dash warn, instead of the measured ~8. Keys are the six two-direction metrics plus `emDashesPer1k`; values are zero or more (`openerShare` at most 1). `build` writes the pinned value as the Weighted target and keeps the measured value in the Unweighted column, with an explicit override note in the guide. |
+| `placeholder` | Optional plain name (e.g. `"FRANK"`) used for unfilled gaps. `judge` flags any `[UPPERCASE_NAME: ...]` bracket for review, and also matches this token case-insensitively, so `[frank: ...]` flags too. `build` writes the token into the voice guide's Rules, and the draft skill uses it. Default: `"WRITER"`. |
 | `pieces` | Optional explicit `{path, tier, section, kind}` rows. They override discovery. |
 
 `gold`, `silver`, and `bronze` hold writing the writer stands behind. `edited` holds AI-first finals: model prose the writer revised but has not promoted. An old manifest without an `edited` weight gets the default of 0.5.
@@ -426,6 +428,24 @@ ghostless build
 ## Suite data
 
 `~/.ghostless/` (or `GHOSTLESS_HOME`) holds the installer state: `suite-root` for persistent installs, `version`, `config.json`, `last-update-check`, `logs/`. It is not the corpus. A one-off npx/pnpm run copies skills and does not replace `suite-root` with its temporary cache path. `config.json` `{"updateCheck": false}` disables the release check on this machine. `GHOSTLESS_NO_UPDATE=1` and `GHOSTLESS_UPDATE_CHECK=0` do the same.
+
+### Default project
+
+When the voice data lives somewhere other than the working directory, `ghostless use` remembers it:
+
+```bash
+ghostless use ~/voice
+# Default project: /Users/frank/voice
+```
+
+That writes `defaultProject` into `~/.ghostless/config.json`, keeping every other key in the file. Project resolution, in order:
+
+1. `--project` on the command line,
+2. `GHOSTLESS_PROJECT`,
+3. a `manifest.json` found by walking up from the working directory (including a `voice/` subfolder),
+4. `defaultProject` from the home config.
+
+`ghostless locate` and `ghostless doctor` print which source won, e.g. `Project: /Users/frank/voice (via defaultProject)`. A `defaultProject` that no longer points at a ghostless project fails loudly and names the fix (`ghostless use` at the right directory) instead of silently falling through.
 
 Skill links, from `lib/agents.sh`:
 

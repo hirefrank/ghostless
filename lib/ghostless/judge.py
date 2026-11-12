@@ -28,7 +28,50 @@ BOTH_DIRECTIONS = (
 DISTRIBUTION_ABS = 0.25
 DISTRIBUTION_MIN_SENTENCES = 8
 EM_DASH_ABS = 1.5
-PLACEHOLDER_RE = re.compile(r"\[WRITER:[^\]]*\]", re.IGNORECASE)
+# Metrics a manifest `overrides` entry may pin: the two-direction metrics
+# plus em dashes, which has its own comparison.
+OVERRIDABLE_METRICS = BOTH_DIRECTIONS + ("emDashesPer1k",)
+
+
+def apply_overrides(
+    targets: dict[str, object], overrides: dict[str, object] | None
+) -> dict[str, object]:
+    """Return `targets` with manifest override values pinned on top.
+
+    An override replaces the measured target (e.g. `emDashesPer1k: 0` bans
+    em dashes outright). Unknown keys and non-numbers are ignored here;
+    `load_manifest` is the place that rejects them.
+    """
+    if not overrides:
+        return dict(targets)
+    pinned = dict(targets)
+    for key, value in overrides.items():
+        if key in OVERRIDABLE_METRICS and isinstance(value, (int, float)) and not isinstance(value, bool):
+            pinned[key] = value
+    return pinned
+
+# Any bracketed uppercase name followed by a colon is an unfilled gap for
+# the writer: [WRITER: ...], [FRANK: ...], [TODO: ...]. The token is at
+# least two characters and starts with a letter, so a bare citation such as
+# [see p. 3] or a year is not a placeholder. A manifest `placeholder` token
+# (e.g. "Frank") is matched case-insensitively on top of this, so a writer
+# whose token is not all-caps still flags.
+PLACEHOLDER_RE = re.compile(r"\[[A-Z][A-Z0-9 _\-]{1,}:[^\]]*\]")
+
+
+def placeholder_pattern(token: str) -> "re.Pattern[str]":
+    return re.compile(r"\[" + re.escape(token) + r":[^\]]*\]", re.IGNORECASE)
+
+
+def find_placeholders(text: str, placeholder: str | None = None) -> list[str]:
+    found = [match.group(0) for match in PLACEHOLDER_RE.finditer(text)]
+    if placeholder:
+        seen = set(found)
+        for match in placeholder_pattern(placeholder).finditer(text):
+            if match.group(0) not in seen:
+                seen.add(match.group(0))
+                found.append(match.group(0))
+    return found
 
 # Sample-size thresholds for the confidence block. 1,500 words matches the
 # provisional-ban-list warning build already writes. Below it, a score is a
@@ -67,9 +110,11 @@ def judge_text(
     *,
     section: str | None = None,
     fail_under: int = 70,
+    overrides: dict[str, object] | None = None,
+    placeholder: str | None = None,
 ) -> dict[str, object]:
     targets, target_label = _targets(stats, section)
-    target_metrics = _metrics(targets)
+    target_metrics = apply_overrides(_metrics(targets), overrides)
     confidence = corpus_confidence(stats, section)
     if not text.strip():
         return {
@@ -111,7 +156,7 @@ def judge_text(
     ban_list = _string_list(_block(stats.get("weighted")).get("banList"))
     banned = [{"tell": tell, "count": count} for tell, count in ban_hits(text, ban_list)]
     structure = [{"kind": hit.kind, "excerpt": hit.excerpt} for hit in structural_tells(text)]
-    placeholders = [match.group(0) for match in PLACEHOLDER_RE.finditer(text)]
+    placeholders = find_placeholders(text, placeholder)
 
     checks: list[dict[str, object]] = []
     penalty = 0
@@ -133,7 +178,7 @@ def judge_text(
     em_check = _compare_em_dash(target_metrics.get("emDashesPer1k"), draft_metrics.get("emDashesPer1k"))
     if em_check is not None:
         checks.append(em_check)
-        if em_check["status"] == "high":
+        if em_check["status"] in ("high", "low"):
             structure.append(
                 {
                     "kind": "em-dash",
@@ -378,17 +423,28 @@ def _compare_em_dash(target: object, actual: object) -> dict[str, object] | None
         return None
     if not isinstance(target, (int, float)) or not isinstance(actual, (int, float)):
         return None
-    high = float(target) + max(EM_DASH_ABS, abs(float(target)) * 0.5)
-    status = "high" if float(actual) > high else "ok"
+    slack = max(EM_DASH_ABS, abs(float(target)) * 0.5)
+    if float(target) == 0:
+        # A target of 0 bans em dashes outright (e.g. an override pinning
+        # emDashesPer1k to 0): no slack, so any use reads high.
+        slack = 0.0
+    low = max(0.0, float(target) - slack)
+    high = float(target) + slack
+    status = "ok"
+    if float(actual) < low:
+        status = "low"
+    elif float(actual) > high:
+        status = "high"
+    penalty = 0 if status == "ok" else _distance_penalty(float(actual), low, high)
     return {
         "metric": "emDashesPer1k",
         "label": METRIC_LABELS["emDashesPer1k"],
         "target": _clean(float(target)),
         "actual": _clean(float(actual)),
-        "low": 0.0,
+        "low": round(low, 4),
         "high": round(high, 4),
         "status": status,
-        "penalty": 12 if status == "high" else 0,
+        "penalty": penalty,
     }
 
 

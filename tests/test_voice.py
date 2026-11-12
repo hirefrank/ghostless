@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLE = ROOT / "fixtures" / "sample-voice"
@@ -22,7 +23,7 @@ sys.path.insert(0, str(ROOT / "lib"))
 from ghostless.cli import build_voice, main  # noqa: E402
 from ghostless.judge import judge_text  # noqa: E402
 from ghostless.learn import diff_texts, learn_edit  # noqa: E402
-from ghostless.paths import ProjectError  # noqa: E402
+from ghostless.paths import ProjectError, find_project_with_source
 from ghostless.project import (  # noqa: E402
     GITIGNORE_MARKER,
     LEGACY_GITIGNORE_BLOCK,
@@ -344,6 +345,216 @@ class JudgeTests(unittest.TestCase):
         self.assertIn("not-x-its-y", kinds)
         self.assertIn("triplet", kinds)
         self.assertEqual(structural_tells("I bought milk, oats, and tea from the shop."), [])
+
+    def _stats_from_draft(self, draft: str, **targets: float) -> dict[str, object]:
+        from ghostless.judge import draft_summary
+
+        metrics = dict(draft_summary(draft)["metrics"])
+        metrics.update(targets)
+        return {"weighted": {"metrics": metrics, "banList": []}}
+
+    def test_em_dash_underuse_warns_like_overuse(self) -> None:
+        draft = (
+            "I write short lines. I keep them plain. I stop when the thought ends. "
+            "I start again. I write daily. I cut what I do not need. "
+            "I read it aloud. I fix the clumsy line. I ship the piece. I move on."
+        )
+        stats = self._stats_from_draft(draft, emDashesPer1k=8.1)
+        report = judge_text(draft, stats)
+        check = next(item for item in report["checks"] if item["metric"] == "emDashesPer1k")
+        self.assertEqual(check["status"], "low")
+        self.assertEqual(check["low"], 4.05)
+        self.assertGreater(check["penalty"], 0)
+        self.assertTrue(any(item["kind"] == "em-dash" for item in report["structure"]))
+        self.assertTrue(report["reviewRequired"])
+
+    def test_other_mid_range_metrics_already_warn_low(self) -> None:
+        # Verified, not assumed: _compare warns both ways for the
+        # two-direction metrics; only em dashes lacked a floor.
+        draft = "I write short lines. I keep them plain. I stop when the thought ends."
+        stats = self._stats_from_draft(draft, iPer1k=600.0)
+        report = judge_text(draft, stats)
+        check = next(item for item in report["checks"] if item["metric"] == "iPer1k")
+        self.assertEqual(check["status"], "low")
+        self.assertGreater(check["penalty"], 0)
+
+    def test_override_zero_bans_em_dashes(self) -> None:
+        from ghostless.judge import apply_overrides
+
+        draft = (
+            "I write with a pause — and then I stop — and then I start again. "
+            "Short lines. Clear lines. I keep going. I stop here. I start again. "
+            "I write plainly. I write daily."
+        )
+        stats = self._stats_from_draft(draft)
+        report = judge_text(draft, stats, overrides={"emDashesPer1k": 0})
+        check = next(item for item in report["checks"] if item["metric"] == "emDashesPer1k")
+        self.assertEqual(check["target"], 0)
+        self.assertEqual(check["status"], "high")
+        self.assertGreater(check["penalty"], 0)
+        # The override never rewrites the caller's stats.
+        self.assertNotEqual(stats["weighted"]["metrics"]["emDashesPer1k"], 0)
+        self.assertEqual(apply_overrides({"emDashesPer1k": 8.1}, {"emDashesPer1k": 0}),
+                         {"emDashesPer1k": 0})
+
+        plain = "I write short lines. I keep them plain. I stop here. I start again."
+        calm = judge_text(plain, self._stats_from_draft(plain), overrides={"emDashesPer1k": 0})
+        check = next(item for item in calm["checks"] if item["metric"] == "emDashesPer1k")
+        self.assertEqual(check["status"], "ok")
+
+    def test_override_zero_bans_a_single_em_dash(self) -> None:
+        # Regression: the old 1.5-per-1k slack let a single dash in a
+        # ~1000-word draft score ok even with the target pinned to 0.
+        body = "I write short lines. " * 250
+        draft = body + "One line — with a dash."
+        stats = self._stats_from_draft(draft)
+        report = judge_text(draft, stats, overrides={"emDashesPer1k": 0})
+        check = next(item for item in report["checks"] if item["metric"] == "emDashesPer1k")
+        self.assertEqual(check["target"], 0)
+        # Inside the old slack band, so this only passes without the slack.
+        self.assertGreater(check["actual"], 0)
+        self.assertLess(check["actual"], 1.5)
+        self.assertEqual(check["high"], 0)
+        self.assertEqual(check["status"], "high")
+        self.assertGreater(check["penalty"], 0)
+        self.assertTrue(any(item["kind"] == "em-dash" for item in report["structure"]))
+
+    def test_override_pins_target_in_guide_and_judge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            shutil.copytree(SAMPLE, project)
+            manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
+            manifest["overrides"] = {"emDashesPer1k": 0}
+            (project / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            stats = build_voice(project)
+            self.assertEqual(stats["weighted"]["metrics"]["emDashesPer1k"], 0)
+            self.assertEqual(stats["overrides"], {"emDashesPer1k": 0})
+            guide = (project / "voice-guide.md").read_text(encoding="utf-8")
+            self.assertIn("target pinned to 0", guide)
+            self.assertIn("measured", guide)
+            draft = project / "draft.md"
+            draft.write_text(
+                (project / "drafts" / "closer.md").read_text(encoding="utf-8")
+                + "\n\nOne more line — with a dash.\n",
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main(["judge", str(draft), "--json", "--project", str(project)])
+            report = json.loads(out.getvalue())
+            check = next(item for item in report["checks"] if item["metric"] == "emDashesPer1k")
+            self.assertEqual(check["target"], 0)
+            self.assertEqual(check["status"], "high")
+
+    def test_any_uppercase_name_placeholder_flags_review(self) -> None:
+        from ghostless.judge import draft_summary
+
+        draft = "I write short lines. [FRANK: add the story here]"
+        # Give the draft its own metrics as targets so only the placeholder
+        # can move reviewRequired; that keeps this test focused.
+        stats = {"weighted": {"metrics": draft_summary(draft)["metrics"], "banList": []}}
+        report = judge_text(draft, stats)
+        self.assertTrue(report["reviewRequired"])
+        self.assertEqual(report["placeholders"], ["[FRANK: add the story here]"])
+
+    def test_writer_placeholder_still_flags_and_lowercase_brackets_do_not(self) -> None:
+        from ghostless.judge import draft_summary, find_placeholders
+
+        self.assertEqual(find_placeholders("[WRITER: your take]"), ["[WRITER: your take]"])
+        self.assertEqual(find_placeholders("[TODO: fill this in]"), ["[TODO: fill this in]"])
+        self.assertEqual(find_placeholders("[see page 3]"), [])
+        self.assertEqual(find_placeholders("[2024: a year]"), [])
+        draft = "I write short lines. [see page 3]"
+        stats = {"weighted": {"metrics": draft_summary(draft)["metrics"], "banList": []}}
+        report = judge_text(draft, stats)
+        self.assertFalse(report["reviewRequired"])
+        self.assertEqual(report["placeholders"], [])
+
+    def test_configured_placeholder_token_matches_case_insensitively(self) -> None:
+        from ghostless.judge import draft_summary
+
+        draft = "I write short lines. [frank: add the story here]"
+        stats = {"weighted": {"metrics": draft_summary(draft)["metrics"], "banList": []}}
+        self.assertEqual(judge_text(draft, stats)["placeholders"], [])
+        report = judge_text(draft, stats, placeholder="Frank")
+        self.assertTrue(report["reviewRequired"])
+        self.assertEqual(report["placeholders"], ["[frank: add the story here]"])
+
+    def test_placeholder_token_from_manifest_reaches_judge_and_guide(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            shutil.copytree(SAMPLE, project)
+            manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
+            manifest["placeholder"] = "FRANK"
+            (project / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            build_voice(project)
+            guide = (project / "voice-guide.md").read_text(encoding="utf-8")
+            self.assertIn("[FRANK: your take]", guide)
+            self.assertNotIn("[WRITER: your take]", guide)
+            draft = project / "draft.md"
+            draft.write_text(
+                (project / "drafts" / "closer.md").read_text(encoding="utf-8")
+                + "\n\n[frank: add the story here]\n",
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main(["judge", str(draft), "--json", "--project", str(project)])
+            report = json.loads(out.getvalue())
+            self.assertTrue(report["reviewRequired"])
+            self.assertEqual(report["placeholders"], ["[frank: add the story here]"])
+
+    def test_default_placeholder_token_flags_mixed_case_writer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            shutil.copytree(SAMPLE, project)
+            # The sample manifest has no `placeholder` key: the documented
+            # default WRITER must apply, matched case-insensitively.
+            self.assertEqual(load_manifest(project)["placeholder"], "WRITER")
+            build_voice(project)
+            draft = project / "draft.md"
+            draft.write_text(
+                (project / "drafts" / "closer.md").read_text(encoding="utf-8")
+                + "\n\n[Writer: add the story here]\n\n[writer: and the quote]\n",
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main(["judge", str(draft), "--json", "--project", str(project)])
+            report = json.loads(out.getvalue())
+            self.assertTrue(report["reviewRequired"])
+            self.assertEqual(
+                report["placeholders"],
+                ["[Writer: add the story here]", "[writer: and the quote]"],
+            )
+
+    def test_manifest_rejects_placeholder_with_brackets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            init_project(project, git=False)
+            manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
+            manifest["placeholder"] = "[FRANK]"
+            (project / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(ProjectError):
+                load_manifest(project)
+
+
+    def test_manifest_rejects_bad_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            init_project(project, git=False)
+            for bad in (
+                {"noSuchMetric": 1},
+                {"emDashesPer1k": -1},
+                {"openerShare": 1.5},
+                {"emDashesPer1k": "none"},
+            ):
+                manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
+                manifest["overrides"] = bad
+                (project / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+                with self.assertRaises(ProjectError, msg=str(bad)):
+                    load_manifest(project)
+
 
 
 class LearnTests(unittest.TestCase):
@@ -1077,6 +1288,115 @@ class ProjectTests(unittest.TestCase):
                 ),
                 2,
             )
+
+
+class DefaultProjectTests(unittest.TestCase):
+    def test_precedence_explicit_env_cwd_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            default = base / "default-voice"
+            nearby = base / "nearby-voice"
+            init_project(default, git=False)
+            init_project(nearby, git=False)
+            elsewhere = base / "elsewhere"
+            elsewhere.mkdir()
+            with patch.dict(os.environ, {"GHOSTLESS_HOME": str(home)}):
+                self.assertEqual(main(["use", str(default)]), 0)
+                self.assertEqual(
+                    json.loads((home / "config.json").read_text())["defaultProject"],
+                    str(default.resolve()),
+                )
+                old = Path.cwd()
+                try:
+                    os.chdir(elsewhere)
+                    # No manifest above, no env: the default wins.
+                    self.assertEqual(
+                        find_project_with_source(), (default.resolve(), "defaultProject")
+                    )
+                    # A cwd manifest beats the default.
+                    os.chdir(nearby)
+                    self.assertEqual(
+                        find_project_with_source(), (nearby.resolve(), "cwd")
+                    )
+                    # The env var beats the cwd manifest.
+                    with patch.dict(os.environ, {"GHOSTLESS_PROJECT": str(default)}):
+                        self.assertEqual(
+                            find_project_with_source(), (default.resolve(), "GHOSTLESS_PROJECT")
+                        )
+                        # An explicit path beats the env var.
+                        self.assertEqual(
+                            find_project_with_source(nearby), (nearby.resolve(), "--project")
+                        )
+                finally:
+                    os.chdir(old)
+
+    def test_use_preserves_other_config_keys_and_rejects_non_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            home.mkdir()
+            (home / "config.json").write_text('{"updateCheck": false}\n', encoding="utf-8")
+            project = base / "voice"
+            init_project(project, git=False)
+            plain = base / "plain"
+            plain.mkdir()
+            with patch.dict(os.environ, {"GHOSTLESS_HOME": str(home)}):
+                self.assertEqual(main(["use", str(project)]), 0)
+                config = json.loads((home / "config.json").read_text())
+                self.assertEqual(config["updateCheck"], False)
+                self.assertEqual(config["defaultProject"], str(project.resolve()))
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    self.assertEqual(main(["use", str(plain)]), 2)
+                self.assertEqual(
+                    json.loads((home / "config.json").read_text())["defaultProject"],
+                    str(project.resolve()),
+                )
+
+    def test_stale_default_project_fails_loudly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            home.mkdir()
+            stale = base / "gone"
+            stale.mkdir()
+            (home / "config.json").write_text(
+                json.dumps({"defaultProject": str(stale)}), encoding="utf-8"
+            )
+            old = Path.cwd()
+            try:
+                os.chdir(base)
+                with patch.dict(os.environ, {"GHOSTLESS_HOME": str(home)}):
+                    with self.assertRaises(ProjectError) as caught:
+                        find_project_with_source()
+                self.assertIn("Default project", str(caught.exception))
+            finally:
+                os.chdir(old)
+
+    def test_locate_and_doctor_show_which_source_won(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            project = base / "my-voice"
+            init_project(project, git=False)
+            elsewhere = base / "elsewhere"
+            elsewhere.mkdir()
+            with patch.dict(os.environ, {"GHOSTLESS_HOME": str(home)}):
+                self.assertEqual(main(["use", str(project)]), 0)
+                old = Path.cwd()
+                try:
+                    os.chdir(elsewhere)
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        self.assertEqual(main(["locate"]), 0)
+                    self.assertIn(f"{project.resolve()} (via defaultProject)", out.getvalue())
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        self.assertEqual(main(["doctor"]), 0)
+                    self.assertIn(f"Project: {project.resolve()} (via defaultProject)", out.getvalue())
+                finally:
+                    os.chdir(old)
 
 
 class UpdatePlanTests(unittest.TestCase):

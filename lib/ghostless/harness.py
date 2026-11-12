@@ -14,7 +14,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ghostless.paths import ProjectError, data_home, suite_root, version
+from ghostless.paths import ProjectError, data_home, find_project_with_source, suite_root, version
 
 SKILLS = ("ghostless-draft", "ghostless-edit", "ghostless-learn")
 AGENTS = {
@@ -222,6 +222,11 @@ def doctor() -> int:
     print(f"Python: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
     print(f"Suite: {root or 'none'}")
     print(f"Data: {data_home()}")
+    try:
+        project, source = find_project_with_source()
+        print(f"Project: {project} (via {source})")
+    except ProjectError as exc:
+        print(f"Project: none ({exc})")
     _print_path_warning()
     if root is None:
         return 1
