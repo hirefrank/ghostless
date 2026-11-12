@@ -1,6 +1,8 @@
 # ghostless
 
-ghostless is a local CLI and a set of agent skills that measure how you write, then judge AI drafts against those numbers. Every edit you keep becomes part of the measure.
+**Measure how you write. Hold every AI draft to it.**
+
+The targets are counts from your files, not a "write like me" prompt. ghostless is a local CLI and a set of agent skills that measure how you write, then judge AI drafts against those numbers. Every edit you keep becomes part of the measure — the more you use it, the less ghostly it gets.
 
 Your corpus, transcripts, and edits stay on disk. `init` gives the voice directory its own local Git history, and you can attach a private remote when you choose. ghostless never adds a remote or pushes. The only network call is an optional once-a-day check for a new release, and that call sends no writing.
 
@@ -289,8 +291,6 @@ ghostless promote 2026-01-02-notes --demote
 Pairs learned by v0.1 need no rewrite. `build` reads them with a default: `writer-first` stays gold, `ai-first` becomes `edited`, and a pair with no recorded origin is treated as edited with a warning. Promote the ones you stand behind.
 
 ## How this differs
-
-The targets are counts from your files.
 
 Three pieces are new relative to a static "write like me" prompt:
 
