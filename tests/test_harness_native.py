@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -83,6 +85,89 @@ class NativeHarnessTests(unittest.TestCase):
         package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
         self.assertEqual(package["bin"]["ghostless"], "bin/ghostless.cjs")
         self.assertTrue((ROOT / "bin" / "ghostless.cjs").is_file())
+
+
+class PathWarningTests(unittest.TestCase):
+    def _bin_dir(self, prefix: Path) -> Path:
+        # Windows global installs put the .cmd shims directly in the prefix.
+        return prefix if os.name == "nt" else prefix / "bin"
+
+    def _fake_npm(self, base: Path, prefix: Path) -> Path:
+        """A stub `npm` that reports `prefix` for `npm config get prefix`."""
+        fakebin = base / "fakebin"
+        fakebin.mkdir()
+        npm = fakebin / "npm"
+        npm.write_text(f"#!/bin/sh\necho {prefix}\n", encoding="utf-8")
+        npm.chmod(0o755)
+        cmd = fakebin / "npm.cmd"
+        cmd.write_text(f"@echo {prefix}\r\n", encoding="utf-8")
+        return fakebin
+
+    def test_bin_dir_detected_and_warning_when_missing(self) -> None:
+        from ghostless.harness import npm_bin_path_warning, npm_global_bin_dir
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            prefix = base / "prefix"
+            expected = self._bin_dir(prefix)
+            fakebin = self._fake_npm(base, prefix)
+            env = {"PATH": str(fakebin), "GHOSTLESS_HOME": str(base / "data")}
+            with patch.dict(os.environ, env):
+                # PATH holds only the stub, so the bin dir is missing from it.
+                self.assertEqual(npm_global_bin_dir(), expected)
+                warning = npm_bin_path_warning()
+                self.assertIsNotNone(warning)
+                self.assertIn(str(expected), warning)
+                if os.name != "nt":
+                    self.assertIn('export PATH="', warning)
+                with patch.dict(
+                    os.environ,
+                    {"PATH": os.pathsep.join([str(fakebin), str(expected)])},
+                ):
+                    self.assertIsNone(npm_bin_path_warning())
+
+    def test_no_npm_means_no_warning(self) -> None:
+        from ghostless.harness import npm_global_bin_dir
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"PATH": tmp}):
+                os.environ.pop("NPM_CONFIG_PREFIX", None)
+                self.assertIsNone(npm_global_bin_dir())
+
+    def test_windows_npm_shim_runs_through_cmd(self) -> None:
+        # Regression: launching npm.cmd directly fails on Windows
+        # (CreateProcess cannot run .cmd shims), the OSError was swallowed,
+        # and the warning never fired. Pin the argv on nt.
+        import ghostless.harness as harness
+
+        npm = r"C:\Program Files\nodejs\npm.cmd"
+        with patch.object(harness.os, "name", "nt"):
+            self.assertEqual(
+                harness._npm_prefix_command(npm),
+                ["cmd", "/c", npm, "config", "get", "prefix"],
+            )
+        # The POSIX expectation must also pin os.name: on Windows it is
+        # genuinely "nt", so without the patch this asserts the cmd form.
+        with patch.object(harness.os, "name", "posix"):
+            self.assertEqual(
+                harness._npm_prefix_command("/usr/local/bin/npm"),
+                ["/usr/local/bin/npm", "config", "get", "prefix"],
+            )
+
+    def test_doctor_warns_when_bin_dir_missing_from_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            prefix = base / "prefix"
+            expected = self._bin_dir(prefix)
+            fakebin = self._fake_npm(base, prefix)
+            env = {"PATH": str(fakebin), "GHOSTLESS_HOME": str(base / "data")}
+            with patch.dict(os.environ, env):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    self.assertEqual(main(["doctor"]), 0)
+            self.assertIn(str(expected), out.getvalue())
+            if os.name != "nt":
+                self.assertIn("export PATH=", out.getvalue())
 
 
 if __name__ == "__main__":

@@ -19,6 +19,8 @@ ghostless install-skills
 
 The global npm install puts `ghostless` on `PATH`. `install-skills` creates `~/.ghostless/` and installs the three skills into detected harnesses. It links on macOS/Linux and copies on Windows, where creating symlinks can require extra privileges.
 
+If `ghostless` is not found right after a global install, the npm prefix's `bin` directory is not on `PATH` in that shell — for example `~/.local/bin` when the prefix is `~/.local`. Add it with `export PATH="$HOME/.local/bin:$PATH"` (using your own bin directory), or run `ghostless doctor` once the binary is reachable: it prints the bin directory and the exact export line when it is missing.
+
 One-off install of the skills:
 
 ```bash
