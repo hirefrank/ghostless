@@ -31,6 +31,13 @@ AGENTS = {
 COPY_MARKER = ".ghostless-installed"
 
 
+def _npm_prefix_command(npm: str) -> list[str]:
+    # Windows .cmd shims must run through the command interpreter.
+    if os.name == "nt":
+        return ["cmd", "/c", npm, "config", "get", "prefix"]
+    return [npm, "config", "get", "prefix"]
+
+
 def npm_global_bin_dir() -> Path | None:
     """The directory `npm i -g` puts the `ghostless` binary in, or None.
 
@@ -42,7 +49,7 @@ def npm_global_bin_dir() -> Path | None:
     if npm is not None:
         try:
             completed = subprocess.run(
-                [npm, "config", "get", "prefix"],
+                _npm_prefix_command(npm),
                 check=False, capture_output=True, text=True, timeout=30,
             )
         except (OSError, subprocess.SubprocessError):

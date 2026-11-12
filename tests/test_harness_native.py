@@ -134,6 +134,23 @@ class PathWarningTests(unittest.TestCase):
                 os.environ.pop("NPM_CONFIG_PREFIX", None)
                 self.assertIsNone(npm_global_bin_dir())
 
+    def test_windows_npm_shim_runs_through_cmd(self) -> None:
+        # Regression: launching npm.cmd directly fails on Windows
+        # (CreateProcess cannot run .cmd shims), the OSError was swallowed,
+        # and the warning never fired. Pin the argv on nt.
+        import ghostless.harness as harness
+
+        npm = r"C:\Program Files\nodejs\npm.cmd"
+        with patch.object(harness.os, "name", "nt"):
+            self.assertEqual(
+                harness._npm_prefix_command(npm),
+                ["cmd", "/c", npm, "config", "get", "prefix"],
+            )
+        self.assertEqual(
+            harness._npm_prefix_command("/usr/local/bin/npm"),
+            ["/usr/local/bin/npm", "config", "get", "prefix"],
+        )
+
     def test_doctor_warns_when_bin_dir_missing_from_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
