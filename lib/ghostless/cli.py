@@ -15,7 +15,15 @@ from ghostless.guide import render_guide
 from ghostless.harness import main as harness_main
 from ghostless.judge import format_report, judge_text
 from ghostless.learn import learn_edit, load_edit_summary, promote_final, refresh_edit_summary
-from ghostless.paths import ProjectError, data_home, find_project, suite_root, version
+from ghostless.paths import (
+    ProjectError,
+    data_home,
+    find_project,
+    find_project_with_source,
+    set_default_project,
+    suite_root,
+    version,
+)
 from ghostless.rules import confirm_rule, reject_rule, retire_rule, rules_summary
 from ghostless.sessions import finish_session, list_sessions, snapshot_session, start_session
 from ghostless.project import (
@@ -216,6 +224,11 @@ def main(argv: list[str] | None = None) -> int:
     _add_project(eval_parser)
 
     sub.add_parser("locate", help="Print the voice project directory")
+    use_parser = sub.add_parser(
+        "use",
+        help="Remember a voice project as the default (writes defaultProject to ~/.ghostless/config.json)",
+    )
+    use_parser.add_argument("directory", help="Voice project directory")
     which_parser = sub.add_parser("which", help="Print suite, data, and project paths")
     _add_project(which_parser)
 
@@ -288,8 +301,11 @@ def _dispatch(args: argparse.Namespace) -> int:
         case "eval":
             return _cmd_eval(args)
         case "locate":
-            print(find_project())
+            project, source = find_project_with_source()
+            print(f"{project} (via {source})")
             return 0
+        case "use":
+            return _cmd_use(args)
         case "which":
             return _cmd_which(args)
         case "install-skills" | "setup":
@@ -299,6 +315,14 @@ def _dispatch(args: argparse.Namespace) -> int:
         case _:
             print(f"ghostless: unknown command {command}", file=sys.stderr)
             return 2
+
+
+def _cmd_use(args: argparse.Namespace) -> int:
+    resolved = set_default_project(Path(args.directory))
+    print(f"Default project: {resolved}")
+    print("Precedence: --project > GHOSTLESS_PROJECT > cwd manifest > defaultProject.")
+    print("Run `ghostless locate` from anywhere to confirm which project wins.")
+    return 0
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
@@ -805,11 +829,14 @@ def _cmd_which(args: argparse.Namespace) -> int:
     print(f"data={data_home()}")
     print(f"version={version()}")
     try:
-        project = _project(args.project) if args.project else find_project()
+        project, source = (
+            (find_project_with_source(Path(args.project)) if args.project else find_project_with_source())
+        )
     except ProjectError:
         print("project=none")
         return 0
     print(f"project={project}")
+    print(f"project_source={source}")
     return 0
 
 
