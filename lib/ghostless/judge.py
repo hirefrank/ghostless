@@ -28,6 +28,28 @@ BOTH_DIRECTIONS = (
 DISTRIBUTION_ABS = 0.25
 DISTRIBUTION_MIN_SENTENCES = 8
 EM_DASH_ABS = 1.5
+# Metrics a manifest `overrides` entry may pin: the two-direction metrics
+# plus em dashes, which has its own comparison.
+OVERRIDABLE_METRICS = BOTH_DIRECTIONS + ("emDashesPer1k",)
+
+
+def apply_overrides(
+    targets: dict[str, object], overrides: dict[str, object] | None
+) -> dict[str, object]:
+    """Return `targets` with manifest override values pinned on top.
+
+    An override replaces the measured target (e.g. `emDashesPer1k: 0` bans
+    em dashes outright). Unknown keys and non-numbers are ignored here;
+    `load_manifest` is the place that rejects them.
+    """
+    if not overrides:
+        return dict(targets)
+    pinned = dict(targets)
+    for key, value in overrides.items():
+        if key in OVERRIDABLE_METRICS and isinstance(value, (int, float)) and not isinstance(value, bool):
+            pinned[key] = value
+    return pinned
+
 # Any bracketed uppercase name followed by a colon is an unfilled gap for
 # the writer: [WRITER: ...], [FRANK: ...], [TODO: ...]. The token is at
 # least two characters and starts with a letter, so a bare citation such as
@@ -88,10 +110,11 @@ def judge_text(
     *,
     section: str | None = None,
     fail_under: int = 70,
+    overrides: dict[str, object] | None = None,
     placeholder: str | None = None,
 ) -> dict[str, object]:
     targets, target_label = _targets(stats, section)
-    target_metrics = _metrics(targets)
+    target_metrics = apply_overrides(_metrics(targets), overrides)
     confidence = corpus_confidence(stats, section)
     if not text.strip():
         return {
@@ -155,7 +178,7 @@ def judge_text(
     em_check = _compare_em_dash(target_metrics.get("emDashesPer1k"), draft_metrics.get("emDashesPer1k"))
     if em_check is not None:
         checks.append(em_check)
-        if em_check["status"] == "high":
+        if em_check["status"] in ("high", "low"):
             structure.append(
                 {
                     "kind": "em-dash",
@@ -400,17 +423,28 @@ def _compare_em_dash(target: object, actual: object) -> dict[str, object] | None
         return None
     if not isinstance(target, (int, float)) or not isinstance(actual, (int, float)):
         return None
-    high = float(target) + max(EM_DASH_ABS, abs(float(target)) * 0.5)
-    status = "high" if float(actual) > high else "ok"
+    slack = max(EM_DASH_ABS, abs(float(target)) * 0.5)
+    if float(target) == 0:
+        # A target of 0 bans em dashes outright (e.g. an override pinning
+        # emDashesPer1k to 0): no slack, so any use reads high.
+        slack = 0.0
+    low = max(0.0, float(target) - slack)
+    high = float(target) + slack
+    status = "ok"
+    if float(actual) < low:
+        status = "low"
+    elif float(actual) > high:
+        status = "high"
+    penalty = 0 if status == "ok" else _distance_penalty(float(actual), low, high)
     return {
         "metric": "emDashesPer1k",
         "label": METRIC_LABELS["emDashesPer1k"],
         "target": _clean(float(target)),
         "actual": _clean(float(actual)),
-        "low": 0.0,
+        "low": round(low, 4),
         "high": round(high, 4),
         "status": status,
-        "penalty": 12 if status == "high" else 0,
+        "penalty": penalty,
     }
 
 

@@ -415,6 +415,7 @@ def _cmd_judge(args: argparse.Namespace) -> int:
         stats,
         section=args.section,
         fail_under=fail_under,
+        overrides=manifest.get("overrides") if isinstance(manifest.get("overrides"), dict) else None,
         placeholder=manifest.get("placeholder") if isinstance(manifest.get("placeholder"), str) else None,
     )
     if args.json:
@@ -842,6 +843,26 @@ def build_voice(root: Path) -> dict[str, object]:
     stats["generatedAt"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     fail_under = manifest.get("failUnder")
     stats["failUnder"] = fail_under if isinstance(fail_under, int) else 70
+    overrides = manifest.get("overrides")
+    overrides = overrides if isinstance(overrides, dict) else {}
+    stats["overrides"] = overrides
+    if overrides:
+        # The pinned value is the target from here on: judge reads it from
+        # voice-stats.json, and the guide table shows it as Weighted. The
+        # measured value stays visible in the Unweighted column.
+        from ghostless.judge import apply_overrides
+
+        weighted = stats.get("weighted")
+        if isinstance(weighted, dict) and isinstance(weighted.get("metrics"), dict):
+            weighted["metrics"] = apply_overrides(weighted["metrics"], overrides)
+        sections = stats.get("sections")
+        if isinstance(sections, dict):
+            for section in sections.values():
+                if not isinstance(section, dict):
+                    continue
+                block = section.get("weighted")
+                if isinstance(block, dict) and isinstance(block.get("metrics"), dict):
+                    block["metrics"] = apply_overrides(block["metrics"], overrides)
     placeholder = manifest.get("placeholder")
     stats["placeholder"] = placeholder if isinstance(placeholder, str) else None
     # A derived snapshot for the guide. `rules.json` stays the source of truth

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal, Never
 
 from ghostless.paths import ProjectError
+from ghostless.judge import OVERRIDABLE_METRICS
 from ghostless.stats import DEFAULT_WEIGHTS, Kind, Piece, Tier
 from ghostless.text import split_frontmatter
 
@@ -293,6 +294,7 @@ def load_manifest(root: Path) -> dict[str, object]:
     update_check = raw.get("updateCheck", True)
     if not isinstance(update_check, bool):
         raise ProjectError(f"{path}: updateCheck must be true or false.")
+    overrides = _validate_overrides(raw.get("overrides"), path)
     placeholder = raw.get("placeholder")
     if placeholder is None:
         # SCHEMA documents WRITER as the default. Without it the
@@ -320,9 +322,36 @@ def load_manifest(root: Path) -> dict[str, object]:
         "goldVoiceMinimum": minimum,
         "failUnder": fail_under_int,
         "updateCheck": update_check,
+        "overrides": overrides,
         "placeholder": placeholder,
         "pieces": pieces,
     }
+
+
+def _validate_overrides(value: object, path: Path) -> dict[str, float]:
+    """Manifest `overrides`: pinned metric targets that beat the measured ones.
+
+    Keys must be comparable metrics; values are non-negative numbers
+    (`openerShare` is a share, so it is capped at 1). An empty or absent
+    value means "no overrides" and leaves every target measured.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ProjectError(f"{path}: overrides must be an object.")
+    validated: dict[str, float] = {}
+    for key, number in value.items():
+        if not isinstance(key, str) or key not in OVERRIDABLE_METRICS:
+            known = ", ".join(OVERRIDABLE_METRICS)
+            raise ProjectError(f"{path}: overrides has unknown metric {key!r}. Known: {known}.")
+        if isinstance(number, bool) or not isinstance(number, (int, float)):
+            raise ProjectError(f"{path}: overrides.{key} must be a number.")
+        if float(number) < 0:
+            raise ProjectError(f"{path}: overrides.{key} must be zero or more.")
+        if key == "openerShare" and float(number) > 1:
+            raise ProjectError(f"{path}: overrides.openerShare must be between 0 and 1.")
+        validated[key] = float(number)
+    return validated
 
 
 def load_notes(root: Path) -> dict[str, str | None]:

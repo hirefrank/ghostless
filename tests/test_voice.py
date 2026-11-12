@@ -345,6 +345,106 @@ class JudgeTests(unittest.TestCase):
         self.assertIn("triplet", kinds)
         self.assertEqual(structural_tells("I bought milk, oats, and tea from the shop."), [])
 
+    def _stats_from_draft(self, draft: str, **targets: float) -> dict[str, object]:
+        from ghostless.judge import draft_summary
+
+        metrics = dict(draft_summary(draft)["metrics"])
+        metrics.update(targets)
+        return {"weighted": {"metrics": metrics, "banList": []}}
+
+    def test_em_dash_underuse_warns_like_overuse(self) -> None:
+        draft = (
+            "I write short lines. I keep them plain. I stop when the thought ends. "
+            "I start again. I write daily. I cut what I do not need. "
+            "I read it aloud. I fix the clumsy line. I ship the piece. I move on."
+        )
+        stats = self._stats_from_draft(draft, emDashesPer1k=8.1)
+        report = judge_text(draft, stats)
+        check = next(item for item in report["checks"] if item["metric"] == "emDashesPer1k")
+        self.assertEqual(check["status"], "low")
+        self.assertEqual(check["low"], 4.05)
+        self.assertGreater(check["penalty"], 0)
+        self.assertTrue(any(item["kind"] == "em-dash" for item in report["structure"]))
+        self.assertTrue(report["reviewRequired"])
+
+    def test_other_mid_range_metrics_already_warn_low(self) -> None:
+        # Verified, not assumed: _compare warns both ways for the
+        # two-direction metrics; only em dashes lacked a floor.
+        draft = "I write short lines. I keep them plain. I stop when the thought ends."
+        stats = self._stats_from_draft(draft, iPer1k=600.0)
+        report = judge_text(draft, stats)
+        check = next(item for item in report["checks"] if item["metric"] == "iPer1k")
+        self.assertEqual(check["status"], "low")
+        self.assertGreater(check["penalty"], 0)
+
+    def test_override_zero_bans_em_dashes(self) -> None:
+        from ghostless.judge import apply_overrides
+
+        draft = (
+            "I write with a pause — and then I stop — and then I start again. "
+            "Short lines. Clear lines. I keep going. I stop here. I start again. "
+            "I write plainly. I write daily."
+        )
+        stats = self._stats_from_draft(draft)
+        report = judge_text(draft, stats, overrides={"emDashesPer1k": 0})
+        check = next(item for item in report["checks"] if item["metric"] == "emDashesPer1k")
+        self.assertEqual(check["target"], 0)
+        self.assertEqual(check["status"], "high")
+        self.assertGreater(check["penalty"], 0)
+        # The override never rewrites the caller's stats.
+        self.assertNotEqual(stats["weighted"]["metrics"]["emDashesPer1k"], 0)
+        self.assertEqual(apply_overrides({"emDashesPer1k": 8.1}, {"emDashesPer1k": 0}),
+                         {"emDashesPer1k": 0})
+
+        plain = "I write short lines. I keep them plain. I stop here. I start again."
+        calm = judge_text(plain, self._stats_from_draft(plain), overrides={"emDashesPer1k": 0})
+        check = next(item for item in calm["checks"] if item["metric"] == "emDashesPer1k")
+        self.assertEqual(check["status"], "ok")
+
+    def test_override_zero_bans_a_single_em_dash(self) -> None:
+        # Regression: the old 1.5-per-1k slack let a single dash in a
+        # ~1000-word draft score ok even with the target pinned to 0.
+        body = "I write short lines. " * 250
+        draft = body + "One line — with a dash."
+        stats = self._stats_from_draft(draft)
+        report = judge_text(draft, stats, overrides={"emDashesPer1k": 0})
+        check = next(item for item in report["checks"] if item["metric"] == "emDashesPer1k")
+        self.assertEqual(check["target"], 0)
+        # Inside the old slack band, so this only passes without the slack.
+        self.assertGreater(check["actual"], 0)
+        self.assertLess(check["actual"], 1.5)
+        self.assertEqual(check["high"], 0)
+        self.assertEqual(check["status"], "high")
+        self.assertGreater(check["penalty"], 0)
+        self.assertTrue(any(item["kind"] == "em-dash" for item in report["structure"]))
+
+    def test_override_pins_target_in_guide_and_judge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            shutil.copytree(SAMPLE, project)
+            manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
+            manifest["overrides"] = {"emDashesPer1k": 0}
+            (project / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            stats = build_voice(project)
+            self.assertEqual(stats["weighted"]["metrics"]["emDashesPer1k"], 0)
+            self.assertEqual(stats["overrides"], {"emDashesPer1k": 0})
+            guide = (project / "voice-guide.md").read_text(encoding="utf-8")
+            self.assertIn("target pinned to 0", guide)
+            self.assertIn("measured", guide)
+            draft = project / "draft.md"
+            draft.write_text(
+                (project / "drafts" / "closer.md").read_text(encoding="utf-8")
+                + "\n\nOne more line — with a dash.\n",
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main(["judge", str(draft), "--json", "--project", str(project)])
+            report = json.loads(out.getvalue())
+            check = next(item for item in report["checks"] if item["metric"] == "emDashesPer1k")
+            self.assertEqual(check["target"], 0)
+            self.assertEqual(check["status"], "high")
+
     def test_any_uppercase_name_placeholder_flags_review(self) -> None:
         from ghostless.judge import draft_summary
 
@@ -436,6 +536,24 @@ class JudgeTests(unittest.TestCase):
             (project / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaises(ProjectError):
                 load_manifest(project)
+
+
+    def test_manifest_rejects_bad_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            init_project(project, git=False)
+            for bad in (
+                {"noSuchMetric": 1},
+                {"emDashesPer1k": -1},
+                {"openerShare": 1.5},
+                {"emDashesPer1k": "none"},
+            ):
+                manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
+                manifest["overrides"] = bad
+                (project / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+                with self.assertRaises(ProjectError, msg=str(bad)):
+                    load_manifest(project)
+
 
 
 class LearnTests(unittest.TestCase):
