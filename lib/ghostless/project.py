@@ -294,7 +294,13 @@ def load_manifest(root: Path) -> dict[str, object]:
     if not isinstance(update_check, bool):
         raise ProjectError(f"{path}: updateCheck must be true or false.")
     placeholder = raw.get("placeholder")
-    if placeholder is not None:
+    if placeholder is None:
+        # SCHEMA documents WRITER as the default. Without it the
+        # case-insensitive token match never runs, so mixed-case
+        # [Writer: ...] slips past judge even though the old pattern
+        # caught it.
+        placeholder = "WRITER"
+    else:
         if (
             not isinstance(placeholder, str)
             or not placeholder.strip()

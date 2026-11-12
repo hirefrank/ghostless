@@ -403,6 +403,30 @@ class JudgeTests(unittest.TestCase):
             self.assertTrue(report["reviewRequired"])
             self.assertEqual(report["placeholders"], ["[frank: add the story here]"])
 
+    def test_default_placeholder_token_flags_mixed_case_writer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            shutil.copytree(SAMPLE, project)
+            # The sample manifest has no `placeholder` key: the documented
+            # default WRITER must apply, matched case-insensitively.
+            self.assertEqual(load_manifest(project)["placeholder"], "WRITER")
+            build_voice(project)
+            draft = project / "draft.md"
+            draft.write_text(
+                (project / "drafts" / "closer.md").read_text(encoding="utf-8")
+                + "\n\n[Writer: add the story here]\n\n[writer: and the quote]\n",
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main(["judge", str(draft), "--json", "--project", str(project)])
+            report = json.loads(out.getvalue())
+            self.assertTrue(report["reviewRequired"])
+            self.assertEqual(
+                report["placeholders"],
+                ["[Writer: add the story here]", "[writer: and the quote]"],
+            )
+
     def test_manifest_rejects_placeholder_with_brackets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "voice"
