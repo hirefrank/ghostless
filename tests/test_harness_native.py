@@ -146,10 +146,13 @@ class PathWarningTests(unittest.TestCase):
                 harness._npm_prefix_command(npm),
                 ["cmd", "/c", npm, "config", "get", "prefix"],
             )
-        self.assertEqual(
-            harness._npm_prefix_command("/usr/local/bin/npm"),
-            ["/usr/local/bin/npm", "config", "get", "prefix"],
-        )
+        # The POSIX expectation must also pin os.name: on Windows it is
+        # genuinely "nt", so without the patch this asserts the cmd form.
+        with patch.object(harness.os, "name", "posix"):
+            self.assertEqual(
+                harness._npm_prefix_command("/usr/local/bin/npm"),
+                ["/usr/local/bin/npm", "config", "get", "prefix"],
+            )
 
     def test_doctor_warns_when_bin_dir_missing_from_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
