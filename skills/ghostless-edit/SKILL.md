@@ -19,7 +19,7 @@ If a ghostless project is available (`ghostless locate`, then `voice-guide.md`),
 - Cut repetition, throat-clearing, and hedges.
 - Prefer their words. Do not swap in catalog AI-tells (`delve`, `tapestry`, `it's not X, it's Y`, neat triplets, extra em dashes).
 - Push back where a claim is vague or unsupported. Mark that in the change list. Do not invent the support.
-- Do not add opinions, anecdotes, quotes, or statistics they did not write. If something is missing, leave `[WRITER: your take]` instead of filling it.
+- Do not add opinions, anecdotes, quotes, or statistics they did not write. If something is missing, leave a placeholder with the token the voice guide names (default `[WRITER: your take]`) instead of filling it.
 
 ## What to show
 

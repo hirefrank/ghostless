@@ -28,7 +28,28 @@ BOTH_DIRECTIONS = (
 DISTRIBUTION_ABS = 0.25
 DISTRIBUTION_MIN_SENTENCES = 8
 EM_DASH_ABS = 1.5
-PLACEHOLDER_RE = re.compile(r"\[WRITER:[^\]]*\]", re.IGNORECASE)
+# Any bracketed uppercase name followed by a colon is an unfilled gap for
+# the writer: [WRITER: ...], [FRANK: ...], [TODO: ...]. The token is at
+# least two characters and starts with a letter, so a bare citation such as
+# [see p. 3] or a year is not a placeholder. A manifest `placeholder` token
+# (e.g. "Frank") is matched case-insensitively on top of this, so a writer
+# whose token is not all-caps still flags.
+PLACEHOLDER_RE = re.compile(r"\[[A-Z][A-Z0-9 _\-]{1,}:[^\]]*\]")
+
+
+def placeholder_pattern(token: str) -> "re.Pattern[str]":
+    return re.compile(r"\[" + re.escape(token) + r":[^\]]*\]", re.IGNORECASE)
+
+
+def find_placeholders(text: str, placeholder: str | None = None) -> list[str]:
+    found = [match.group(0) for match in PLACEHOLDER_RE.finditer(text)]
+    if placeholder:
+        seen = set(found)
+        for match in placeholder_pattern(placeholder).finditer(text):
+            if match.group(0) not in seen:
+                seen.add(match.group(0))
+                found.append(match.group(0))
+    return found
 
 # Sample-size thresholds for the confidence block. 1,500 words matches the
 # provisional-ban-list warning build already writes. Below it, a score is a
@@ -67,6 +88,7 @@ def judge_text(
     *,
     section: str | None = None,
     fail_under: int = 70,
+    placeholder: str | None = None,
 ) -> dict[str, object]:
     targets, target_label = _targets(stats, section)
     target_metrics = _metrics(targets)
@@ -111,7 +133,7 @@ def judge_text(
     ban_list = _string_list(_block(stats.get("weighted")).get("banList"))
     banned = [{"tell": tell, "count": count} for tell, count in ban_hits(text, ban_list)]
     structure = [{"kind": hit.kind, "excerpt": hit.excerpt} for hit in structural_tells(text)]
-    placeholders = [match.group(0) for match in PLACEHOLDER_RE.finditer(text)]
+    placeholders = find_placeholders(text, placeholder)
 
     checks: list[dict[str, object]] = []
     penalty = 0

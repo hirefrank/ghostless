@@ -345,6 +345,98 @@ class JudgeTests(unittest.TestCase):
         self.assertIn("triplet", kinds)
         self.assertEqual(structural_tells("I bought milk, oats, and tea from the shop."), [])
 
+    def test_any_uppercase_name_placeholder_flags_review(self) -> None:
+        from ghostless.judge import draft_summary
+
+        draft = "I write short lines. [FRANK: add the story here]"
+        # Give the draft its own metrics as targets so only the placeholder
+        # can move reviewRequired; that keeps this test focused.
+        stats = {"weighted": {"metrics": draft_summary(draft)["metrics"], "banList": []}}
+        report = judge_text(draft, stats)
+        self.assertTrue(report["reviewRequired"])
+        self.assertEqual(report["placeholders"], ["[FRANK: add the story here]"])
+
+    def test_writer_placeholder_still_flags_and_lowercase_brackets_do_not(self) -> None:
+        from ghostless.judge import draft_summary, find_placeholders
+
+        self.assertEqual(find_placeholders("[WRITER: your take]"), ["[WRITER: your take]"])
+        self.assertEqual(find_placeholders("[TODO: fill this in]"), ["[TODO: fill this in]"])
+        self.assertEqual(find_placeholders("[see page 3]"), [])
+        self.assertEqual(find_placeholders("[2024: a year]"), [])
+        draft = "I write short lines. [see page 3]"
+        stats = {"weighted": {"metrics": draft_summary(draft)["metrics"], "banList": []}}
+        report = judge_text(draft, stats)
+        self.assertFalse(report["reviewRequired"])
+        self.assertEqual(report["placeholders"], [])
+
+    def test_configured_placeholder_token_matches_case_insensitively(self) -> None:
+        from ghostless.judge import draft_summary
+
+        draft = "I write short lines. [frank: add the story here]"
+        stats = {"weighted": {"metrics": draft_summary(draft)["metrics"], "banList": []}}
+        self.assertEqual(judge_text(draft, stats)["placeholders"], [])
+        report = judge_text(draft, stats, placeholder="Frank")
+        self.assertTrue(report["reviewRequired"])
+        self.assertEqual(report["placeholders"], ["[frank: add the story here]"])
+
+    def test_placeholder_token_from_manifest_reaches_judge_and_guide(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            shutil.copytree(SAMPLE, project)
+            manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
+            manifest["placeholder"] = "FRANK"
+            (project / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            build_voice(project)
+            guide = (project / "voice-guide.md").read_text(encoding="utf-8")
+            self.assertIn("[FRANK: your take]", guide)
+            self.assertNotIn("[WRITER: your take]", guide)
+            draft = project / "draft.md"
+            draft.write_text(
+                (project / "drafts" / "closer.md").read_text(encoding="utf-8")
+                + "\n\n[frank: add the story here]\n",
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main(["judge", str(draft), "--json", "--project", str(project)])
+            report = json.loads(out.getvalue())
+            self.assertTrue(report["reviewRequired"])
+            self.assertEqual(report["placeholders"], ["[frank: add the story here]"])
+
+    def test_default_placeholder_token_flags_mixed_case_writer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            shutil.copytree(SAMPLE, project)
+            # The sample manifest has no `placeholder` key: the documented
+            # default WRITER must apply, matched case-insensitively.
+            self.assertEqual(load_manifest(project)["placeholder"], "WRITER")
+            build_voice(project)
+            draft = project / "draft.md"
+            draft.write_text(
+                (project / "drafts" / "closer.md").read_text(encoding="utf-8")
+                + "\n\n[Writer: add the story here]\n\n[writer: and the quote]\n",
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main(["judge", str(draft), "--json", "--project", str(project)])
+            report = json.loads(out.getvalue())
+            self.assertTrue(report["reviewRequired"])
+            self.assertEqual(
+                report["placeholders"],
+                ["[Writer: add the story here]", "[writer: and the quote]"],
+            )
+
+    def test_manifest_rejects_placeholder_with_brackets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            init_project(project, git=False)
+            manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
+            manifest["placeholder"] = "[FRANK]"
+            (project / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(ProjectError):
+                load_manifest(project)
+
 
 class LearnTests(unittest.TestCase):
     def test_reorder_is_reported_as_moves(self) -> None:

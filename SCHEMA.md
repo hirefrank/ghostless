@@ -150,6 +150,7 @@ Text files are `.md`, `.markdown`, and `.txt`. `README.md` is skipped. A subfold
 | `updateCheck` | `false` turns off the daily release check when you run from this project. |
 | `rules` | Optional `{"minimumSupport": N}`. Distinct pieces a cut/add word must recur in before it becomes a rule candidate. Default 3. |
 | `failUnder` | `judge` exits 1 below this score, and when there is no usable voice data to compare against. Banned tells and structural tells lower the score and set `reviewRequired`, but do not fail on their own. |
+| `placeholder` | Optional plain name (e.g. `"FRANK"`) used for unfilled gaps. `judge` flags any `[UPPERCASE_NAME: ...]` bracket for review, and also matches this token case-insensitively, so `[frank: ...]` flags too. `build` writes the token into the voice guide's Rules, and the draft skill uses it. Default: `"WRITER"`. |
 | `pieces` | Optional explicit `{path, tier, section, kind}` rows. They override discovery. |
 
 `gold`, `silver`, and `bronze` hold writing the writer stands behind. `edited` holds AI-first finals: model prose the writer revised but has not promoted. An old manifest without an `edited` weight gets the default of 0.5.
