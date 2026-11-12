@@ -416,6 +416,7 @@ def _cmd_judge(args: argparse.Namespace) -> int:
         section=args.section,
         fail_under=fail_under,
         overrides=manifest.get("overrides") if isinstance(manifest.get("overrides"), dict) else None,
+        placeholder=manifest.get("placeholder") if isinstance(manifest.get("placeholder"), str) else None,
     )
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False))
@@ -862,6 +863,8 @@ def build_voice(root: Path) -> dict[str, object]:
                 block = section.get("weighted")
                 if isinstance(block, dict) and isinstance(block.get("metrics"), dict):
                     block["metrics"] = apply_overrides(block["metrics"], overrides)
+    placeholder = manifest.get("placeholder")
+    stats["placeholder"] = placeholder if isinstance(placeholder, str) else None
     # A derived snapshot for the guide. `rules.json` stays the source of truth
     # for decisions, and build never writes it.
     stats["rules"] = rules_summary(root, edits=edits)

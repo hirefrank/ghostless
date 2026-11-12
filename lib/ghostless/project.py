@@ -295,6 +295,24 @@ def load_manifest(root: Path) -> dict[str, object]:
     if not isinstance(update_check, bool):
         raise ProjectError(f"{path}: updateCheck must be true or false.")
     overrides = _validate_overrides(raw.get("overrides"), path)
+    placeholder = raw.get("placeholder")
+    if placeholder is None:
+        # SCHEMA documents WRITER as the default. Without it the
+        # case-insensitive token match never runs, so mixed-case
+        # [Writer: ...] slips past judge even though the old pattern
+        # caught it.
+        placeholder = "WRITER"
+    else:
+        if (
+            not isinstance(placeholder, str)
+            or not placeholder.strip()
+            or any(char in placeholder for char in "[]:")
+        ):
+            raise ProjectError(
+                f"{path}: placeholder must be a plain name such as \"FRANK\" "
+                "(no brackets or colon)."
+            )
+        placeholder = placeholder.strip()
     pieces = raw.get("pieces") or []
     if not isinstance(pieces, list):
         raise ProjectError(f"{path}: pieces must be a list.")
@@ -305,6 +323,7 @@ def load_manifest(root: Path) -> dict[str, object]:
         "failUnder": fail_under_int,
         "updateCheck": update_check,
         "overrides": overrides,
+        "placeholder": placeholder,
         "pieces": pieces,
     }
 

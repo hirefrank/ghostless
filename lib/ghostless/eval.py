@@ -137,6 +137,7 @@ def evaluate(root: Path, *, holdout: int | None = None, seed: int = 0) -> dict[s
             minimum=int(manifest["goldVoiceMinimum"]),
             fail_under=int(manifest["failUnder"]),
             overrides=manifest.get("overrides") if isinstance(manifest.get("overrides"), dict) else None,
+            placeholder=manifest.get("placeholder") if isinstance(manifest.get("placeholder"), str) else None,
             holdout=holdout,
             seed=seed,
             notes=notes,
@@ -147,6 +148,7 @@ def evaluate(root: Path, *, holdout: int | None = None, seed: int = 0) -> dict[s
         minimum=int(manifest["goldVoiceMinimum"]),
         fail_under=int(manifest["failUnder"]),
         overrides=manifest.get("overrides") if isinstance(manifest.get("overrides"), dict) else None,
+        placeholder=manifest.get("placeholder") if isinstance(manifest.get("placeholder"), str) else None,
         holdout=holdout,
         seed=seed,
         notes=notes,
@@ -161,6 +163,7 @@ def _evaluate_edits(
     minimum: int,
     fail_under: int,
     overrides: dict[str, object] | None,
+    placeholder: str | None,
     holdout: int | None,
     seed: int,
     notes: list[str],
@@ -188,7 +191,8 @@ def _evaluate_edits(
     for pair in held:
         section = pair.section if _section_exists(stats, pair.section) else None
         report = judge_text(pair.before, stats, section=section, fail_under=fail_under,
-                            overrides=overrides)
+                            overrides=overrides,
+                            placeholder=placeholder)
         score = _score(report)
         item: dict[str, object] = {
             "kind": "edit",
@@ -257,6 +261,7 @@ def _evaluate_prose(
     minimum: int,
     fail_under: int,
     overrides: dict[str, object] | None,
+    placeholder: str | None,
     holdout: int | None,
     seed: int,
     notes: list[str],
@@ -289,7 +294,8 @@ def _evaluate_prose(
     for piece in held:
         section = piece.section if _section_exists(stats, piece.section) else None
         report = judge_text(piece.text, stats, section=section, fail_under=fail_under,
-                            overrides=overrides)
+                            overrides=overrides,
+                            placeholder=placeholder)
         score = _score(report)
         item: dict[str, object] = {
             "kind": "piece",
