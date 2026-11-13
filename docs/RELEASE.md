@@ -4,7 +4,7 @@ v0.1 is ready to publish and is not published. npm and PyPI both need the mainta
 
 ## npm (supported install)
 
-The npm package includes a portable Node launcher under `bin/`, the voice logic under `lib/ghostless/`, and agent skills under `skills/`. Its installed artifact is smoke-tested on macOS, Windows, and Linux by `.github/workflows/package.yml`.
+The npm package includes a portable Node launcher under `bin/`, the voice logic under `lib/ghostless/`, and agent skills under `skills/`. Its installed artifact is smoke-tested on macOS, Windows, and Linux by `.github/workflows/package.yml`. The desktop editor in `editor/` is not in the tarball: `docs/EDITOR.md` builds it from a checkout ([#35](https://github.com/hirefrank/ghostless/issues/35)).
 
 1. Bump `version` in `package.json`, `pyproject.toml`, and `ghostless.__version__` together. `npm test` fails when they disagree.
 2. Add a `CHANGELOG.md` section `## vX.Y.Z — YYYY-MM-DD`.
