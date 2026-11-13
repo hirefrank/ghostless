@@ -42,9 +42,18 @@ npm i -g .
 ghostless install-skills
 ```
 
+A global install from a checkout is a link, not a copy. npm points `node_modules/ghostless` at the checkout, so `git switch`, a rebase, or an uncommitted edit changes the installed CLI, and `ghostless --version` reports the package version rather than the commit. For a frozen snapshot, pack the checkout and install the tarball it writes:
+
+```bash
+npm pack
+npm i -g ghostless-0.1.0.tgz
+```
+
+npm also keeps global packages inside the active Node version. After switching Node versions with a version manager, reinstall ghostless, then run `ghostless install-skills --force` when it reports the existing skill paths as not installed by ghostless ([#34](https://github.com/hirefrank/ghostless/issues/34)).
+
 The npm package is the unscoped name `ghostless`. The GitHub repository stays [hirefrank/ghostless](https://github.com/hirefrank/ghostless). v0.1 is not published yet. Publishing needs the maintainer's credentials. The workflows and `pyproject.toml` are in place; see [docs/RELEASE.md](docs/RELEASE.md).
 
-The native desktop editor is being tracked in [#9](https://github.com/hirefrank/ghostless/issues/9). The cross-platform CLI and distribution work is [#13](https://github.com/hirefrank/ghostless/issues/13); this CLI does not yet include the `start`/`finish` workflow from [#8](https://github.com/hirefrank/ghostless/issues/8).
+The native desktop editor lives in [`editor/`](editor/) and is not part of the npm package; see [docs/EDITOR.md](docs/EDITOR.md) and [#35](https://github.com/hirefrank/ghostless/issues/35). The cross-platform CLI work is [#13](https://github.com/hirefrank/ghostless/issues/13). The `start`/`finish` session workflow from [#8](https://github.com/hirefrank/ghostless/issues/8) ships in this CLI.
 See [desktop distribution](docs/CROSS_PLATFORM.md) for platform behavior, updates, and uninstall.
 
 ```bash
