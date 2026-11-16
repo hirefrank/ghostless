@@ -601,6 +601,9 @@ def _format_checks(report: dict[str, object]) -> list[str]:
     else:
         line = "confirmed checks: none"
     lines = [line]
+    note = block.get("note")
+    if isinstance(note, str) and note:
+        lines.append(f"  {note}")
     items = block.get("items")
     if isinstance(items, list):
         failing = [item for item in items if isinstance(item, dict) and item.get("pass") is False]

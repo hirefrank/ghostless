@@ -531,6 +531,36 @@ class CheckGradeTests(unittest.TestCase):
         self.assertIn("correlation:", rendered)
         self.assertNotIn("%", rendered.split("confirmed checks:")[1].split("\n", 1)[0])
 
+    def test_plain_eval_prints_why_a_check_case_was_dropped(self) -> None:
+        self.learn(
+            "Level 9: starts the note. Then we stop.",
+            "The correction starts the note. Then we stop.",
+            section="notes",
+            checks=[LABEL],
+            date="2026-01-02",
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            main(["checks", "confirm", LABEL, "--project", str(self.project)])
+        before = evaluate(self.project, holdout=1, seed=0)
+        scores = [item["score"] for item in before["items"]]
+        decisions_path = self.project / "checks.json"
+        decisions = json.loads(decisions_path.read_text(encoding="utf-8"))
+        decisions["confirmed"][check_id(LABEL)]["pair"] = "missing-pair"
+        decisions_path.write_text(json.dumps(decisions) + "\n", encoding="utf-8")
+        text = io.StringIO()
+        with contextlib.redirect_stdout(text):
+            code = main(["eval", "--project", str(self.project), "--holdout", "1"])
+        self.assertEqual(code, 0)
+        rendered = text.getvalue()
+        self.assertIn("confirmed checks: 0/1", rendered)
+        self.assertIn("no readable after file", rendered)
+        self.assertIn("correlation:", rendered)
+        self.assertNotIn("%", rendered.split("confirmed checks:")[1].split("\n", 1)[0])
+        after = evaluate(self.project, holdout=1, seed=0)
+        self.assertEqual([item["score"] for item in after["items"]], scores)
+        self.assertEqual(after["correlation"], before["correlation"])
+        self.assertEqual(after["verdict"], before["verdict"])
+
     def confirmed_holdout(self) -> list[dict[str, object]]:
         slug = self.learn(
             "Level 9: starts the note. Then we stop.",
