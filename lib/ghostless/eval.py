@@ -9,6 +9,10 @@ divided by all aligned positions, bounded 0..1. A writer who accepted a draft
 with light edits has a low rate, so a score that predicts acceptance should
 correlate *negatively* with it.
 
+Confirmed edit checks are a second, separate count: passes over checks on the
+held-out befores, with each check's after file as the case that already
+passes. That count is not blended into the mechanical score.
+
 With no learned pairs there is no acceptance signal to measure. In that case
 the module still holds out gold prose pieces, builds on the rest, and judges
 them, which checks that the targets generalize to unseen writing by the same
@@ -23,6 +27,7 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 
+from ghostless.checks import empty_confirmed_checks, grade_confirmed
 from ghostless.judge import corpus_confidence, judge_text
 from ghostless.learn import diff_texts
 from ghostless.paths import ProjectError
@@ -130,7 +135,7 @@ def evaluate(root: Path, *, holdout: int | None = None, seed: int = 0) -> dict[s
         raise ProjectError("manifest weights are missing.")
     pairs, notes = load_edit_pairs(root)
     if pairs:
-        return _evaluate_edits(
+        report = _evaluate_edits(
             pieces=pieces,
             pairs=pairs,
             weights={str(key): float(value) for key, value in weights.items()},
@@ -142,7 +147,15 @@ def evaluate(root: Path, *, holdout: int | None = None, seed: int = 0) -> dict[s
             seed=seed,
             notes=notes,
         )
-    return _evaluate_prose(
+        _, held = split_items(list(pairs), holdout, seed)
+        held_payload = [
+            {"slug": pair.slug, "section": pair.section, "before": pair.before}
+            for pair in held
+            if isinstance(pair, EditPair)
+        ]
+        report["confirmedChecks"] = grade_confirmed(root, held_payload, seed=seed)
+        return report
+    report = _evaluate_prose(
         pieces=pieces,
         weights={str(key): float(value) for key, value in weights.items()},
         minimum=int(manifest["goldVoiceMinimum"]),
@@ -153,6 +166,10 @@ def evaluate(root: Path, *, holdout: int | None = None, seed: int = 0) -> dict[s
         seed=seed,
         notes=notes,
     )
+    report["confirmedChecks"] = empty_confirmed_checks(
+        "No edit pairs, so there are no confirmed checks to grade."
+    )
+    return report
 
 
 def _evaluate_edits(
@@ -492,6 +509,7 @@ def format_eval(report: dict[str, object]) -> str:
     """Human-readable evaluation report."""
     if not report.get("ok"):
         lines = [f"ghostless eval: {report.get('error') or 'evaluation could not run'}"]
+        lines.extend(_format_checks(report))
         lines.extend(f"note: {note}" for note in _notes(report))
         return "\n".join(lines).rstrip() + "\n"
     mode = report.get("mode")
@@ -531,6 +549,7 @@ def format_eval(report: dict[str, object]) -> str:
     verdict = report.get("verdict")
     if isinstance(verdict, str) and verdict:
         lines.append(verdict)
+    lines.extend(_format_checks(report))
     acceptance = report.get("acceptance")
     if isinstance(acceptance, dict) and mode == "edits":
         accepted = acceptance.get("accepted")
@@ -565,6 +584,38 @@ def format_eval(report: dict[str, object]) -> str:
         lines.append("")
         lines.extend(f"note: {note}" for note in notes)
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _format_checks(report: dict[str, object]) -> list[str]:
+    """Passes over confirmed checks. Separate from the mechanical score."""
+    block = report.get("confirmedChecks")
+    if not isinstance(block, dict):
+        return []
+    label = block.get("label")
+    if isinstance(label, str) and label:
+        line = f"confirmed checks: {label}"
+        if block.get("fresh"):
+            line += " (fresh session)"
+        elif block.get("session"):
+            line += " (same session)"
+    else:
+        line = "confirmed checks: none"
+    lines = [line]
+    note = block.get("note")
+    if isinstance(note, str) and note:
+        lines.append(f"  {note}")
+    items = block.get("items")
+    if isinstance(items, list):
+        failing = [item for item in items if isinstance(item, dict) and item.get("pass") is False]
+        if failing:
+            lines.append("  failing:")
+            for item in failing[:8]:
+                lines.append(
+                    f"    {item.get('slug')} {item.get('case')}: {item.get('text')}"
+                )
+            if len(failing) > 8:
+                lines.append(f"    ... {len(failing) - 8} more")
+    return lines
 
 
 def _notes(report: dict[str, object]) -> list[str]:

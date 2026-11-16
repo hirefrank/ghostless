@@ -16,6 +16,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 
+from ghostless.checks import write_pair_checks
 from ghostless.learn import diff_texts, learn_edit
 from ghostless.paths import ProjectError
 from ghostless.project import (
@@ -171,6 +172,7 @@ def finish_session(
     *,
     session: str | None,
     note: str | None = None,
+    checks: list[str] | None = None,
 ) -> dict[str, object]:
     folder = _session_dir(root, session)
     metadata = _load_json(folder / "session.json")
@@ -189,6 +191,9 @@ def finish_session(
     if receipt_path.is_file():
         receipt = _load_json(receipt_path)
         if receipt.get("finalSha256") == _hash(after):
+            if checks:
+                _attach_checks(root, receipt, checks)
+                _write_json(receipt_path, receipt)
             return receipt
         raise ProjectError("This session is already finished with a different final. Start a new session.")
     if before.rstrip("\n") == after.rstrip("\n"):
@@ -200,9 +205,12 @@ def finish_session(
     # Keep the session self-contained: after.md is the final, whatever its source.
     _atomic_write(folder / "after.md", after)
     existing = _existing_learn(root, before, after)
+    prepared: list[dict[str, object]] | None = None
     if existing:
         learned_path = existing
         tier, confirmation = _existing_placement(root, existing)
+        if checks:
+            prepared = write_pair_checks(root, _slug_from_learned(existing), checks)
     else:
         section = metadata.get("section") if isinstance(metadata.get("section"), str) else None
         date_value = metadata.get("date")
@@ -214,10 +222,14 @@ def finish_session(
             section=section,
             origin=str(metadata.get("origin")),
             date=date,
+            checks=checks,
         )
         learned_path = str(result["path"])
         tier = result.get("tier")
         confirmation = result.get("confirmation")
+        saved = result.get("checks")
+        if isinstance(saved, list):
+            prepared = [item for item in saved if isinstance(item, dict)]
     receipt: dict[str, object] = {
         "kind": "ghostless-edit-receipt",
         "version": 1,
@@ -238,10 +250,35 @@ def finish_session(
         "confirmation": confirmation,
         "changes": diff_texts(before, after),
     }
+    if prepared:
+        receipt["checks"] = prepared
     _write_json(receipt_path, receipt)
     metadata["status"] = "final"
     _write_json(folder / "session.json", metadata)
     return receipt
+
+
+def _attach_checks(root: Path, receipt: dict[str, object], checks: list[str]) -> None:
+    """Add checks to a finished session without dropping ones already recorded."""
+    learned = receipt.get("learnedPath")
+    if not isinstance(learned, str):
+        raise ProjectError("This session has no learned pair to attach a check to.")
+    prepared = write_pair_checks(root, _slug_from_learned(learned), checks)
+    fresh_ids = {item.get("id") for item in prepared if isinstance(item, dict)}
+    previous = receipt.get("checks")
+    kept: list[dict[str, object]] = []
+    if isinstance(previous, list):
+        for item in previous:
+            if isinstance(item, dict) and item.get("id") not in fresh_ids:
+                kept.append(item)
+    receipt["checks"] = kept + prepared
+
+
+def _slug_from_learned(learned: str) -> str:
+    prefix = "gold/"
+    if not learned.startswith(prefix) or not learned[len(prefix) :]:
+        raise ProjectError(f"Learned path {learned} is not a gold pair.")
+    return learned[len(prefix) :]
 
 
 def _existing_learn(root: Path, before: str, after: str) -> str | None:

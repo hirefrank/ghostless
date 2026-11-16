@@ -9,6 +9,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ghostless.checks import checks_summary, confirm_check, reject_check, write_pair_checks
 from ghostless.export import write_export
 from ghostless.eval import evaluate, format_eval
 from ghostless.guide import render_guide
@@ -131,6 +132,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Count this final as gold now instead of edited. Prints what that changes.",
     )
     learn_parser.add_argument("--date", help="YYYY-MM-DD (default: today, UTC)")
+    learn_parser.add_argument(
+        "--check",
+        action="append",
+        default=[],
+        help="Yes/no judgment from this edit that judge cannot see. "
+        "Quote the span the edit added or cut. Inactive until you confirm it.",
+    )
     _add_project(learn_parser)
 
     promote_parser = sub.add_parser(
@@ -157,6 +165,13 @@ def main(argv: list[str] | None = None) -> int:
     finish_parser.add_argument("final", nargs="?", help="Final markdown file (default: session after.md)")
     finish_parser.add_argument("--session", help="Session ID; optional if exactly one is unfinished")
     finish_parser.add_argument("--note", help="Short note about the edit")
+    finish_parser.add_argument(
+        "--check",
+        action="append",
+        default=[],
+        help="Yes/no judgment from this edit that judge cannot see. "
+        "Quote the span the edit added or cut. Inactive until you confirm it.",
+    )
     finish_parser.add_argument("--json", action="store_true")
     _add_project(finish_parser)
 
@@ -209,6 +224,27 @@ def main(argv: list[str] | None = None) -> int:
     rules_parser.add_argument("--section", help="Limit a confirmed rule to this section")
     rules_parser.add_argument("--json", action="store_true")
     _add_project(rules_parser)
+
+    checks_parser = sub.add_parser(
+        "checks",
+        help="Review, confirm, or reject yes/no checks saved from an edit",
+    )
+    checks_parser.add_argument(
+        "action",
+        nargs="?",
+        default="list",
+        choices=("list", "confirm", "reject", "add"),
+        help="list checks (default), confirm or reject one, or add one to a learned pair",
+    )
+    checks_parser.add_argument(
+        "target",
+        nargs="?",
+        help="Check id or sentence, or for add, the gold pair slug",
+    )
+    checks_parser.add_argument("--text", help="Check sentence from the edit (add only)")
+    checks_parser.add_argument("--section", help="Limit a confirmed check to this section")
+    checks_parser.add_argument("--json", action="store_true")
+    _add_project(checks_parser)
 
     eval_parser = sub.add_parser(
         "eval",
@@ -298,6 +334,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             return _cmd_export(args)
         case "rules":
             return _cmd_rules(args)
+        case "checks":
+            return _cmd_checks(args)
         case "eval":
             return _cmd_eval(args)
         case "locate":
@@ -461,6 +499,7 @@ def _cmd_learn(args: argparse.Namespace) -> int:
         model=args.model,
         tool=args.tool,
         promote=args.promote,
+        checks=args.check,
     )
     meta = result["meta"]
     if not isinstance(meta, dict):
@@ -494,6 +533,7 @@ def _cmd_learn(args: argparse.Namespace) -> int:
     if isinstance(warning, str):
         print(f"  warning: {warning}")
     print("  The before/after pair is kept either way, and its diff feeds the guide's edit section.")
+    _print_saved_checks(result.get("checks"))
     if result.get("tier") == "gold":
         print("  after.md is gold. Run ghostless build to fold it into the guide.")
     else:
@@ -567,6 +607,7 @@ def _cmd_finish(args: argparse.Namespace) -> int:
         Path(args.final) if args.final else None,
         session=args.session,
         note=args.note,
+        checks=args.check,
     )
     if args.json:
         print(json.dumps(result, indent=2, ensure_ascii=False))
@@ -577,6 +618,7 @@ def _cmd_finish(args: argparse.Namespace) -> int:
         print(f"  learned: {root / str(result['learnedPath'])}")
         if result.get("tier"):
             print(f"  measured as {result['tier']}")
+        _print_saved_checks(result.get("checks"))
     return 0
 
 
@@ -728,6 +770,114 @@ def _cmd_rules(args: argparse.Namespace) -> int:
         print("  Retired; the decision stays on record.")
     print("Run `ghostless build` to update voice-guide.md.")
     return 0
+
+
+def _cmd_checks(args: argparse.Namespace) -> int:
+    root = _project(args.project)
+    action = args.action
+    if action == "list":
+        if args.target or args.text or args.section:
+            raise ProjectError("`ghostless checks` lists decisions. Pass confirm, reject, or add to change one.")
+        summary = checks_summary(root)
+        if args.json:
+            print(json.dumps(summary, indent=2, ensure_ascii=False))
+        else:
+            print(_format_checks(summary))
+        return 0
+    if action == "add":
+        if not args.target or not args.text:
+            raise ProjectError("`ghostless checks add <slug> --text` needs the learned pair and the sentence.")
+        if args.section:
+            raise ProjectError("--section applies to confirm. Add the check, then confirm it.")
+        prepared = write_pair_checks(root, args.target, [args.text])
+        if args.json:
+            print(json.dumps(prepared, indent=2, ensure_ascii=False))
+        else:
+            _print_saved_checks(prepared)
+        return 0
+    if not args.target:
+        raise ProjectError(f"`ghostless checks {action}` needs a check id or the check sentence.")
+    if action == "reject" and args.section:
+        raise ProjectError("--section only applies to confirm.")
+    if args.text:
+        raise ProjectError("--text is only for add.")
+    if action == "confirm":
+        result = confirm_check(root, args.target, section=args.section)
+    else:
+        result = reject_check(root, args.target)
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+    print(f"{result['id']}: {result['status']}")
+    if isinstance(result.get("section"), str):
+        print(f"  section: {result['section']}")
+    if isinstance(result.get("text"), str):
+        print(f"  {result['text']}")
+    if result["status"] == "confirmed":
+        print("  Active on the next build. `ghostless eval` grades it apart from the mechanical score.")
+    else:
+        print("  Rejected. A later edit will not bring it back.")
+    print("Run `ghostless build` to update voice-guide.md.")
+    return 0
+
+
+def _print_saved_checks(checks: object) -> None:
+    if not isinstance(checks, list) or not checks:
+        return
+    for item in checks:
+        if not isinstance(item, dict):
+            continue
+        status = item.get("status") or "pending"
+        print(f"  check {item.get('id')}: {status}")
+        print(f"    {item.get('text')}")
+    print("  A check is inactive until you run `ghostless checks confirm <id>`.")
+
+
+def _format_checks(summary: dict[str, object]) -> str:
+    lines = [
+        "Edit checks (yes/no judgments the mechanical score cannot see)",
+        "",
+        "Confirmed (active)",
+    ]
+    confirmed = summary.get("confirmed")
+    confirmed = confirmed if isinstance(confirmed, list) else []
+    if not confirmed:
+        lines.append("  none yet")
+    for item in confirmed:
+        if isinstance(item, dict):
+            lines.append(_check_heading(item))
+    lines.append("")
+    lines.append("Pending (saved from an edit, not active)")
+    pending = summary.get("pending")
+    pending = pending if isinstance(pending, list) else []
+    if not pending:
+        lines.append("  none")
+    for item in pending:
+        if isinstance(item, dict):
+            lines.append(_check_heading(item))
+    lines.append("")
+    lines.append("Rejected (not brought back by a later edit)")
+    rejected = summary.get("rejected")
+    rejected = rejected if isinstance(rejected, list) else []
+    if not rejected:
+        lines.append("  none")
+    for item in rejected:
+        if isinstance(item, dict):
+            lines.append(_check_heading(item))
+    lines.append("")
+    lines.append("Decide one with: ghostless checks confirm|reject <id> [--section NAME]")
+    lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _check_heading(item: dict[str, object]) -> str:
+    identifier = item.get("id") or "?"
+    text = item.get("text") or ""
+    section = item.get("section")
+    scope = f"section {section}" if isinstance(section, str) and section else "all sections"
+    pair = item.get("pair")
+    where = f"gold/{pair}" if isinstance(pair, str) and pair else "no pair"
+    return f"  {identifier}  ({scope}; {where})\n    {text}"
 
 
 def _format_rules(summary: dict[str, object]) -> str:
@@ -895,6 +1045,8 @@ def build_voice(root: Path) -> dict[str, object]:
     # A derived snapshot for the guide. `rules.json` stays the source of truth
     # for decisions, and build never writes it.
     stats["rules"] = rules_summary(root, edits=edits)
+    # Derived snapshot. `checks.json` stays the source of truth; build never writes it.
+    stats["checks"] = checks_summary(root)
     notes = load_notes(root)
     stats["style"] = notes["style"]
     stats["audience"] = notes["audience"]

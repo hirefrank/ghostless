@@ -47,6 +47,7 @@ def _render(
     lines.append("")
     lines.extend(_rules(stats, paste=paste))
     lines.extend(_voice_rules(stats))
+    lines.extend(_confirmed_checks(stats))
     lines.extend(_style(stats))
     lines.extend(_audience(stats))
     lines.append("## Targets")
@@ -237,6 +238,80 @@ def _rule_line(item: dict[str, object], *, confirmed: bool) -> str:
             detail.append("receipts: " + ", ".join(str(receipt) for receipt in receipts[:4]))
     suffix = f" ({'; '.join(detail)})" if detail else ""
     return f"- {verb} `{word}`{suffix}"
+
+
+def _confirmed_checks(stats: dict[str, object]) -> list[str]:
+    block = stats.get("checks")
+    lines = ["## Confirmed checks", ""]
+    if not isinstance(block, dict):
+        lines.append(
+            "No check data in this build. A check is a yes/no judgment from an edit "
+            "that the mechanical score cannot see. Run `ghostless build` after you save one."
+        )
+        lines.append("")
+        return lines
+    lines.append(
+        "Yes/no judgments you saved from an edit. They are not measured targets and "
+        "they do not change the mechanical score. Nothing here is active until you "
+        "confirm it. A rejected check stays rejected until you confirm it again on purpose."
+    )
+    lines.append("")
+    confirmed = block.get("confirmed")
+    confirmed = confirmed if isinstance(confirmed, list) else []
+    lines.append("### Confirmed")
+    lines.append("")
+    if confirmed:
+        for item in confirmed:
+            if isinstance(item, dict):
+                lines.append(_check_line(item, active=True))
+    else:
+        lines.append(
+            "None yet. Save one with `ghostless learn --check` or `ghostless finish --check`, "
+            "then `ghostless checks confirm <id>`."
+        )
+    lines.append("")
+    pending = block.get("pending")
+    pending = pending if isinstance(pending, list) else []
+    lines.append("### Not confirmed yet")
+    lines.append("")
+    if pending:
+        for item in pending:
+            if isinstance(item, dict):
+                lines.append(_check_line(item, active=False))
+    else:
+        lines.append("None.")
+    lines.append("")
+    rejected = block.get("rejected")
+    rejected = rejected if isinstance(rejected, list) else []
+    if rejected:
+        parts = [
+            str(item.get("id"))
+            for item in rejected
+            if isinstance(item, dict) and item.get("id")
+        ]
+        if parts:
+            lines.append("Rejected, and still rejected: " + ", ".join(parts) + ".")
+            lines.append("")
+    return lines
+
+
+def _check_line(item: dict[str, object], *, active: bool) -> str:
+    text = item.get("text") or item.get("id") or "?"
+    section = item.get("section")
+    pair = item.get("pair")
+    polarity = item.get("polarity")
+    span = item.get("span")
+    detail: list[str] = []
+    detail.append(f"section {section}" if isinstance(section, str) and section else "all sections")
+    if isinstance(pair, str) and pair:
+        detail.append(f"gold/{pair}")
+    if polarity == "forbid" and isinstance(span, str) and span:
+        detail.append(f"the edit cut \"{span}\"")
+    elif polarity == "require" and isinstance(span, str) and span:
+        detail.append(f"the edit added \"{span}\"")
+    if not active:
+        detail.append("not active")
+    return f"- {text} ({'; '.join(detail)})"
 
 
 def _style(stats: dict[str, object]) -> list[str]:
