@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- A yes/no check saved from an edit, for a judgment the mechanical score cannot see. It stays inactive until `ghostless checks confirm`, and a rejected check is not brought back by a later edit. `ghostless eval` grades confirmed checks as passes over checks when the draft skill or the voice guide changes, in a fresh grade session, and leaves the mechanical score as it is.
 - Optional `STYLE.md` and `AUDIENCE.md` files state what a piece must prove and who reads it; `build` folds both into the guide (and the paste export) without measuring them.
 - `ghostless save --style/--audience` appends a dated editorial rule to the right file; saving the same rule on the same day is a no-op.
 - `ghostless start`/`finish`/`sessions`/`snapshot` capture an immutable draft, a recoverable working copy, optional notes, and an edit receipt in `sessions/<id>/`. Finish learns the pair into `gold/` once and is idempotent; the id follows the `learn` slug (`YYYY-MM-DD[-section][-N]`).

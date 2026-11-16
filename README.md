@@ -285,6 +285,22 @@ ghostless build
 
 `confirm` records the receipt references it rests on. `reject` is permanent: a rejected rule is not reintroduced by later rebuilds. Decisions live in tracked `rules.json`; rebuilds read it and never rewrite it. The guide's `## Voice rules` section lists confirmed rules separately from hypotheses, and measured targets stay under `## Targets`.
 
+### Checks from an edit
+
+A recurring word is a voice rule. A one-off judgment the counts cannot see — the opener states the problem, a term is explained, a copied label comes out — is a check. You write the sentence. ghostless does not invent it.
+
+```bash
+ghostless learn --before draft.md --after final.md --section notes \
+  --check "The opener does not copy \"Level 9:\"."
+ghostless checks
+ghostless checks confirm <id> --section notes
+ghostless checks reject <id>
+```
+
+Quote the span the edit added or cut. If the edit only changes one such phrase, the quote can be omitted. A note about sentence length, em dashes, or a banned tell is refused, because `judge` already scores it. Nothing is active until you confirm it. Saving a rejected sentence again does not bring it back; confirming it again is how you change your mind.
+
+`ghostless eval` keeps the mechanical question (does the score track how hard you rewrote the draft?) and adds a separate count: passes over confirmed checks, for example `12/14`. Each check is run on the held-out befores in its section, and on the after file, which is the case that already passes. The count is not blended into the judge score, and the draft is not sent to a model. A new grade session starts when the drafting skill, the voice guide, the confirmed set, or the holdout changes. The same inputs keep the same session.
+
 ## Provenance and promotion
 
 Provenance is recorded separately from the measured statistics, so a number never implies a claim about authorship.

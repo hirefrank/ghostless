@@ -18,6 +18,7 @@ transcripts/            tracked    same as corpus/spoken.
 gold/<date-slug>/       tracked    the edit library: before.md, after.md, meta.json
 sessions/<session-id>/  tracked    an in-progress edit session (see below)
 rules.json              tracked    writer decisions about mined voice rules
+checks.json             tracked    writer decisions about yes/no edit checks
 holdouts/               tracked    writing kept out of the build on purpose
 voice-guide.md          ignored    written by build
 voice-stats.json        ignored    written by build
@@ -36,6 +37,7 @@ raw/                    ignored    source recordings and video
 | `gold/` (edit pairs) | tracked | yes, the `after` files, as gold or edited by provenance |
 | `sessions/` (in-progress edits) | tracked | no |
 | `rules.json` (voice-rule decisions) | tracked | yes, as confirmed rules |
+| `checks.json` (yes/no edit checks) | tracked | yes, as confirmed checks |
 | `holdouts/` | tracked | no |
 | generated guides, stats, summaries, exports | ignored | `judge` and `export` read them when present |
 | `drafts/`, `raw/`, temp files | ignored | no |
@@ -424,6 +426,36 @@ ghostless build
 ```
 
 `confirm` records the receipt references the decision rests on. `--section` scopes a confirmed rule. `build` writes the derived snapshot to `voice-stats.json` under `rules` and renders `## Voice rules` in `voice-guide.md`, keeping confirmed rules, hypotheses, and the measured targets visibly separate.
+
+## Edit checks
+
+A check is one yes/no sentence the writer saves from an edit, for a judgment `judge` does not score. The sentence is theirs. `learn --check` and `finish --check` store it on the pair. `ghostless checks add <slug> --text` does the same for a pair that is already learned. It is inactive until `ghostless checks confirm`. `reject` records the decision in `checks.json`. A later edit that repeats the sentence does not create a new hypothesis. An explicit `confirm` can reverse a rejection, which is the same gate as a voice rule.
+
+The gradable witness is a short span the edit added or cut. The writer quotes it in double quotes. If they do not, and the edit has exactly one such span, that span is the witness. A span `judge` already scores (a catalog tell, or a check that restates sentence length, contractions, em dashes, and the other mechanical metrics) is refused. Polarity comes from the edit: a span cut from the before must be absent, and a span added in the after must be present. The after file therefore passes at the time you save the check. Grading uses that same exact span. It does not paraphrase, and it does not call a model.
+
+```json
+{
+  "kind": "ghostless-checks",
+  "version": 1,
+  "confirmed": {
+    "check:the-opener-does-not-copy-level-9-ab12cd": {
+      "at": "2026-11-16T09:00:00Z",
+      "text": "The opener does not copy \"Level 9:\".",
+      "span": "Level 9:",
+      "polarity": "forbid",
+      "pair": "2026-01-02-notes",
+      "section": "notes"
+    }
+  },
+  "rejected": {}
+}
+```
+
+`section` limits the check to held-out befores in that section. Null means every section. The after file of `pair` is always graded, as the case that already passes.
+
+`ghostless eval` reports `confirmedChecks.label` as passes over checks, for example `12/14`. The denominator is each confirmed check applied to each in-scope held-out before, plus that check's after. The mechanical score, correlation, and verdict are unchanged. A grade session is written under ignored `stats/check-grades/<id>.json`. The id changes when the drafting skill (`skills/ghostless-draft/SKILL.md`), `voice-guide.md`, the confirmed set, or the holdout changes. Unchanged inputs keep the id and are graded again from the files.
+
+`build` copies the summary into `voice-stats.json` under `checks` and renders `## Confirmed checks` in the guide. It reads `checks.json` and does not write it.
 
 ## Suite data
 
