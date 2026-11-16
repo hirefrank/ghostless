@@ -259,10 +259,19 @@ def finish_session(
 
 
 def _attach_checks(root: Path, receipt: dict[str, object], checks: list[str]) -> None:
+    """Add checks to a finished session without dropping ones already recorded."""
     learned = receipt.get("learnedPath")
     if not isinstance(learned, str):
         raise ProjectError("This session has no learned pair to attach a check to.")
-    receipt["checks"] = write_pair_checks(root, _slug_from_learned(learned), checks)
+    prepared = write_pair_checks(root, _slug_from_learned(learned), checks)
+    fresh_ids = {item.get("id") for item in prepared if isinstance(item, dict)}
+    previous = receipt.get("checks")
+    kept: list[dict[str, object]] = []
+    if isinstance(previous, list):
+        for item in previous:
+            if isinstance(item, dict) and item.get("id") not in fresh_ids:
+                kept.append(item)
+    receipt["checks"] = kept + prepared
 
 
 def _slug_from_learned(learned: str) -> str:

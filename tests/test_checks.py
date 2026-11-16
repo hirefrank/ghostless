@@ -200,6 +200,111 @@ class CheckSaveTests(unittest.TestCase):
         self.assertTrue(passes_check(after, "require", meta["checks"][0]["span"]))
         self.assertFalse(passes_check(before, "require", meta["checks"][0]["span"]))
 
+    def test_a_wrapped_span_is_the_same_phrase_and_a_heading_counts(self) -> None:
+        wrapped = self.learn(
+            "Keep the writer’s\nlabel here.",
+            "Keep the plain label here.",
+            checks=['The edit must forbid "writer’s label".'],
+        )
+        meta = json.loads((self.project / "gold" / wrapped / "meta.json").read_text(encoding="utf-8"))
+        span = meta["checks"][0]["span"]
+        self.assertEqual(span, "writer’s label")
+        self.assertFalse(passes_check("Keep the writer’s  label here.", "forbid", span))
+        self.assertFalse(passes_check("Keep the writer’s\tlabel here.", "forbid", span))
+        self.assertTrue(passes_check("Keep the plain label here.", "forbid", span))
+        # `writer` is not the possessive `writer's`.
+        self.assertTrue(passes_check("The writer's desk is ready.", "forbid", "writer"))
+        self.assertFalse(passes_check("The writer left.", "forbid", "writer"))
+
+        heading = self.learn(
+            "# Level 9: starts the note.\n\nThen we stop.",
+            "# The correction starts the note.\n\nThen we stop.",
+            checks=[LABEL],
+            date="2026-01-05",
+        )
+        heading_meta = json.loads((self.project / "gold" / heading / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(heading_meta["checks"][0]["span"], "Level 9:")
+        self.assertEqual(heading_meta["checks"][0]["polarity"], "forbid")
+
+        auto = self.learn(
+            "Read the Level\n9 note today.",
+            "Read the note today.",
+            checks=["The opener does not copy a raw label."],
+            date="2026-01-06",
+        )
+        auto_meta = json.loads((self.project / "gold" / auto / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(auto_meta["checks"][0]["span"], "Level 9")
+
+    def test_smart_quotes_do_not_revive_a_rejected_check_or_hide_a_tell(self) -> None:
+        straight = 'The edit must forbid "writer\'s label".'
+        curly = 'The edit must forbid "writer’s label".'
+        self.assertEqual(check_id(straight), check_id(curly))
+        self.learn(
+            "Keep the writer's label here.",
+            "Keep the plain label here.",
+            checks=[straight],
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = main(["checks", "confirm", curly, "--project", str(self.project)])
+        self.assertEqual(code, 0)
+        decisions = json.loads((self.project / "checks.json").read_text(encoding="utf-8"))
+        self.assertIn(check_id(straight), decisions["confirmed"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            main(["checks", "reject", curly, "--project", str(self.project)])
+        with self.assertRaisesRegex(ProjectError, "stays rejected"):
+            self.learn(
+                "Keep the writer's label in the other note.",
+                "Keep the plain label in the other note.",
+                checks=[curly],
+                date="2026-01-07",
+            )
+        mixed = self.learn(
+            "Level 9: starts the note. Then we stop.",
+            "The correction starts the note. Then we stop.",
+            checks=['The opener does not copy “Level 9:".'],
+            date="2026-01-08",
+        )
+        mixed_meta = json.loads((self.project / "gold" / mixed / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(mixed_meta["checks"][0]["span"], "Level 9:")
+        with self.assertRaisesRegex(ProjectError, "judge already scores"):
+            self.learn(
+                "It’s worth noting the gap. Then we stop.",
+                "The gap is the point. Then we stop.",
+                checks=['Drop "it’s worth noting." from the opener.'],
+                date="2026-01-09",
+            )
+
+    def test_a_second_finish_keeps_checks_already_on_the_receipt(self) -> None:
+        draft = self.source / "draft.md"
+        draft.write_text("Level 9: starts the note. Then we stop.\n", encoding="utf-8")
+        session = start_session(
+            self.project,
+            draft,
+            section="notes",
+            origin="writer-first",
+            sources=[],
+        )
+        folder = self.project / str(session["path"])
+        (folder / "after.md").write_text("The correction starts the note. Then we stop.\n", encoding="utf-8")
+        added = 'The opener names "the correction".'
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                main(["finish", "--session", str(session["id"]), "--check", LABEL, "--project", str(self.project)]),
+                0,
+            )
+            self.assertEqual(
+                main(["finish", "--session", str(session["id"]), "--check", added, "--project", str(self.project)]),
+                0,
+            )
+        receipt = json.loads((folder / "receipt.json").read_text(encoding="utf-8"))
+        texts = [item["text"] for item in receipt["checks"]]
+        self.assertIn(LABEL, texts)
+        self.assertIn(added, texts)
+        meta = json.loads((self.project / "gold" / str(session["id"]) / "meta.json").read_text(encoding="utf-8"))
+        stored = [item["text"] for item in meta["checks"]]
+        self.assertIn(LABEL, stored)
+        self.assertIn(added, stored)
+
     def test_quoted_smart_apostrophes_match_the_edit_and_grade_consistently(self) -> None:
         for before, after, polarity in (
             ("Keep the writer’s label here.", "Keep the plain label here.", "forbid"),
@@ -487,6 +592,22 @@ class CheckGradeTests(unittest.TestCase):
                     repeated = grade_confirmed(self.project, held, seed=0)
                     self.assertFalse(repeated["fresh"])
                     self.assertEqual(repeated["session"], changed["session"])
+
+    def test_a_wrapped_holdout_still_fails_and_a_bad_after_does_not_crash(self) -> None:
+        held = self.confirmed_holdout()
+        held[0]["before"] = "Level\n9: starts the note."
+        graded = grade_confirmed(self.project, held, seed=0)
+        self.assertEqual(graded["label"], "1/2")
+        before_case = next(item for item in graded["items"] if item["case"] == "before")
+        self.assertFalse(before_case["pass"])
+        after_path = self.project / "gold" / str(held[0]["slug"]) / "after.md"
+        after_path.write_bytes(b"\xff\xfe not utf-8")
+        again = grade_confirmed(self.project, held, seed=0)
+        self.assertEqual(again["label"], "0/1")
+        self.assertNotIn("after", {item["case"] for item in again["items"]})
+        self.assertIn("readable after", again["note"])
+        self.assertTrue(again["fresh"])
+        self.assertNotEqual(again["session"], graded["session"])
 
 
 if __name__ == "__main__":

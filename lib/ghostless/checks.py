@@ -29,7 +29,7 @@ from pathlib import Path
 from ghostless.harness import AGENTS, COPY_MARKER, agent_dir
 from ghostless.paths import ProjectError, suite_root
 from ghostless.tells import AI_TELLS
-from ghostless.text import STOPWORDS, normalize, strip_non_prose, word_tokens, words
+from ghostless.text import STOPWORDS, WORD_RE, normalize, strip_non_prose, word_tokens
 
 MAX_CHECK_CHARS = 400
 MAX_SPAN_CHARS = 120
@@ -55,7 +55,14 @@ MECHANICAL_PHRASES = (
     "and/but/so",
 )
 
-QUOTE_RE = re.compile(r'"([^"\n]{2,})"|“([^”\n]{2,})”')
+# Straight and curly double quotes are the same quotation. Either side may
+# use either character; a pasted sentence often mixes them.
+QUOTE_RE = re.compile(r'["“]([^"“”\n]{2,})["”]')
+# Apostrophe stays inside the word, matching WORD_RE. A boundary on `\w`
+# alone finds `writer` inside `writer's`.
+_WORD_EDGE = r"[\w']"
+_HEADING_MARK = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+", re.MULTILINE)
+_TRAILING_PUNCT = ".,;:!?"
 TELLS = frozenset(tell.casefold() for tell in AI_TELLS)
 
 
@@ -64,8 +71,12 @@ def _now() -> str:
 
 
 def check_id(text: str) -> str:
-    """Stable id for one check sentence. The same words are the same check."""
-    normalized = " ".join(text.split()).casefold()
+    """Stable id for one check sentence. The same words are the same check.
+
+    Straight and curly quotes are the same sentence. A rejected check cannot
+    come back by retyping it with a smart apostrophe.
+    """
+    normalized = " ".join(normalize(text).split()).casefold()
     slug = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:6]
     if len(slug) > 40:
@@ -77,7 +88,7 @@ def check_id(text: str) -> str:
 
 def mechanical_overlap(text: str) -> str | None:
     """The metric phrase this check restates, if it restates one."""
-    folded = text.casefold()
+    folded = normalize(text).casefold()
     for phrase in MECHANICAL_PHRASES:
         if phrase in folded:
             return phrase
@@ -459,11 +470,13 @@ def grade_confirmed(
         for item in confirmed if item.get("pair")
     }
     fingerprint = _fingerprint(skill_sha, guide_sha, seed, cases, after_hashes, confirmed)
-    items, skipped = _grade_items(root, confirmed, held)
+    items, skipped, missing_afters = _grade_items(root, confirmed, held)
     passes = sum(1 for item in items if item["pass"])
     total = len(items)
     if skipped:
         note = f"{note} {skipped} confirmed check(s) had no span and were not graded."
+    if missing_afters:
+        note = f"{note} {missing_afters} confirmed check(s) had no readable after file."
     session_id = fingerprint
     fresh = _write_grade(
         root,
@@ -563,9 +576,10 @@ def _grade_items(
     root: Path,
     confirmed: list[dict[str, object]],
     held: list[dict[str, object]],
-) -> tuple[list[dict[str, object]], int]:
+) -> tuple[list[dict[str, object]], int, int]:
     items: list[dict[str, object]] = []
     skipped = 0
+    missing_afters = 0
     for check in confirmed:
         span = check.get("span")
         polarity = check.get("polarity")
@@ -578,7 +592,9 @@ def _grade_items(
         section = check.get("section") if isinstance(check.get("section"), str) else None
         if isinstance(pair, str) and pair:
             after = _read_after(root, pair)
-            if after is not None:
+            if after is None:
+                missing_afters += 1
+            else:
                 items.append(
                     _grade_row(
                         check_id=str(identifier),
@@ -605,7 +621,7 @@ def _grade_items(
                 )
             )
     items.sort(key=lambda item: (str(item["check"]), str(item["slug"]), str(item["case"])))
-    return items, skipped
+    return items, skipped, missing_afters
 
 
 def _grade_row(
@@ -637,7 +653,7 @@ def _read_after(root: Path, slug: str) -> str | None:
         return None
     try:
         return path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeError):
         return None
 
 
@@ -722,8 +738,8 @@ def _polarity_for_quote(span: str, before: str, after: str) -> str:
 
 
 def _candidate_spans(before: str, after: str) -> list[tuple[str, str]]:
-    before_words = words(before)
-    after_words = words(after)
+    before_words = _prose_words(before)
+    after_words = _prose_words(after)
     matcher = difflib.SequenceMatcher(
         None,
         [word.casefold() for word in before_words],
@@ -753,7 +769,11 @@ def _candidate_spans(before: str, after: str) -> list[tuple[str, str]]:
 def _surface(text: str, tokens: list[str]) -> str | None:
     if not tokens:
         return None
-    pattern = r"(?i)(?<!\w)" + r"\W+".join(re.escape(token) for token in tokens) + r"(?!\w)"
+    pattern = (
+        rf"(?i)(?<!{_WORD_EDGE})"
+        + r"\W+".join(re.escape(token) for token in tokens)
+        + rf"(?!{_WORD_EDGE})"
+    )
     match = re.search(pattern, _body(text))
     if match is None:
         return " ".join(tokens)
@@ -780,29 +800,46 @@ def _usable_span(span: str, *, quoted: bool) -> bool:
 
 
 def _judge_already_sees(span: str) -> bool:
-    folded = " ".join(span.split()).casefold()
+    folded = " ".join(normalize(span).split()).casefold().strip(_TRAILING_PUNCT)
     if folded in TELLS:
         return True
-    tokens = word_tokens(span)
+    tokens = word_tokens(folded)
     return len(tokens) == 1 and tokens[0] in TELLS
 
 
 def _quotes(text: str) -> list[str]:
     found: list[str] = []
     for match in QUOTE_RE.finditer(text):
-        span = match.group(1) or match.group(2)
+        span = match.group(1)
         if span:
             found.append(span.strip())
     return found
 
 
 def _contains(text: str, span: str) -> bool:
-    pattern = r"(?<!\w)" + re.escape(normalize(span)) + r"(?!\w)"
+    """Whether the span's words are in the prose, in order.
+
+    A line break, a tab, or a run of spaces between those words is still the
+    span. An apostrophe is part of the word, so `writer` is not `writer's`.
+    """
+    parts = [re.escape(part) for part in normalize(span).split()]
+    if not parts:
+        return False
+    pattern = rf"(?<!{_WORD_EDGE})" + r"\s+".join(parts) + rf"(?!{_WORD_EDGE})"
     return re.search(pattern, _body(text), re.IGNORECASE) is not None
 
 
 def _body(text: str) -> str:
-    return strip_non_prose(text)
+    """Prose a check can see.
+
+    Measurement drops an entire ATX heading. The heading is still the edit,
+    so keep its words and then strip the other non-prose.
+    """
+    return strip_non_prose(_HEADING_MARK.sub("", text))
+
+
+def _prose_words(text: str) -> list[str]:
+    return WORD_RE.findall(_body(text))
 
 
 def _pair_checks(root: Path) -> list[dict[str, object]]:
