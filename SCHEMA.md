@@ -455,6 +455,8 @@ The gradable witness is a short span the edit added or cut. The writer quotes it
 
 `ghostless eval` reports `confirmedChecks.label` as passes over checks, for example `12/14`. The denominator is each confirmed check applied to each in-scope held-out before, plus that check's after. The mechanical score, correlation, and verdict are unchanged. A grade session is written under ignored `stats/check-grades/<id>.json`. The id changes when the drafting skill (`skills/ghostless-draft/SKILL.md`), `voice-guide.md`, the confirmed set, or the holdout changes. Unchanged inputs keep the id and are graded again from the files.
 
+The session fingerprint includes each held-out before's contents and section, plus each check's after contents. The grade file records these hashes in `holdoutCases` and `afterSha256`, so editing a case keeps its previous grade session intact. `skillFiles` records hashes of the packaged drafting skill and installed copies in the supported harness directories. Since eval cannot identify the calling harness, changing any installed copy starts a new session. For a custom installation parent, set `GHOSTLESS_SKILLS_DIR` when running eval as well as when installing. `skillSha256` summarizes those skill files (or is the file hash when there is only one).
+
 `build` copies the summary into `voice-stats.json` under `checks` and renders `## Confirmed checks` in the guide. It reads `checks.json` and does not write it.
 
 ## Suite data

@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
@@ -22,6 +23,7 @@ from ghostless.checks import (  # noqa: E402
 )
 from ghostless.cli import build_voice, main  # noqa: E402
 from ghostless.eval import evaluate  # noqa: E402
+from ghostless.harness import install_skills  # noqa: E402
 from ghostless.learn import learn_edit  # noqa: E402
 from ghostless.paths import ProjectError  # noqa: E402
 from ghostless.project import TRACKED_PATHS, init_project  # noqa: E402
@@ -197,6 +199,25 @@ class CheckSaveTests(unittest.TestCase):
         before = (self.project / "gold" / slug / "before.md").read_text(encoding="utf-8")
         self.assertTrue(passes_check(after, "require", meta["checks"][0]["span"]))
         self.assertFalse(passes_check(before, "require", meta["checks"][0]["span"]))
+
+    def test_quoted_smart_apostrophes_match_the_edit_and_grade_consistently(self) -> None:
+        for before, after, polarity in (
+            ("Keep the writer’s label here.", "Keep the plain label here.", "forbid"),
+            ("Keep the plain label here.", "Keep the writer’s label here.", "require"),
+        ):
+            with self.subTest(polarity=polarity):
+                sentence = f'The edit must {polarity} "writer’s label".'
+                slug = self.learn(before, after, checks=[sentence])
+                meta = json.loads((self.project / "gold" / slug / "meta.json").read_text())
+                check = meta["checks"][0]
+                self.assertEqual(check["span"], "writer’s label")
+                self.assertEqual(check["polarity"], polarity)
+                self.assertTrue(passes_check(after, polarity, check["span"]))
+                self.assertFalse(passes_check(before, polarity, check["span"]))
+                self.assertEqual(
+                    passes_check("Keep the writer's label here.", polarity, check["span"]),
+                    passes_check("Keep the writer’s label here.", polarity, check["span"]),
+                )
 
     def test_finish_can_save_the_check_from_the_session(self) -> None:
         draft = self.source / "draft.md"
@@ -404,6 +425,68 @@ class CheckGradeTests(unittest.TestCase):
         self.assertIn("confirmed checks: 1/2", rendered)
         self.assertIn("correlation:", rendered)
         self.assertNotIn("%", rendered.split("confirmed checks:")[1].split("\n", 1)[0])
+
+    def confirmed_holdout(self) -> list[dict[str, object]]:
+        slug = self.learn(
+            "Level 9: starts the note. Then we stop.",
+            "The correction starts the note. Then we stop.",
+            section="notes", checks=[LABEL], date="2026-01-02",
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            main(["checks", "confirm", LABEL, "--project", str(self.project)])
+        return [{"slug": slug, "section": "notes", "before": "Level 9: starts the note."}]
+
+    def test_changed_case_contents_or_scope_preserve_the_previous_session(self) -> None:
+        held = self.confirmed_holdout()
+        first = grade_confirmed(self.project, held, seed=0)
+        original_path = self.project / "stats" / "check-grades" / f"{first['session']}.json"
+        original = original_path.read_bytes()
+        held[0]["before"] = "The correction starts the note."
+        changed_text = grade_confirmed(self.project, held, seed=0)
+        self.assertEqual(first["label"], "1/2")
+        self.assertEqual(changed_text["label"], "2/2")
+        self.assertTrue(changed_text["fresh"])
+        self.assertNotEqual(first["session"], changed_text["session"])
+        held[0]["section"] = "essay"
+        changed_scope = grade_confirmed(self.project, held, seed=0)
+        self.assertEqual(changed_scope["label"], "1/1")
+        self.assertTrue(changed_scope["fresh"])
+        self.assertNotEqual(changed_text["session"], changed_scope["session"])
+        (self.project / "gold" / str(held[0]["slug"]) / "after.md").write_text("Level 9: is back.")
+        changed_after = grade_confirmed(self.project, held, seed=0)
+        self.assertEqual(changed_after["label"], "0/1")
+        self.assertTrue(changed_after["fresh"])
+        self.assertNotEqual(changed_scope["session"], changed_after["session"])
+        self.assertEqual(original_path.read_bytes(), original)
+        repeated = grade_confirmed(self.project, held, seed=0)
+        self.assertFalse(repeated["fresh"])
+        self.assertEqual(repeated["session"], changed_after["session"])
+
+    def test_an_installed_skill_copy_change_opens_a_fresh_session(self) -> None:
+        held = self.confirmed_holdout()
+        for custom in (False, True):
+            with self.subTest(custom=custom):
+                home = self.base / ("custom-home" if custom else "default-home")
+                parent = home / "custom-skills" if custom else home / ".codex" / "skills"
+                env = dict(os.environ, GHOSTLESS_HOME=str(home / "data"))
+                env.pop("GHOSTLESS_SKILLS_DIR", None)
+                if custom:
+                    env["GHOSTLESS_SKILLS_DIR"] = str(parent)
+                with mock.patch.dict(os.environ, env, clear=True), mock.patch("pathlib.Path.home", return_value=home):
+                    with mock.patch("ghostless.harness._print_path_warning"), contextlib.redirect_stdout(io.StringIO()):
+                        install_skills(agent="codex", force=False, copy=True, no_launcher=True, verbose=False)
+                    installed = parent / "ghostless-draft" / "SKILL.md"
+                    first = grade_confirmed(self.project, held, seed=0)
+                    installed.write_text(installed.read_text() + "\nAlways start with the point.\n")
+                    changed = grade_confirmed(self.project, held, seed=0)
+                    self.assertIn(str(installed.resolve()), changed["skillFiles"])
+                    self.assertTrue(changed["fresh"])
+                    self.assertNotEqual(first["skillSha256"], changed["skillSha256"])
+                    self.assertNotEqual(first["session"], changed["session"])
+                    self.assertEqual(first["label"], changed["label"])
+                    repeated = grade_confirmed(self.project, held, seed=0)
+                    self.assertFalse(repeated["fresh"])
+                    self.assertEqual(repeated["session"], changed["session"])
 
 
 if __name__ == "__main__":

@@ -26,9 +26,10 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ghostless.harness import AGENTS, COPY_MARKER, agent_dir
 from ghostless.paths import ProjectError, suite_root
 from ghostless.tells import AI_TELLS
-from ghostless.text import STOPWORDS, strip_non_prose, word_tokens, words
+from ghostless.text import STOPWORDS, normalize, strip_non_prose, word_tokens, words
 
 MAX_CHECK_CHARS = 400
 MAX_SPAN_CHARS = 120
@@ -434,16 +435,30 @@ def grade_confirmed(
             "session": None,
             "fresh": False,
             "skillSha256": None,
+            "skillFiles": {},
             "guideSha256": None,
             "items": [],
             "note": "No confirmed checks yet. A saved check stays inactive until you confirm it.",
         }
-    skill = skill_path if skill_path is not None else draft_skill_path()
+    skill_paths = [skill_path] if skill_path is not None else draft_skill_paths()
+    skill_files = {str(path.resolve()): _sha256(path) for path in skill_paths}
     guide = guide_path if guide_path is not None else root / "voice-guide.md"
-    skill_sha = _sha256(skill)
+    skill_sha = _skill_sha256(skill_files)
     guide_sha = _sha256(guide)
     held_slugs = [str(item.get("slug")) for item in held if item.get("slug")]
-    fingerprint = _fingerprint(skill_sha, guide_sha, seed, held_slugs, confirmed)
+    cases = [
+        {
+            "slug": item.get("slug"),
+            "section": item.get("section"),
+            "beforeSha256": _text_sha256(str(item.get("before", ""))),
+        }
+        for item in held
+    ]
+    after_hashes = {
+        str(item["pair"]): _text_sha256(_read_after(root, str(item["pair"])))
+        for item in confirmed if item.get("pair")
+    }
+    fingerprint = _fingerprint(skill_sha, guide_sha, seed, cases, after_hashes, confirmed)
     items, skipped = _grade_items(root, confirmed, held)
     passes = sum(1 for item in items if item["pass"])
     total = len(items)
@@ -458,9 +473,12 @@ def grade_confirmed(
             "version": 1,
             "id": session_id,
             "skillSha256": skill_sha,
+            "skillFiles": skill_files,
             "guideSha256": guide_sha,
             "seed": seed,
             "holdout": held_slugs,
+            "holdoutCases": cases,
+            "afterSha256": after_hashes,
             "passes": passes,
             "total": total,
             "label": f"{passes}/{total}" if total else None,
@@ -474,6 +492,7 @@ def grade_confirmed(
         "session": session_id,
         "fresh": fresh,
         "skillSha256": skill_sha,
+        "skillFiles": skill_files,
         "guideSha256": guide_sha,
         "items": items,
         "note": note,
@@ -488,6 +507,43 @@ def draft_skill_path() -> Path | None:
     return path if path.is_file() else None
 
 
+def draft_skill_paths() -> list[Path]:
+    """Packaged skill and installed copies, since eval cannot infer the host.
+
+    Include every installed copy so changing any host's instructions starts
+    a new session. GHOSTLESS_SKILLS_DIR covers custom installation parents.
+    """
+    source = draft_skill_path()
+    found = {source.resolve()} if source is not None else set()
+    custom = os.environ.get("GHOSTLESS_SKILLS_DIR")
+    parents = [Path(custom).expanduser()] if custom else [agent_dir(name) for name in AGENTS]
+    for parent in parents:
+        folder = parent / "ghostless-draft"
+        path = folder / "SKILL.md"
+        marker = folder / COPY_MARKER
+        if not path.is_file():
+            continue
+        try:
+            owned_copy = marker.read_text(encoding="utf-8").strip() == "ghostless:ghostless-draft"
+        except (OSError, UnicodeError):
+            owned_copy = False
+        if folder.is_symlink() or owned_copy:
+            found.add(path.resolve())
+    return sorted(found)
+
+
+def _skill_sha256(files: dict[str, str | None]) -> str | None:
+    if not files:
+        return None
+    if len(files) == 1:
+        return next(iter(files.values()))
+    return _text_sha256(json.dumps(files, sort_keys=True))
+
+
+def _text_sha256(text: str | None) -> str | None:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest() if text is not None else None
+
+
 def empty_confirmed_checks(note: str) -> dict[str, object]:
     return {
         "passes": 0,
@@ -496,6 +552,7 @@ def empty_confirmed_checks(note: str) -> dict[str, object]:
         "session": None,
         "fresh": False,
         "skillSha256": None,
+        "skillFiles": {},
         "guideSha256": None,
         "items": [],
         "note": note,
@@ -588,14 +645,16 @@ def _fingerprint(
     skill_sha: str | None,
     guide_sha: str | None,
     seed: int,
-    held_slugs: list[str],
+    cases: list[dict[str, object]],
+    after_hashes: dict[str, str | None],
     confirmed: list[dict[str, object]],
 ) -> str:
     payload = {
         "skill": skill_sha,
         "guide": guide_sha,
         "seed": seed,
-        "holdout": held_slugs,
+        "holdout": cases,
+        "afters": after_hashes,
         "confirmed": [
             {
                 "id": item.get("id"),
@@ -738,7 +797,7 @@ def _quotes(text: str) -> list[str]:
 
 
 def _contains(text: str, span: str) -> bool:
-    pattern = r"(?<!\w)" + re.escape(span) + r"(?!\w)"
+    pattern = r"(?<!\w)" + re.escape(normalize(span)) + r"(?!\w)"
     return re.search(pattern, _body(text), re.IGNORECASE) is not None
 
 
