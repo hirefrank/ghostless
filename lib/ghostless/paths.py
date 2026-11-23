@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 from ghostless import __version__
+from ghostless.io import atomic_write_json
 
 
 class ProjectError(Exception):
@@ -99,7 +100,7 @@ def set_default_project(path: Path) -> Path:
     config_path = home / "config.json"
     config = load_home_config()
     config["defaultProject"] = str(resolved)
-    config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(config_path, config)
     return resolved
 
 

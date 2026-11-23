@@ -6,16 +6,16 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from collections.abc import Mapping
 from pathlib import Path
 
+from ghostless.build import build_voice as build_voice
 from ghostless.checks import checks_summary, confirm_check, reject_check, write_pair_checks
-from ghostless.export import write_export
 from ghostless.eval import evaluate, format_eval
-from ghostless.guide import render_guide
+from ghostless.export import write_export
 from ghostless.harness import main as harness_main
 from ghostless.judge import format_report, judge_text
-from ghostless.learn import learn_edit, load_edit_summary, promote_final, refresh_edit_summary
+from ghostless.learn import learn_edit, promote_final
 from ghostless.paths import (
     ProjectError,
     data_home,
@@ -25,22 +25,20 @@ from ghostless.paths import (
     suite_root,
     version,
 )
-from ghostless.rules import confirm_rule, reject_rule, retire_rule, rules_summary
-from ghostless.sessions import finish_session, list_sessions, snapshot_session, start_session
 from ghostless.project import (
     TRACKED_PATHS,
     discover,
     ensure_local_git,
-    git_toplevel,
     init_project,
     load_manifest,
-    load_notes,
     migrate_project,
     placement_for,
     read_provenance,
     save_note,
 )
-from ghostless.stats import compile_stats
+from ghostless.rules import confirm_rule, reject_rule, retire_rule, rules_summary
+from ghostless.schema import CompiledStats
+from ghostless.sessions import finish_session, list_sessions, snapshot_session, start_session
 from ghostless.updatecheck import run_once as check_for_update
 
 EPILOG = """
@@ -481,16 +479,13 @@ def _cmd_judge(args: argparse.Namespace) -> int:
         return 2
     stats = _load_stats(root)
     manifest = load_manifest(root)
-    fail_under = manifest.get("failUnder")
-    if not isinstance(fail_under, int):
-        fail_under = 70
     report = judge_text(
         draft_path.read_text(encoding="utf-8"),
         stats,
         section=args.section,
-        fail_under=fail_under,
-        overrides=manifest.get("overrides") if isinstance(manifest.get("overrides"), dict) else None,
-        placeholder=manifest.get("placeholder") if isinstance(manifest.get("placeholder"), str) else None,
+        fail_under=manifest["failUnder"],
+        overrides=manifest["overrides"],
+        placeholder=manifest["placeholder"],
     )
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False))
@@ -577,11 +572,10 @@ def _cmd_promote(args: argparse.Namespace) -> int:
     warning = result.get("warning")
     if isinstance(warning, str):
         print(f"  warning: {warning}")
-    if isinstance(minimum, int):
-        print(
-            f"  gold prose pieces: {before} → {after} (threshold {minimum}; "
-            f"bronze is {'format-only' if after >= minimum else 'still in voice'})"
-        )
+    print(
+        f"  gold prose pieces: {before} → {after} (threshold {minimum}; "
+        f"bronze is {'format-only' if after >= minimum else 'still in voice'})"
+    )
     if tier == "gold":
         print("  This final now counts at gold weight and toward goldVoiceMinimum.")
     else:
@@ -687,7 +681,10 @@ def _learned_placements(root: Path) -> dict[str, int]:
         except (OSError, json.JSONDecodeError, ProjectError):
             # A malformed pair fails loudly at build time, not during migrate.
             continue
-        counts[placement_for(provenance)] += 1
+        if placement_for(provenance) == "gold":
+            counts["gold"] += 1
+        else:
+            counts["edited"] += 1
     return counts
 
 
@@ -845,7 +842,7 @@ def _print_saved_checks(checks: object) -> None:
     print("  A check is inactive until you run `ghostless checks confirm <id>`.")
 
 
-def _format_checks(summary: dict[str, object]) -> str:
+def _format_checks(summary: Mapping[str, object]) -> str:
     lines = [
         "Edit checks (yes/no judgments the mechanical score cannot see)",
         "",
@@ -892,7 +889,7 @@ def _check_heading(item: dict[str, object]) -> str:
     return f"  {identifier}  ({scope}; {where})\n    {text}"
 
 
-def _format_rules(summary: dict[str, object]) -> str:
+def _format_rules(summary: Mapping[str, object]) -> str:
     minimum = summary.get("minimumSupport")
     lines = [
         f"Voice rules from edit receipts (minimum support: {minimum} distinct pieces)",
@@ -992,7 +989,7 @@ def _cmd_which(args: argparse.Namespace) -> int:
     print(f"version={version()}")
     try:
         project, source = (
-            (find_project_with_source(Path(args.project)) if args.project else find_project_with_source())
+            find_project_with_source(Path(args.project)) if args.project else find_project_with_source()
         )
     except ProjectError:
         print("project=none")
@@ -1002,50 +999,7 @@ def _cmd_which(args: argparse.Namespace) -> int:
     return 0
 
 
-def build_voice(root: Path) -> dict[str, object]:
-    manifest = load_manifest(root)
-    pieces = discover(root, manifest)
-    edits = refresh_edit_summary(root)
-    if not edits.get("learns"):
-        edits = load_edit_summary(root)
-    raw_weights = manifest["weights"]
-    if not isinstance(raw_weights, dict):
-        raise ProjectError("manifest weights are missing.")
-    weights = {str(key): float(value) for key, value in raw_weights.items()}
-    minimum = manifest["goldVoiceMinimum"]
-    if not isinstance(minimum, int):
-        raise ProjectError("goldVoiceMinimum is missing.")
-    stats = compile_stats(
-        pieces,
-        weights=weights,
-        gold_voice_minimum=minimum,
-        edits=edits,
-    )
-    stats["generatedAt"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    fail_under = manifest.get("failUnder")
-    stats["failUnder"] = fail_under if isinstance(fail_under, int) else 70
-    overrides = manifest.get("overrides")
-    overrides = overrides if isinstance(overrides, dict) else {}
-    stats["overrides"] = overrides
-    placeholder = manifest.get("placeholder")
-    stats["placeholder"] = placeholder if isinstance(placeholder, str) else None
-    # A derived snapshot for the guide. `rules.json` stays the source of truth
-    # for decisions, and build never writes it.
-    stats["rules"] = rules_summary(root, edits=edits)
-    # Derived snapshot. `checks.json` stays the source of truth; build never writes it.
-    stats["checks"] = checks_summary(root)
-    notes = load_notes(root)
-    stats["style"] = notes["style"]
-    stats["audience"] = notes["audience"]
-    (root / "voice-stats.json").write_text(
-        json.dumps(stats, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    (root / "voice-guide.md").write_text(render_guide(stats), encoding="utf-8")
-    return stats
-
-
-def _load_stats(root: Path) -> dict[str, object]:
+def _load_stats(root: Path) -> Mapping[str, object]:
     path = root / "voice-stats.json"
     if not path.is_file():
         print("No voice-stats.json yet. Building first.", file=sys.stderr)
@@ -1066,53 +1020,36 @@ def _add_project(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project", help="Voice project directory (default: search from cwd)")
 
 
-def _format_build(root: Path, stats: dict[str, object]) -> str:
-    counts = stats.get("counts") if isinstance(stats.get("counts"), dict) else {}
-    prose = counts.get("prose") if isinstance(counts, dict) and isinstance(counts.get("prose"), dict) else {}
-    spoken = counts.get("spoken") if isinstance(counts, dict) and isinstance(counts.get("spoken"), dict) else {}
-    spoken_total = 0
-    if isinstance(spoken, dict):
-        for value in spoken.values():
-            if isinstance(value, int):
-                spoken_total += value
-    weighted = _metrics(stats.get("weighted"))
-    unweighted = _metrics(stats.get("unweighted"))
-    ban = _block(stats.get("weighted")).get("banList")
-    ban_count = len(ban) if isinstance(ban, list) else 0
+def _format_build(root: Path, stats: CompiledStats) -> str:
+    counts = stats["counts"]
+    prose = counts["prose"]
+    spoken = counts["spoken"]
+    spoken_total = spoken["gold"] + spoken["silver"] + spoken["bronze"] + spoken["edited"]
+    weighted = stats["weighted"]["metrics"]
+    unweighted = stats["unweighted"]["metrics"]
+    ban_count = len(stats["weighted"]["banList"])
     lines = [
         f"voice guide: {root / 'voice-guide.md'}",
         (
             "pieces: "
-            f"gold {prose.get('gold', 0) if isinstance(prose, dict) else 0}, "
-            f"silver {prose.get('silver', 0) if isinstance(prose, dict) else 0}, "
-            f"bronze {prose.get('bronze', 0) if isinstance(prose, dict) else 0}, "
-            f"edited {prose.get('edited', 0) if isinstance(prose, dict) else 0}, "
+            f"gold {prose['gold']}, "
+            f"silver {prose['silver']}, "
+            f"bronze {prose['bronze']}, "
+            f"edited {prose['edited']}, "
             f"spoken {spoken_total}"
         ),
-        f"bronze format-only: {'yes' if stats.get('bronzeFormatOnly') else 'no'}",
+        f"bronze format-only: {'yes' if stats['bronzeFormatOnly'] else 'no'}",
         (
             "gold prose pieces: "
-            f"{stats.get('goldPieces', 0)} of {stats.get('goldVoiceMinimum')} to drop bronze from voice"
+            f"{stats['goldPieces']} of {stats['goldVoiceMinimum']} to drop bronze from voice"
         ),
         (
             "median sentence: "
-            f"{weighted.get('medianSentenceLength')} words "
-            f"(unweighted {unweighted.get('medianSentenceLength')})"
+            f"{weighted['medianSentenceLength']} words "
+            f"(unweighted {unweighted['medianSentenceLength']})"
         ),
         f"ban list: {ban_count}",
     ]
-    warnings = stats.get("warnings")
-    if isinstance(warnings, list):
-        for warning in warnings:
-            if isinstance(warning, str):
-                lines.append(f"note: {warning}")
+    for warning in stats["warnings"]:
+        lines.append(f"note: {warning}")
     return "\n".join(lines)
-
-
-def _block(value: object) -> dict[str, object]:
-    return value if isinstance(value, dict) else {}
-
-
-def _metrics(value: object) -> dict[str, object]:
-    metrics = _block(value).get("metrics")
-    return metrics if isinstance(metrics, dict) else {}

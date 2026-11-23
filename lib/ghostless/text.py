@@ -337,7 +337,7 @@ def split_sentences(text: str) -> list[str]:
 
 
 def first_word(sentence: str) -> str:
-    stripped = sentence.lstrip(" \t\"'`“”‘’([{<-–—*• ")
+    stripped = sentence.lstrip(" \t\"'`“”‘’([{<-–—*•")
     match = re.match(r"[^\W\d_]+", stripped)
     if not match:
         return ""

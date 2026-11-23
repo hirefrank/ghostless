@@ -11,8 +11,10 @@ import os
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
+from ghostless.io import atomic_write_text
 from ghostless.paths import ProjectError, data_home, find_project, version
 from ghostless.project import load_manifest
 
@@ -96,7 +98,11 @@ def updates_disabled(project: Path | None = None) -> bool:
     return manifest.get("updateCheck") is False
 
 
-def run_once(*, fetcher: object = None, project: Path | None = None) -> str:
+def run_once(
+    *,
+    fetcher: Callable[[], tuple[bool, str | None]] | None = None,
+    project: Path | None = None,
+) -> str:
     """Check at most once per interval. Returns a plan line and updates the stamp."""
     if updates_disabled(project=project):
         return "disabled"
@@ -106,7 +112,7 @@ def run_once(*, fetcher: object = None, project: Path | None = None) -> str:
     age = _stamp_age(stamp_path)
     if age is not None and age < interval:
         return "skip"
-    fetch = fetcher if callable(fetcher) else fetch_latest_release
+    fetch = fetcher if fetcher is not None else fetch_latest_release
     fetch_ok, remote = fetch()
     decision = plan(
         disabled=False,
@@ -168,8 +174,7 @@ def _stamp_age(path: Path) -> float | None:
 
 def _write_stamp(path: Path) -> None:
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(str(int(time.time())), encoding="utf-8")
+        atomic_write_text(path, str(int(time.time())))
     except OSError:
         return
 

@@ -9,14 +9,14 @@ gold from the start. See `placement_for` in `project.py`.
 from __future__ import annotations
 
 import difflib
-import hashlib
 import json
 import re
 from collections import Counter
-from datetime import datetime, timezone
+from collections.abc import Mapping
 from pathlib import Path
 
 from ghostless.checks import new_pair_checks, prepare_checks
+from ghostless.io import atomic_write_json, atomic_write_text, sha256_text, text_preview, utc_today
 from ghostless.paths import ProjectError
 from ghostless.project import (
     fresh_directory,
@@ -29,6 +29,14 @@ from ghostless.project import (
     require_contained_path,
     slug_for,
     validate_date,
+)
+from ghostless.schema import (
+    DiffSummary,
+    EditLearnEntry,
+    EditSummary,
+    MovedSpan,
+    TokenAlignment,
+    WordCount,
 )
 from ghostless.stats import weighted_median
 from ghostless.text import STOPWORDS, measure, normalize, paragraphs, track_token, word_tokens
@@ -73,13 +81,13 @@ PUNCTUATION = ".,;:!?…—–-()[]{}\"'*_#/"
 PUNCTUATION_RE = re.compile("[" + re.escape(PUNCTUATION) + "]")
 
 
-def diff_texts(before: str, after: str) -> dict[str, object]:
+def diff_texts(before: str, after: str) -> DiffSummary:
     before_measured = measure(before)
     after_measured = measure(after)
     before_counts = Counter(word_tokens(before))
     after_counts = Counter(word_tokens(after))
-    removed_words: list[dict[str, object]] = []
-    added_words: list[dict[str, object]] = []
+    removed_words: list[WordCount] = []
+    added_words: list[WordCount] = []
     for token in set(before_counts) | set(after_counts):
         delta = before_counts[token] - after_counts[token]
         if delta > 0:
@@ -88,18 +96,18 @@ def diff_texts(before: str, after: str) -> dict[str, object]:
         elif delta < 0:
             if track_token(token):
                 added_words.append({"word": token, "count": -delta})
-    removed_words.sort(key=lambda item: (-int(item["count"]), str(item["word"])))
-    added_words.sort(key=lambda item: (-int(item["count"]), str(item["word"])))
+    removed_words.sort(key=lambda item: (-item["count"], item["word"]))
+    added_words.sort(key=lambda item: (-item["count"], item["word"]))
 
     sequence = _align_tokens(before, after)
     structural_changes, paragraphs_before, paragraphs_after = _structural_changes(before, after)
     token_edits = (
-        int(sequence["deletions"])
-        + int(sequence["insertions"])
-        + int(sequence["replacements"])
-        + int(sequence["movedTokens"])
+        sequence["deletions"]
+        + sequence["insertions"]
+        + sequence["replacements"]
+        + sequence["movedTokens"]
     )
-    unchanged_tokens = int(sequence["unchangedTokens"])
+    unchanged_tokens = sequence["unchangedTokens"]
     edit_denominator = token_edits + unchanged_tokens
     edit_rate = round(token_edits / edit_denominator, 4) if edit_denominator else 0.0
 
@@ -108,8 +116,8 @@ def diff_texts(before: str, after: str) -> dict[str, object]:
         "wordsAfter": after_measured.words,
         # Sequence-aware change counts. A replacement removes one token and
         # adds another, so it appears once on each side.
-        "wordsRemoved": int(sequence["deletions"]) + int(sequence["replacements"]),
-        "wordsAdded": int(sequence["insertions"]) + int(sequence["replacements"]),
+        "wordsRemoved": sequence["deletions"] + sequence["replacements"],
+        "wordsAdded": sequence["insertions"] + sequence["replacements"],
         "medianSentenceLengthBefore": _median(before_measured.sentence_lengths),
         "medianSentenceLengthAfter": _median(after_measured.sentence_lengths),
         "contractionsPer1kBefore": _rate(before_measured.contractions, before_measured.words),
@@ -143,7 +151,7 @@ def diff_texts(before: str, after: str) -> dict[str, object]:
     }
 
 
-def _align_tokens(before: str, after: str) -> dict[str, object]:
+def _align_tokens(before: str, after: str) -> TokenAlignment:
     """Align both token streams and separate moves from edits.
 
     A token deleted in one place and inserted in another is a move, not a
@@ -188,7 +196,7 @@ def _align_tokens(before: str, after: str) -> dict[str, object]:
     # across unrelated edits from inflating move counts, while greedy splitting
     # still catches swapped clauses that ordered difflib alignment misses.
     moved_spans = _match_moved_spans(delete_blocks, insert_blocks)
-    moved_tokens = sum(int(span["tokens"]) for span in moved_spans)
+    moved_tokens = sum(span["tokens"] for span in moved_spans)
 
     return {
         "deletions": deletions - moved_tokens,
@@ -271,11 +279,11 @@ def _split_slice(
 def _match_moved_spans(
     delete_blocks: list[tuple[int, list[str]]],
     insert_blocks: list[tuple[int, list[str]]],
-) -> list[dict[str, object]]:
+) -> list[MovedSpan]:
     """Match contiguous moved spans iteratively from longest to shortest."""
     del_slices = [(start, list(tokens)) for start, tokens in delete_blocks if tokens]
     ins_slices = [(start, list(tokens)) for start, tokens in insert_blocks if tokens]
-    spans: list[dict[str, object]] = []
+    spans: list[MovedSpan] = []
 
     while del_slices and ins_slices:
         match = _best_common_span(del_slices, ins_slices)
@@ -296,7 +304,7 @@ def _match_moved_spans(
         _split_slice(del_slices, del_idx, del_off, length)
         _split_slice(ins_slices, ins_idx, ins_off, length)
 
-    spans.sort(key=lambda item: (int(item["from"]), int(item["to"])))
+    spans.sort(key=lambda item: (item["from"], item["to"]))
     return spans
 
 
@@ -373,18 +381,31 @@ def _paragraph_moves(before_paragraphs: list[str], after_paragraphs: list[str]) 
                     "change": "moved",
                     "from": from_index,
                     "to": to_index,
-                    "preview": _preview(before_paragraphs[from_index]),
+                    "preview": text_preview(before_paragraphs[from_index]),
                 }
             )
             break
     return moves
 
 
-def _preview(text: str, limit: int = 80) -> str:
-    collapsed = " ".join(text.split())
-    if len(collapsed) <= limit:
-        return collapsed
-    return collapsed[: limit - 1].rstrip() + "…"
+def find_existing_learn_pair(root: Path, before: str, after: str) -> Path | None:
+    """Return an existing learned pair directory whose before/after texts match."""
+    folder = root / "gold"
+    if not folder.is_dir():
+        return None
+    before_norm = before.rstrip("\n")
+    after_norm = after.rstrip("\n")
+    for existing in sorted(folder.glob("*/meta.json")):
+        pair_dir = existing.parent
+        prior_before = pair_dir / "before.md"
+        prior_after = pair_dir / "after.md"
+        if prior_before.is_file() and prior_after.is_file():
+            if (
+                prior_before.read_text(encoding="utf-8").rstrip("\n") == before_norm
+                and prior_after.read_text(encoding="utf-8").rstrip("\n") == after_norm
+            ):
+                return pair_dir
+    return None
 
 
 def learn_edit(
@@ -407,25 +428,21 @@ def learn_edit(
     if before.resolve() == after.resolve():
         raise ProjectError("Before and after are the same file.")
     checked_origin = parse_origin(origin, path="--origin")
-    date_text = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    date_text = date or utc_today()
     validate_date(date_text, label="--date")
     slug = slug_for(date_text, section)
     before_text = before.read_text(encoding="utf-8")
     after_text = after.read_text(encoding="utf-8")
-    for existing in sorted((root / "gold").glob("*/meta.json")):
-        prior_before = existing.parent / "before.md"
-        prior_after = existing.parent / "after.md"
-        if prior_before.is_file() and prior_after.is_file():
-            if (prior_before.read_text(encoding="utf-8").rstrip("\n") == before_text.rstrip("\n")
-                    and prior_after.read_text(encoding="utf-8").rstrip("\n") == after_text.rstrip("\n")):
-                raise ProjectError(f"This edit pair was already learned in {existing.parent.name}.")
+    duplicate = find_existing_learn_pair(root, before_text, after_text)
+    if duplicate is not None:
+        raise ProjectError(f"This edit pair was already learned in {duplicate.name}.")
     prepared = prepare_checks(root, before_text, after_text, checks) if checks else []
     destination = fresh_directory(root / "gold", slug)
     destination.mkdir(parents=True, exist_ok=False)
     stored_before = _trailing_newline(before_text)
     stored_after = _trailing_newline(after_text)
-    (destination / "before.md").write_text(stored_before, encoding="utf-8")
-    (destination / "after.md").write_text(stored_after, encoding="utf-8")
+    atomic_write_text(destination / "before.md", stored_before)
+    atomic_write_text(destination / "after.md", stored_after)
     summary = diff_texts(stored_before, stored_after)
     if promote:
         confirmation = "promoted"
@@ -451,17 +468,14 @@ def learn_edit(
         "beforeFile": "before.md",
         "afterFile": "after.md",
         "diffVersion": DIFF_VERSION,
-        "beforeSha256": _sha256(stored_before),
-        "afterSha256": _sha256(stored_after),
+        "beforeSha256": sha256_text(stored_before),
+        "afterSha256": sha256_text(stored_after),
     }
     stored_checks = new_pair_checks(prepared)
     if stored_checks:
         meta["checks"] = stored_checks
     meta.update(summary)
-    (destination / "meta.json").write_text(
-        json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    atomic_write_json(destination / "meta.json", meta, ensure_ascii=False)
     edits = refresh_edit_summary(root)
     return {
         "slug": destination.name,
@@ -519,10 +533,7 @@ def promote_final(root: Path, slug: str, *, gold: bool = True) -> dict[str, obje
     meta["provenance"] = block
     if provenance.origin is not None:
         meta["origin"] = provenance.origin
-    meta_path.write_text(
-        json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    atomic_write_json(meta_path, meta, ensure_ascii=False)
     placement = placement_for(read_provenance(meta, path=str(meta_path)))
     edits = refresh_edit_summary(root)
     summary = _receipt_summary(
@@ -548,7 +559,7 @@ def promote_final(root: Path, slug: str, *, gold: bool = True) -> dict[str, obje
     }
 
 
-def _receipt_summary(before: Path, after: Path) -> dict[str, object] | None:
+def _receipt_summary(before: Path, after: Path) -> DiffSummary | None:
     if not before.is_file() or not after.is_file():
         return None
     return diff_texts(
@@ -557,7 +568,7 @@ def _receipt_summary(before: Path, after: Path) -> dict[str, object] | None:
     )
 
 
-def _mostly_model_warning(summary: dict[str, object] | None) -> str | None:
+def _mostly_model_warning(summary: Mapping[str, object] | None) -> str | None:
     if not summary:
         return None
     rate = summary.get("editRate")
@@ -575,31 +586,176 @@ def _mostly_model_warning(summary: dict[str, object] | None) -> str | None:
     )
 
 
-def _sha256(text: str) -> str:
-    """Return the lowercase hex SHA-256 digest of a UTF-8 string."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+def _cached_int(value: object) -> int | None:
+    if type(value) is not int:
+        return None
+    return value
+
+
+def _cached_float(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _cached_opt_num(value: object) -> tuple[bool, float | int | None]:
+    if value is None:
+        return True, None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False, None
+    return True, value
+
+
+def _cached_opt_float(value: object) -> tuple[bool, float | None]:
+    if value is None:
+        return True, None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False, None
+    return True, float(value)
+
+
+def _cached_word_counts(value: object) -> list[WordCount] | None:
+    if not isinstance(value, list):
+        return None
+    items: list[WordCount] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            return None
+        word = entry.get("word")
+        count = entry.get("count")
+        if not isinstance(word, str) or type(count) is not int:
+            return None
+        items.append({"word": word, "count": count})
+    return items
+
+
+def _cached_moved_spans(value: object) -> list[MovedSpan] | None:
+    if not isinstance(value, list):
+        return None
+    spans: list[MovedSpan] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            return None
+        tokens = entry.get("tokens")
+        text = entry.get("text")
+        src = entry.get("from")
+        dst = entry.get("to")
+        if type(tokens) is not int or not isinstance(text, str) or type(src) is not int or type(dst) is not int:
+            return None
+        spans.append({"tokens": tokens, "text": text, "from": src, "to": dst})
+    return spans
+
+
+def _cached_structural_changes(value: object) -> list[dict[str, object]] | None:
+    if not isinstance(value, list):
+        return None
+    items: list[dict[str, object]] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            return None
+        items.append({str(key): item for key, item in entry.items()})
+    return items
 
 
 def _cached_summary(
-    meta: dict[str, object],
+    meta: Mapping[str, object],
     before_text: str,
     after_text: str,
-) -> dict[str, object] | None:
+) -> DiffSummary | None:
     """Return cached diff fields when version, SHA-256 digests, and keys match."""
     version = meta.get("diffVersion")
     if type(version) is not int or version != DIFF_VERSION:
         return None
-    if meta.get("beforeSha256") != _sha256(before_text):
+    if meta.get("beforeSha256") != sha256_text(before_text):
         return None
-    if meta.get("afterSha256") != _sha256(after_text):
+    if meta.get("afterSha256") != sha256_text(after_text):
         return None
     if not all(key in meta for key in DIFF_SUMMARY_KEYS):
         return None
-    return {key: meta[key] for key in DIFF_SUMMARY_KEYS}
+    words_before = _cached_int(meta["wordsBefore"])
+    words_after = _cached_int(meta["wordsAfter"])
+    words_removed = _cached_int(meta["wordsRemoved"])
+    words_added = _cached_int(meta["wordsAdded"])
+    ok_med_before, med_before = _cached_opt_num(meta["medianSentenceLengthBefore"])
+    ok_med_after, med_after = _cached_opt_num(meta["medianSentenceLengthAfter"])
+    ok_con_before, con_before = _cached_opt_float(meta["contractionsPer1kBefore"])
+    ok_con_after, con_after = _cached_opt_float(meta["contractionsPer1kAfter"])
+    removed_words = _cached_word_counts(meta["removedWords"])
+    added_words = _cached_word_counts(meta["addedWords"])
+    token_edits = _cached_int(meta["tokenEdits"])
+    unchanged = _cached_int(meta["unchangedTokens"])
+    deletions = _cached_int(meta["deletions"])
+    insertions = _cached_int(meta["insertions"])
+    replacements = _cached_int(meta["replacements"])
+    moved_tokens = _cached_int(meta["movedTokens"])
+    moved_spans = _cached_moved_spans(meta["movedSpans"])
+    edit_rate = _cached_float(meta["editRate"])
+    edit_denom = _cached_int(meta["editRateDenominator"])
+    paragraphs_before = _cached_int(meta["paragraphsBefore"])
+    paragraphs_after = _cached_int(meta["paragraphsAfter"])
+    sentences_before = _cached_int(meta["sentencesBefore"])
+    sentences_after = _cached_int(meta["sentencesAfter"])
+    structural = _cached_structural_changes(meta["structuralChanges"])
+    structural_count = _cached_int(meta["structuralChangeCount"])
+    if (
+        words_before is None
+        or words_after is None
+        or words_removed is None
+        or words_added is None
+        or not ok_med_before
+        or not ok_med_after
+        or not ok_con_before
+        or not ok_con_after
+        or removed_words is None
+        or added_words is None
+        or token_edits is None
+        or unchanged is None
+        or deletions is None
+        or insertions is None
+        or replacements is None
+        or moved_tokens is None
+        or moved_spans is None
+        or edit_rate is None
+        or edit_denom is None
+        or paragraphs_before is None
+        or paragraphs_after is None
+        or sentences_before is None
+        or sentences_after is None
+        or structural is None
+        or structural_count is None
+    ):
+        return None
+    return {
+        "wordsBefore": words_before,
+        "wordsAfter": words_after,
+        "wordsRemoved": words_removed,
+        "wordsAdded": words_added,
+        "medianSentenceLengthBefore": med_before,
+        "medianSentenceLengthAfter": med_after,
+        "contractionsPer1kBefore": con_before,
+        "contractionsPer1kAfter": con_after,
+        "removedWords": removed_words,
+        "addedWords": added_words,
+        "tokenEdits": token_edits,
+        "unchangedTokens": unchanged,
+        "deletions": deletions,
+        "insertions": insertions,
+        "replacements": replacements,
+        "movedTokens": moved_tokens,
+        "movedSpans": moved_spans,
+        "editRate": edit_rate,
+        "editRateDenominator": edit_denom,
+        "paragraphsBefore": paragraphs_before,
+        "paragraphsAfter": paragraphs_after,
+        "sentencesBefore": sentences_before,
+        "sentencesAfter": sentences_after,
+        "structuralChanges": structural,
+        "structuralChangeCount": structural_count,
+    }
 
 
-def refresh_edit_summary(root: Path) -> dict[str, object]:
-    learns: list[dict[str, object]] = []
+def refresh_edit_summary(root: Path) -> EditSummary:
+    learns: list[EditLearnEntry] = []
     folder = root / "gold"
     if folder.is_dir():
         for meta_path in sorted(folder.glob("*/meta.json")):
@@ -627,15 +783,39 @@ def refresh_edit_summary(root: Path) -> dict[str, object]:
                     "model": provenance.model,
                     "tool": provenance.tool,
                     "tier": placement_for(provenance),
-                    **summary,
+                    "wordsBefore": summary["wordsBefore"],
+                    "wordsAfter": summary["wordsAfter"],
+                    "wordsRemoved": summary["wordsRemoved"],
+                    "wordsAdded": summary["wordsAdded"],
+                    "medianSentenceLengthBefore": summary["medianSentenceLengthBefore"],
+                    "medianSentenceLengthAfter": summary["medianSentenceLengthAfter"],
+                    "contractionsPer1kBefore": summary["contractionsPer1kBefore"],
+                    "contractionsPer1kAfter": summary["contractionsPer1kAfter"],
+                    "removedWords": summary["removedWords"],
+                    "addedWords": summary["addedWords"],
+                    "tokenEdits": summary["tokenEdits"],
+                    "unchangedTokens": summary["unchangedTokens"],
+                    "deletions": summary["deletions"],
+                    "insertions": summary["insertions"],
+                    "replacements": summary["replacements"],
+                    "movedTokens": summary["movedTokens"],
+                    "movedSpans": summary["movedSpans"],
+                    "editRate": summary["editRate"],
+                    "editRateDenominator": summary["editRateDenominator"],
+                    "paragraphsBefore": summary["paragraphsBefore"],
+                    "paragraphsAfter": summary["paragraphsAfter"],
+                    "sentencesBefore": summary["sentencesBefore"],
+                    "sentencesAfter": summary["sentencesAfter"],
+                    "structuralChanges": summary["structuralChanges"],
+                    "structuralChangeCount": summary["structuralChangeCount"],
                 }
             )
     removals: Counter[str] = Counter()
     additions: Counter[str] = Counter()
     for item in learns:
-        removals.update({word for word, _ in _word_entries(item.get("removedWords"))})
-        additions.update({word for word, _ in _word_entries(item.get("addedWords"))})
-    payload: dict[str, object] = {
+        removals.update({entry["word"] for entry in item["removedWords"]})
+        additions.update({entry["word"] for entry in item["addedWords"]})
+    payload: EditSummary = {
         "learns": learns,
         "repeatedRemovals": _repeated(removals),
         "repeatedAdditions": _repeated(additions),
@@ -643,8 +823,8 @@ def refresh_edit_summary(root: Path) -> dict[str, object]:
     summary_json = root / "edits-summary.json"
     summary_md = root / "edits-summary.md"
     if learns:
-        summary_json.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        summary_md.write_text(render_edits_markdown(payload), encoding="utf-8")
+        atomic_write_json(summary_json, payload, ensure_ascii=False)
+        atomic_write_text(summary_md, render_edits_markdown(payload))
     else:
         if summary_json.exists():
             summary_json.unlink()
@@ -666,7 +846,7 @@ def load_edit_summary(root: Path) -> dict[str, object]:
     return data
 
 
-def render_edits_markdown(payload: dict[str, object]) -> str:
+def render_edits_markdown(payload: Mapping[str, object]) -> str:
     lines = [
         "# Edit summary",
         "",
@@ -795,7 +975,11 @@ def _format_moves(value: object) -> str:
     if not isinstance(value, list) or not value:
         return "none"
     spans = [item for item in value if isinstance(item, dict)]
-    tokens = sum(int(item.get("tokens", 0)) for item in spans)
+    tokens = sum(
+        item["tokens"]
+        for item in spans
+        if isinstance(item.get("tokens"), int) and not isinstance(item.get("tokens"), bool)
+    )
     previews = [f"\"{item.get('text')}\"" for item in spans[:3] if item.get("text")]
     detail = f": {', '.join(previews)}" if previews else ""
     return f"{tokens} tokens in {len(spans)} span(s){detail}"

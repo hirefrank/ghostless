@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 from ghostless.guide import render_paste
+from ghostless.io import atomic_write_text
 from ghostless.project import discover, load_manifest
 from ghostless.stats import Piece
 from ghostless.text import words
@@ -29,15 +31,14 @@ def gold_excerpts(root: Path, *, limit: int = EXCERPT_LIMIT, word_limit: int = E
 
 def write_export(
     root: Path,
-    stats: dict[str, object],
+    stats: Mapping[str, object],
     *,
     excerpts: bool,
     out: Path | None,
 ) -> Path:
     destination = out if out is not None else root / "voice-guide.paste.md"
     body = render_paste(stats, gold_excerpts(root) if excerpts else None)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(body, encoding="utf-8")
+    atomic_write_text(destination, body)
     return destination
 
 

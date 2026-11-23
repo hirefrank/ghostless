@@ -22,12 +22,13 @@ import hashlib
 import json
 import os
 import re
-import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 from ghostless.harness import AGENTS, COPY_MARKER, agent_dir
+from ghostless.io import atomic_write_json, sha256_text, utc_now_iso
 from ghostless.paths import ProjectError, suite_root
+from ghostless.schema import ChecksState, ChecksSummary
 from ghostless.tells import AI_TELLS
 from ghostless.text import STOPWORDS, WORD_RE, normalize, strip_non_prose, word_tokens
 
@@ -66,10 +67,6 @@ _TRAILING_PUNCT = ".,;:!?"
 TELLS = frozenset(tell.casefold() for tell in AI_TELLS)
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
 def check_id(text: str) -> str:
     """Stable id for one check sentence. The same words are the same check.
 
@@ -95,7 +92,7 @@ def mechanical_overlap(text: str) -> str | None:
     return None
 
 
-def default_checks() -> dict[str, object]:
+def default_checks() -> ChecksState:
     return {
         "kind": "ghostless-checks",
         "version": 1,
@@ -104,7 +101,14 @@ def default_checks() -> dict[str, object]:
     }
 
 
-def load_checks(root: Path) -> dict[str, object]:
+def _records_dict(raw: dict[object, object]) -> dict[str, dict[str, object]]:
+    return {
+        str(key): dict(value) if isinstance(value, dict) else {}
+        for key, value in raw.items()
+    }
+
+
+def load_checks(root: Path) -> ChecksState:
     """Read `checks.json`. A missing file means no decisions yet.
 
     A malformed file fails loudly. Defaulting would drop a rejection and let
@@ -120,21 +124,25 @@ def load_checks(root: Path) -> dict[str, object]:
         raise ProjectError(f"{path}: {exc}") from exc
     if not isinstance(data, dict):
         raise ProjectError(f"{path} must be an object.")
-    for key in ("confirmed", "rejected"):
-        value = data.get(key, {})
-        if value is None:
-            continue
-        if not isinstance(value, dict):
-            raise ProjectError(f"{path}: {key} must be an object.")
-        state[key] = value
+    confirmed = data.get("confirmed", {})
+    if confirmed is not None:
+        if not isinstance(confirmed, dict):
+            raise ProjectError(f"{path}: confirmed must be an object.")
+        state["confirmed"] = _records_dict(confirmed)
+    rejected = data.get("rejected", {})
+    if rejected is not None:
+        if not isinstance(rejected, dict):
+            raise ProjectError(f"{path}: rejected must be an object.")
+        state["rejected"] = _records_dict(rejected)
     return state
 
 
-def save_checks(root: Path, state: dict[str, object]) -> None:
+def save_checks(root: Path, state: ChecksState) -> None:
     """Write `checks.json` atomically. Only a writer decision calls this."""
-    for key in ("confirmed", "rejected"):
-        if not isinstance(state.get(key), dict):
-            raise ProjectError(f"checks state is missing {key}.")
+    if not isinstance(state.get("confirmed"), dict):
+        raise ProjectError("checks state is missing confirmed.")
+    if not isinstance(state.get("rejected"), dict):
+        raise ProjectError("checks state is missing rejected.")
     path = root / "checks.json"
     payload = {
         "kind": "ghostless-checks",
@@ -142,8 +150,7 @@ def save_checks(root: Path, state: dict[str, object]) -> None:
         "confirmed": state["confirmed"],
         "rejected": state["rejected"],
     }
-    text = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
-    _atomic_write(path, text)
+    atomic_write_json(path, payload, sort_keys=True, ensure_ascii=False)
 
 
 def prepare_checks(
@@ -254,10 +261,7 @@ def write_pair_checks(root: Path, slug: str, texts: list[str]) -> list[dict[str,
             if item["id"] not in known:
                 merged.append(item)
         meta["checks"] = merged
-        meta_path.write_text(
-            json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
+        atomic_write_json(meta_path, meta, ensure_ascii=False)
     return prepared
 
 
@@ -285,7 +289,7 @@ def confirm_check(
         current = proposal.get("section")
         checked = current if isinstance(current, str) and current else None
     state["confirmed"][identifier] = {
-        "at": _now(),
+        "at": utc_now_iso(),
         "text": proposal["text"],
         "span": proposal["span"],
         "polarity": proposal["polarity"],
@@ -308,7 +312,7 @@ def reject_check(root: Path, token: str) -> dict[str, object]:
             f"No check {token}. Save one from an edit before rejecting it."
         )
     state["rejected"][identifier] = {
-        "at": _now(),
+        "at": utc_now_iso(),
         "text": proposal["text"],
         "span": proposal["span"],
         "polarity": proposal["polarity"],
@@ -342,11 +346,11 @@ def resolve_check_id(root: Path, token: str) -> str:
     )
 
 
-def checks_summary(root: Path) -> dict[str, object]:
+def checks_summary(root: Path) -> ChecksSummary:
     """Confirmed, still-pending, and rejected checks for the guide and the CLI."""
     state = load_checks(root)
-    confirmed_ids = set(_block(state, "confirmed"))
-    rejected_ids = set(_block(state, "rejected"))
+    confirmed_ids = set(state["confirmed"])
+    rejected_ids = set(state["rejected"])
     pending: list[dict[str, object]] = []
     seen: set[str] = set()
     for item in _pair_checks(root):
@@ -432,7 +436,7 @@ def grade_confirmed(
     cases are graded again from the files, not copied from the old pass list.
     """
     summary = checks_summary(root)
-    confirmed = [item for item in summary["confirmed"] if isinstance(item, dict)]
+    confirmed = summary["confirmed"]
     note = (
         "Passes over confirmed checks. Each check runs on the held-out befores "
         "in its section, and on its after file, the case that already passes. "
@@ -554,7 +558,7 @@ def _skill_sha256(files: dict[str, str | None]) -> str | None:
 
 
 def _text_sha256(text: str | None) -> str | None:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest() if text is not None else None
+    return sha256_text(text) if text is not None else None
 
 
 def empty_confirmed_checks(note: str) -> dict[str, object]:
@@ -589,7 +593,8 @@ def _grade_items(
         pair = check.get("pair")
         text = check.get("text")
         identifier = check.get("id")
-        section = check.get("section") if isinstance(check.get("section"), str) else None
+        raw_section = check.get("section")
+        section = raw_section if isinstance(raw_section, str) else None
         if isinstance(pair, str) and pair:
             after = _read_after(root, pair)
             if after is None:
@@ -692,7 +697,7 @@ def _write_grade(root: Path, session_id: str, payload: dict[str, object]) -> boo
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{session_id}.json"
     fresh = not path.is_file()
-    graded_at = _now()
+    graded_at = utc_now_iso()
     if not fresh:
         try:
             previous = json.loads(path.read_text(encoding="utf-8"))
@@ -701,7 +706,7 @@ def _write_grade(root: Path, session_id: str, payload: dict[str, object]) -> boo
         if isinstance(previous, dict) and isinstance(previous.get("gradedAt"), str):
             graded_at = previous["gradedAt"]
     payload["gradedAt"] = graded_at
-    _atomic_write(path, json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+    atomic_write_json(path, payload, ensure_ascii=False)
     return fresh
 
 
@@ -898,7 +903,7 @@ def _find_pending(root: Path, identifier: str) -> dict[str, object] | None:
     return None
 
 
-def _proposal(root: Path, state: dict[str, object], identifier: str) -> dict[str, object] | None:
+def _proposal(root: Path, state: ChecksState, identifier: str) -> dict[str, object] | None:
     for key in ("confirmed", "rejected"):
         record = _record(state, key, identifier)
         if record is not None and isinstance(record.get("text"), str) and isinstance(record.get("span"), str):
@@ -914,31 +919,22 @@ def _proposal(root: Path, state: dict[str, object], identifier: str) -> dict[str
     return _find_pending(root, identifier)
 
 
-def _known(root: Path, state: dict[str, object], identifier: str) -> bool:
+def _known(root: Path, state: ChecksState, identifier: str) -> bool:
     if any(_record(state, key, identifier) is not None for key in ("confirmed", "rejected")):
         return True
     return _find_pending(root, identifier) is not None
 
 
-def _record(state: dict[str, object], key: str, identifier: str) -> dict[str, object] | None:
-    block = state.get(key)
-    if not isinstance(block, dict):
-        return None
-    record = block.get(identifier)
-    return record if isinstance(record, dict) else None
+def _bucket(state: ChecksState, key: Literal["confirmed", "rejected"]) -> dict[str, dict[str, object]]:
+    return state["confirmed"] if key == "confirmed" else state["rejected"]
 
 
-def _block(state: dict[str, object], key: str) -> dict[str, object]:
-    block = state.get(key)
-    return block if isinstance(block, dict) else {}
+def _record(state: ChecksState, key: Literal["confirmed", "rejected"], identifier: str) -> dict[str, object] | None:
+    return _bucket(state, key).get(identifier)
 
 
-def _items(state: dict[str, object], key: str) -> list[tuple[str, dict[str, object]]]:
-    items: list[tuple[str, dict[str, object]]] = []
-    for identifier, record in _block(state, key).items():
-        if isinstance(identifier, str) and isinstance(record, dict):
-            items.append((identifier, record))
-    return items
+def _items(state: ChecksState, key: Literal["confirmed", "rejected"]) -> list[tuple[str, dict[str, object]]]:
+    return list(_bucket(state, key).items())
 
 
 def _checked_section(section: str | None) -> str | None:
@@ -948,17 +944,3 @@ def _checked_section(section: str | None) -> str | None:
     if not text:
         raise ProjectError("--section cannot be empty.")
     return text
-
-
-def _atomic_write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as output:
-            output.write(text)
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(name, path)
-    finally:
-        if os.path.exists(name):
-            os.unlink(name)
