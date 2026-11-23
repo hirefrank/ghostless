@@ -36,7 +36,7 @@ from ghostless.project import (  # noqa: E402
 )
 from ghostless.stats import Piece, compile_stats, pools_for, summarize, weighted_median  # noqa: E402
 from ghostless.text import measure, split_sentences  # noqa: E402
-from ghostless.tells import structural_tells  # noqa: E402
+from ghostless.tells import ban_hits, structural_tells  # noqa: E402
 from ghostless.updatecheck import plan, updates_disabled, version_gt  # noqa: E402
 
 
@@ -554,6 +554,42 @@ class JudgeTests(unittest.TestCase):
                 (project / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
                 with self.assertRaises(ProjectError, msg=str(bad)):
                     load_manifest(project)
+
+    def test_curly_apostrophes_match_tells_and_structural_frames(self) -> None:
+        draft = "It\u2019s worth noting. It\u2019s not a note, it\u2019s a framework."
+        self.assertEqual(ban_hits(draft, ["it's worth noting"]), [("it's worth noting", 1)])
+        hits = structural_tells(draft)
+        self.assertTrue(any(hit.kind == "not-x-its-y" for hit in hits))
+
+        stats = self._stats_from_draft("It's worth noting. It's not a note, it's a framework.")
+        stats["weighted"]["banList"] = ["it's worth noting"]
+        report = judge_text(draft, stats)
+        self.assertEqual(report["banned"], [{"tell": "it's worth noting", "count": 1}])
+        self.assertTrue(any(item["kind"] == "not-x-its-y" for item in report["structure"]))
+
+    def test_code_blocks_urls_and_comments_do_not_trigger_bans_or_placeholders(self) -> None:
+        draft = (
+            "---\n"
+            "title: delve\n"
+            "---\n"
+            "## [WRITER: heading gap]\n\n"
+            "I write short lines. I keep them plain. [WRITER: prose gap]\n\n"
+            "```python\n"
+            "# It's not a note, it's a framework.\n"
+            "delve = '[TODO: inside code]'\n"
+            "```\n\n"
+            "Inline `delve` and `[TODO: inline]` stay ignored.\n"
+            "See [this guide](https://example.com/delve) <!-- delve [TODO: comment] -->.\n"
+        )
+        stats = self._stats_from_draft("I write short lines. I keep them plain.")
+        stats["weighted"]["banList"] = ["delve"]
+        report = judge_text(draft, stats)
+        self.assertEqual(report["banned"], [])
+        self.assertEqual([item for item in report["structure"] if item["kind"] != "em-dash"], [])
+        self.assertEqual(
+            report["placeholders"],
+            ["[WRITER: heading gap]", "[WRITER: prose gap]"],
+        )
 
 
 

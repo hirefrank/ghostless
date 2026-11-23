@@ -35,6 +35,7 @@ from ghostless.judge import (  # noqa: E402
 )
 from ghostless.learn import diff_texts  # noqa: E402
 from ghostless.project import discover, init_project, load_manifest  # noqa: E402
+from ghostless.stats import Piece, summarize  # noqa: E402
 from ghostless.text import measure, normalize, strip_non_prose, words  # noqa: E402
 
 WRITER = (
@@ -173,6 +174,48 @@ Some `inline code` stays out.
 
     def test_frontmatter_is_not_prose(self) -> None:
         self.assertEqual(words("---\nsection: notes\n---\nOnly these words."), ["Only", "these", "words"])
+
+    def test_four_backtick_fence_wrapping_triple_backticks_is_stripped(self) -> None:
+        text = "````markdown\n```python\ndelve()\n```\n````\nReal prose."
+        self.assertEqual(strip_non_prose(text).strip(), "Real prose.")
+        self.assertEqual(words(text), ["Real", "prose"])
+
+    def test_non_prose_tells_do_not_remove_words_from_ban_list(self) -> None:
+        prose_and_scaffolding = Piece(
+            path="corpus/gold/mixed.md",
+            tier="gold",
+            kind="prose",
+            section=None,
+            weight=3.0,
+            text=(
+                "---\n"
+                "notes: robust\n"
+                "---\n"
+                "```python\n"
+                "leverage = robust()\n"
+                "```\n"
+                "Use `seamless` in code, check https://example.com/delve, "
+                "<!-- tapestry -->\n"
+                "Short real prose stays plain.\n"
+            ),
+        )
+        summary = summarize([prose_and_scaffolding], bronze_format_only=False, use_weights=True)
+        self.assertFalse(summary["dictionEmpty"])
+        for tell in ("leverage", "robust", "seamless", "delve", "tapestry"):
+            self.assertIn(tell, summary["banList"])
+            self.assertNotIn(tell, summary["tellsInUse"])
+
+        code_only = Piece(
+            path="corpus/gold/code-only.md",
+            tier="gold",
+            kind="prose",
+            section=None,
+            weight=3.0,
+            text="```python\nleverage = robust()\n```\n",
+        )
+        empty_summary = summarize([code_only], bronze_format_only=False, use_weights=True)
+        self.assertTrue(empty_summary["dictionEmpty"])
+        self.assertEqual(empty_summary["banList"], [])
 
 
 class ConfidenceTests(unittest.TestCase):

@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Literal, Never
 
-from ghostless.text import STOPWORDS, Measured, measure
+from ghostless.text import STOPWORDS, Measured, measure, strip_non_prose
 from ghostless.tells import split_catalog
 
 Tier = Literal["gold", "silver", "bronze", "edited"]
@@ -206,7 +206,9 @@ def summarize(pieces: list[Piece], *, bronze_format_only: bool, use_weights: boo
             diction_words += measured.words * weight
             em_dashes += measured.em_dashes * weight
             questions += measured.questions * weight
-            diction_parts.append(piece.text)
+            cleaned_piece = strip_non_prose(piece.text)
+            if cleaned_piece.strip():
+                diction_parts.append(cleaned_piece)
             for tokens in measured.sentence_tokens:
                 phrase_sentences.append((weight, tokens))
         if "format" in allowed:

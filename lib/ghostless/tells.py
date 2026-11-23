@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from ghostless.text import strip_non_prose
+
 # High-precision tells. Everyday words a small corpus might simply omit
 # (important, however, because) are not in this list.
 AI_TELLS: tuple[str, ...] = (
@@ -105,7 +107,7 @@ def tell_pattern(tell: str) -> re.Pattern[str]:
 
 
 def count_tell(text: str, tell: str) -> int:
-    return len(tell_pattern(tell).findall(text))
+    return len(tell_pattern(tell).findall(strip_non_prose(text)))
 
 
 def split_catalog(text: str) -> tuple[list[str], list[str]]:
@@ -114,16 +116,17 @@ def split_catalog(text: str) -> tuple[list[str], list[str]]:
     Longer tells claim their span first, so "delve into" does not also
     count as the bare word when the phrase form is in the catalog.
     """
-    if not text.strip():
+    cleaned = strip_non_prose(text)
+    if not cleaned.strip():
         return [], []
-    occupied = [False] * len(text)
+    occupied = [False] * len(cleaned)
     present: list[str] = []
     absent: list[str] = []
     ordered = sorted(AI_TELLS, key=lambda tell: (len(tell), tell), reverse=True)
     found: set[str] = set()
     for tell in ordered:
         count = 0
-        for match in tell_pattern(tell).finditer(text):
+        for match in tell_pattern(tell).finditer(cleaned):
             span = range(match.start(), match.end())
             if any(occupied[index] for index in span):
                 continue
@@ -143,14 +146,15 @@ def split_catalog(text: str) -> tuple[list[str], list[str]]:
 
 def ban_hits(text: str, ban_list: list[str]) -> list[tuple[str, int]]:
     """Count banned tells in a draft. Longer matches consume their span."""
-    if not text or not ban_list:
+    cleaned = strip_non_prose(text)
+    if not cleaned.strip() or not ban_list:
         return []
-    occupied = [False] * len(text)
+    occupied = [False] * len(cleaned)
     hits: list[tuple[str, int]] = []
     ordered = sorted(set(ban_list), key=lambda tell: (len(tell), tell), reverse=True)
     for tell in ordered:
         count = 0
-        for match in tell_pattern(tell).finditer(text):
+        for match in tell_pattern(tell).finditer(cleaned):
             span = range(match.start(), match.end())
             if any(occupied[index] for index in span):
                 continue
@@ -169,8 +173,9 @@ def structural_tells(text: str) -> list[StructureHit]:
     Each sentence contributes at most one not-x-its-y hit (the first
     matching frame) and any triplet or ordinal list inside it.
     """
+    cleaned = strip_non_prose(text)
     hits: list[StructureHit] = []
-    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", cleaned):
         region = sentence.strip()
         if not region:
             continue

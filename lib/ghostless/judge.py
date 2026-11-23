@@ -7,6 +7,7 @@ import re
 from ghostless.paths import ProjectError
 from ghostless.stats import Piece, summarize
 from ghostless.tells import ban_hits, structural_tells
+from ghostless.text import strip_code_and_comments, strip_non_prose
 
 # (relative slack, absolute slack). A miss is outside target ± max(abs, |target| * rel).
 TOLERANCES: dict[str, tuple[float, float]] = {
@@ -64,10 +65,11 @@ def placeholder_pattern(token: str) -> "re.Pattern[str]":
 
 
 def find_placeholders(text: str, placeholder: str | None = None) -> list[str]:
-    found = [match.group(0) for match in PLACEHOLDER_RE.finditer(text)]
+    cleaned = strip_code_and_comments(text)
+    found = [match.group(0) for match in PLACEHOLDER_RE.finditer(cleaned)]
     if placeholder:
         seen = set(found)
-        for match in placeholder_pattern(placeholder).finditer(text):
+        for match in placeholder_pattern(placeholder).finditer(cleaned):
             if match.group(0) not in seen:
                 seen.add(match.group(0))
                 found.append(match.group(0))
@@ -154,8 +156,9 @@ def judge_text(
     draft = draft_summary(text)
     draft_metrics = _metrics(draft)
     ban_list = _string_list(_block(stats.get("weighted")).get("banList"))
-    banned = [{"tell": tell, "count": count} for tell, count in ban_hits(text, ban_list)]
-    structure = [{"kind": hit.kind, "excerpt": hit.excerpt} for hit in structural_tells(text)]
+    cleaned = strip_non_prose(text)
+    banned = [{"tell": tell, "count": count} for tell, count in ban_hits(cleaned, ban_list)]
+    structure = [{"kind": hit.kind, "excerpt": hit.excerpt} for hit in structural_tells(cleaned)]
     placeholders = find_placeholders(text, placeholder)
 
     checks: list[dict[str, object]] = []

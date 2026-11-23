@@ -7,7 +7,6 @@ from dataclasses import dataclass
 
 WORD_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?")
 SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
-CODE_FENCE = re.compile(r"```.*?```", re.DOTALL)
 FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n?", re.DOTALL)
 
 # Formatting that is not prose. Measurement strips these before counting, so a
@@ -169,8 +168,7 @@ def normalize(text: str) -> str:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = text.replace("\u2019", "'").replace("\u2018", "'")
     text = text.replace("\u201c", '"').replace("\u201d", '"')
-    text = CODE_FENCE.sub("", text)
-    return text
+    return _strip_fences(text)
 
 
 def split_frontmatter(text: str) -> tuple[dict[str, str], str]:
@@ -195,6 +193,14 @@ def split_frontmatter(text: str) -> tuple[dict[str, str], str]:
     return meta, normalized[match.end() :]
 
 
+def strip_code_and_comments(text: str) -> str:
+    """Drop frontmatter, HTML comments, and fenced/inline code, keeping headings and prose."""
+    text = normalize(text)
+    text = FRONTMATTER.sub("", text, count=1)
+    text = HTML_COMMENT.sub("", text)
+    return INLINE_CODE.sub("", text)
+
+
 def strip_non_prose(text: str) -> str:
     """Drop Markdown and HTML scaffolding so measures count prose, not layout.
 
@@ -208,11 +214,7 @@ def strip_non_prose(text: str) -> str:
     Idempotent. For prose with no Markdown syntax this is
     `normalize(text)` unchanged, which keeps existing measurements stable.
     """
-    text = normalize(text)
-    text = FRONTMATTER.sub("", text, count=1)
-    text = HTML_COMMENT.sub("", text)
-    text = _strip_fences(text)
-    text = INLINE_CODE.sub("", text)
+    text = strip_code_and_comments(text)
     text = IMAGE_INLINE.sub("", text)
     text = IMAGE_REF.sub("", text)
     text = FOOTNOTE_REF.sub("", text)
@@ -270,8 +272,12 @@ def _is_table_rule(stripped: str) -> bool:
     return all(character in "|-: \t" for character in stripped)
 
 
+def _words_clean(cleaned: str) -> list[str]:
+    return WORD_RE.findall(cleaned)
+
+
 def words(text: str) -> list[str]:
-    return WORD_RE.findall(strip_non_prose(text))
+    return _words_clean(strip_non_prose(text))
 
 
 def word_tokens(text: str) -> list[str]:
@@ -282,16 +288,19 @@ def is_contraction(token: str) -> bool:
     return CONTRACTION_RE.match(token.casefold()) is not None
 
 
+def _count_em_dashes_clean(cleaned: str) -> int:
+    spaced_double = len(re.findall(r"\s--\s", cleaned))
+    spaced_en = len(re.findall(r"\s\u2013\s", cleaned))
+    return cleaned.count("\u2014") + spaced_double + spaced_en
+
+
 def count_em_dashes(text: str) -> int:
-    normalized = strip_non_prose(text)
-    spaced_double = len(re.findall(r"\s--\s", normalized))
-    spaced_en = len(re.findall(r"\s\u2013\s", normalized))
-    return normalized.count("\u2014") + spaced_double + spaced_en
+    return _count_em_dashes_clean(strip_non_prose(text))
 
 
-def paragraphs(text: str) -> list[str]:
+def _paragraphs_clean(cleaned: str) -> list[str]:
     blocks: list[str] = []
-    for block in re.split(r"\n\s*\n", strip_non_prose(text)):
+    for block in re.split(r"\n\s*\n", cleaned):
         stripped = block.strip()
         if not stripped:
             continue
@@ -302,9 +311,12 @@ def paragraphs(text: str) -> list[str]:
     return blocks
 
 
-def split_sentences(text: str) -> list[str]:
-    text = strip_non_prose(text)
-    protected = ABBREV_RE.sub(lambda match: match.group(0).replace(".", _PLACEHOLDER), text)
+def paragraphs(text: str) -> list[str]:
+    return _paragraphs_clean(strip_non_prose(text))
+
+
+def _split_sentences_clean(cleaned: str) -> list[str]:
+    protected = ABBREV_RE.sub(lambda match: match.group(0).replace(".", _PLACEHOLDER), cleaned)
     protected = DECIMAL_RE.sub(_PLACEHOLDER, protected)
     parts = SENTENCE_END.split(protected.strip())
     sentences: list[str] = []
@@ -313,6 +325,10 @@ def split_sentences(text: str) -> list[str]:
         if sentence:
             sentences.append(sentence)
     return sentences
+
+
+def split_sentences(text: str) -> list[str]:
+    return _split_sentences_clean(strip_non_prose(text))
 
 
 def first_word(sentence: str) -> str:
@@ -347,15 +363,15 @@ def measure(text: str) -> Measured:
     word_total = 0
     paragraph_lengths: list[int] = []
 
-    blocks = paragraphs(body)
+    blocks = _paragraphs_clean(body)
     if not blocks:
         blocks = [body]
 
     for block in blocks:
-        block_words = words(block)
+        block_words = _words_clean(block)
         paragraph_lengths.append(len(block_words))
-        for sentence in split_sentences(block):
-            tokens = words(sentence)
+        for sentence in _split_sentences_clean(block):
+            tokens = _words_clean(sentence)
             folded = [token.casefold() for token in tokens]
             sentence_lengths.append(len(tokens))
             sentence_tokens.append(tuple(folded))
@@ -375,7 +391,7 @@ def measure(text: str) -> Measured:
         sentence_tokens=tuple(sentence_tokens),
         contractions=contractions,
         i_count=i_count,
-        em_dashes=count_em_dashes(body),
+        em_dashes=_count_em_dashes_clean(body),
         questions=questions,
         paragraph_lengths=tuple(paragraph_lengths),
         openers=openers,
