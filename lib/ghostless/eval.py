@@ -146,16 +146,20 @@ def split_items(items: list[object], holdout: int | None, seed: int) -> tuple[li
     return train, held
 
 
-def load_holdouts(root: Path, manifest: dict[str, object]) -> list[Piece]:
-    """Read prose files under `holdouts/` without letting them enter the build corpus."""
+def load_holdouts(root: Path, manifest: dict[str, object]) -> tuple[list[Piece], list[str]]:
+    """Read prose files under `holdouts/` without letting them enter the build corpus.
+
+    Unreadable files are skipped with a note. They do not abort the evaluation.
+    """
     folder = root / "holdouts"
     if not folder.is_dir():
-        return []
+        return [], []
     weights = manifest.get("weights")
     if not isinstance(weights, dict) or "gold" not in weights:
         raise ProjectError("manifest weights are missing.")
     gold_weight = float(weights["gold"])
     root_resolved = root.resolve()
+    notes: list[str] = []
     paths: list[Path] = []
     for path in folder.rglob("*"):
         if not path.is_file():
@@ -171,10 +175,15 @@ def load_holdouts(root: Path, manifest: dict[str, object]) -> list[Piece]:
     pieces: list[Piece] = []
     for path in sorted(paths):
         resolved = require_contained_path(folder, path, label=str(path))
+        label = resolved.relative_to(root_resolved).as_posix()
         try:
             raw = resolved.read_text(encoding="utf-8")
-        except UnicodeError as exc:
-            raise ProjectError(f"{path} is not valid UTF-8.") from exc
+        except UnicodeError:
+            notes.append(f"Skipped {label}: not valid UTF-8.")
+            continue
+        except OSError as exc:
+            notes.append(f"Skipped {label}: {exc}")
+            continue
         meta, body = split_frontmatter(raw)
         text = body.strip()
         if not text:
@@ -199,7 +208,7 @@ def load_holdouts(root: Path, manifest: dict[str, object]) -> list[Piece]:
             )
         )
     pieces.sort(key=lambda piece: piece.path)
-    return pieces
+    return pieces, notes
 
 
 def evaluate(
@@ -223,7 +232,7 @@ def evaluate(
     overrides = manifest.get("overrides") if isinstance(manifest.get("overrides"), dict) else None
     placeholder = manifest.get("placeholder") if isinstance(manifest.get("placeholder"), str) else None
 
-    holdouts = load_holdouts(root, manifest)
+    holdouts, holdout_notes = load_holdouts(root, manifest)
     holdout_eval = _evaluate_holdouts(
         pieces=pieces,
         holdouts=holdouts,
@@ -235,6 +244,11 @@ def evaluate(
     )
 
     pairs, notes = load_edit_pairs(root)
+    notes = [*holdout_notes, *notes]
+    if cv is True and not pairs:
+        raise ProjectError(
+            "--cv needs learned edit pairs. Without them, eval holds out gold prose pieces."
+        )
     if pairs:
         use_cv = cv if cv is not None else (holdout is None and 3 <= len(pairs) <= 30)
         if use_cv:

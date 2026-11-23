@@ -494,7 +494,9 @@ class EvalTests(unittest.TestCase):
                 encoding="utf-8",
             )
             manifest = load_manifest(root)
-            pieces = load_holdouts(root, manifest)
+            pieces, notes = load_holdouts(root, manifest)
+
+        self.assertEqual(notes, [])
 
         self.assertEqual(
             [piece.path for piece in pieces],
@@ -511,6 +513,40 @@ class EvalTests(unittest.TestCase):
             self.assertEqual(piece.weight, float(manifest["weights"]["gold"]))
             self.assertEqual(piece.origin, "unaided")
             self.assertEqual(piece.confirmation, "origin")
+
+    def test_unreadable_holdout_is_skipped_and_eval_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "voice"
+            init_project(root, git=False)
+            (root / "corpus" / "gold" / "one.md").write_text(WRITER + "\n", encoding="utf-8")
+            holdouts = root / "holdouts"
+            (holdouts / "good.md").write_text("I keep the note short.\n", encoding="utf-8")
+            (holdouts / "bad.md").write_bytes(b"\xff\xfe not utf-8")
+
+            pieces, notes = load_holdouts(root, load_manifest(root))
+            self.assertEqual([piece.path for piece in pieces], ["holdouts/good.md"])
+            self.assertEqual(notes, ["Skipped holdouts/bad.md: not valid UTF-8."])
+
+            report = evaluate(root)
+        self.assertTrue(report["ok"], report)
+        self.assertIn("Skipped holdouts/bad.md: not valid UTF-8.", report["notes"])
+        self.assertEqual(report["holdouts"]["pieces"], 1)
+
+    def test_cv_without_edit_pairs_is_an_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "voice"
+            init_project(root, git=False)
+            (root / "corpus" / "gold" / "one.md").write_text(WRITER + "\n", encoding="utf-8")
+            (root / "corpus" / "gold" / "two.md").write_text(WRITER + "\n\nAnd another.\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ProjectError, "--cv needs learned edit pairs"):
+                evaluate(root, cv=True)
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                code = main(["eval", "--project", str(root), "--cv"])
+            self.assertEqual(code, 2)
+            self.assertIn("--cv needs learned edit pairs", stderr.getvalue())
 
     def test_holdouts_scored_standalone_without_leaking_into_build(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

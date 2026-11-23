@@ -451,6 +451,12 @@ class InstalledManifestTests(unittest.TestCase):
         )
         self.assertFalse(
             _is_ghostless_package_skill(
+                "/home/u/proj/node_modules/ghostless/skills/ghostless-draft",
+                "ghostless-draft",
+            )
+        )
+        self.assertFalse(
+            _is_ghostless_package_skill(
                 "/home/u/node_modules/ghostless/skills/ghostless-edit",
                 "ghostless-draft",
             )
@@ -707,6 +713,33 @@ class SkillOwnershipTests(unittest.TestCase):
             self.assertIn("ghostless skills installed: 3; existing paths kept: 0", force_out)
             for skill in harness.SKILLS:
                 self.assertEqual((skills_dir / skill).resolve(), (suite / "skills" / skill).resolve())
+
+    def test_project_local_node_modules_link_is_kept(self) -> None:
+        import ghostless.harness as harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            skills_dir = home / ".claude" / "skills"
+            skills_dir.mkdir(parents=True)
+            suite = self._make_suite(
+                base / "nvm" / "versions" / "node" / "v24.22.3" / "lib" / "node_modules" / "ghostless"
+            )
+            local = self._make_suite(base / "proj" / "node_modules" / "ghostless")
+            local_skill = local / "skills" / "ghostless-draft"
+            (skills_dir / "ghostless-draft").symlink_to(local_skill, target_is_directory=True)
+
+            out = self._run_cli(home, suite, ["install-skills"])
+            self.assertIn("kept ", out)
+            self.assertEqual((skills_dir / "ghostless-draft").resolve(), local_skill.resolve())
+
+            reset_out = self._run_cli(home, suite, ["reset", "--yes"])
+            self.assertIn("not installed by ghostless", reset_out)
+            self.assertEqual((skills_dir / "ghostless-draft").resolve(), local_skill.resolve())
+            for skill in harness.SKILLS:
+                if skill == "ghostless-draft":
+                    continue
+                self.assertFalse((skills_dir / skill).exists())
 
 
 if __name__ == "__main__":

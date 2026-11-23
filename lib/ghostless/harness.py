@@ -216,9 +216,18 @@ def _symlink_targets(dest: Path) -> tuple[str, Path]:
 
 
 def _is_ghostless_package_skill(path_text: str, skill_name: str) -> bool:
-    """True when path_text points to a ghostless npm package skill directory."""
+    """True for a global npm skill directory, not a project's local install.
+
+    Global installs sit under ``lib/node_modules`` (Unix, nvm, mise) or
+    ``npm/node_modules`` (Windows). A link into ``<project>/node_modules``
+    stays the user's own dependency.
+    """
     normalized = path_text.replace("\\", "/").rstrip("/").lower()
-    return normalized.endswith(f"/node_modules/ghostless/skills/{skill_name.lower()}")
+    suffix = f"/node_modules/ghostless/skills/{skill_name.lower()}"
+    if not normalized.endswith(suffix):
+        return False
+    parent = normalized[: -len(suffix)].rsplit("/", 1)[-1]
+    return parent in {"lib", "npm"}
 
 
 def _same_symlink_target(norm_abs: str, resolved: Path, candidate: Path | str) -> bool:
