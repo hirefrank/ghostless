@@ -1,0 +1,10 @@
+{
+  "events": [
+    {"t": 0.10, "type": "tap", "x": 710, "y": 135},
+    {"t": 0.15, "type": "key", "name": "a", "cmd": true},
+    {"t": 0.20, "type": "type", "text": "Unsaved close text.", "every": 0.01},
+    {"t": 0.45, "type": "tap", "x": 160, "y": 700},
+    {"t": 0.50, "type": "type", "text": "Flushed on exit.", "every": 0.01},
+    {"t": 0.70, "type": "mark", "name": "end"}
+  ]
+}

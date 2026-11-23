@@ -1,13 +1,13 @@
 # Releasing ghostless
 
-v0.1 is ready to publish and is not published. npm and PyPI both need the maintainer's credentials. Do not tag a release until you mean to ship it: a `v*` tag runs the npm publish workflow.
+v0.1.0 is ready to publish and is not published. npm and PyPI both need the maintainer's credentials. Do not tag a release until you mean to ship it: a `v*` tag runs the npm publish workflow.
 
 ## npm (supported install)
 
 The npm package includes a portable Node launcher under `bin/`, the voice logic under `lib/ghostless/`, and agent skills under `skills/`. Its installed artifact is smoke-tested on macOS, Windows, and Linux by `.github/workflows/package.yml`. The desktop editor in `editor/` is not in the tarball: `docs/EDITOR.md` builds it from a checkout ([#35](https://github.com/hirefrank/ghostless/issues/35)).
 
 1. Bump `version` in `package.json`, `pyproject.toml`, and `ghostless.__version__` together. `npm test` fails when they disagree.
-2. Add a `CHANGELOG.md` section `## vX.Y.Z — YYYY-MM-DD`.
+2. Add a `CHANGELOG.md` section `## vX.Y.Z — YYYY-MM-DD` and move everything out of `## Unreleased` (`publish.yml` fails fast if `## Unreleased` still has bullet entries or if the `## vX.Y.Z` section is missing or empty).
 3. Run `npm test` and `python tests/smoke_package.py`.
 4. Tag and push when you want the workflow to run:
 
@@ -31,7 +31,7 @@ The first publish of a new package cannot use a stage-only token.
 
 ## PyPI
 
-`pyproject.toml` builds a wheel of the Python package (`pip install build && python -m build`). The wheel's console script runs the voice commands (`init`, `build`, `judge`, `learn`, `export`). The npm package includes skills and the supported installer. There is no PyPI publish workflow, so a tag cannot upload a package that was never claimed on PyPI.
+`pyproject.toml` builds a wheel of the Python package (`pip install build && python -m build`). The wheel's console script runs the voice commands (`init`, `build`, `judge`, `learn`, `export`). `ghostless doctor` exits 0 on a wheel install and reports `Install: python-wheel`, while skill commands (`install-skills`, `routing`, `reset`) require the npm package or a Git checkout. The npm package includes skills and the supported installer. There is no PyPI publish workflow, so a tag cannot upload a package that was never claimed on PyPI.
 
 ## What the release check looks at
 

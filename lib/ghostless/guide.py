@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 
-from ghostless.schema import METRIC_LABELS
+from ghostless.schema import METRIC_LABELS, STRUCTURAL_RULE_LABELS
 from ghostless.stats import apply_overrides, as_mapping, corpus_confidence, metrics_of
 
 
@@ -153,8 +153,8 @@ def _voice_rules(stats: Mapping[str, object]) -> list[str]:
     if isinstance(minimum, bool) or not isinstance(minimum, int):
         minimum = 3
     lines.append(
-        f"Rules come from your edit receipts, not from the measured targets. A word becomes "
-        f"a candidate only after it recurs across {minimum} distinct pieces, and it is active "
+        f"Rules come from your edit receipts, not from the measured targets. A word or structural "
+        f"pattern becomes a candidate only after it recurs across {minimum} distinct pieces, and it is active "
         "only after you confirm it. Measured targets live under Targets. Hypotheses are not "
         "instructions; they are waiting for your decision."
     )
@@ -194,8 +194,9 @@ def _voice_rules(stats: Mapping[str, object]) -> list[str]:
                         )
             counterexamples = item.get("counterexamples")
             if isinstance(counterexamples, list) and counterexamples:
+                reason = "moved the other way" if item.get("kind") == "struct" else "kept the word"
                 lines.append(
-                    f"  - Counterexample: {len(counterexamples)} piece(s) kept the word, "
+                    f"  - Counterexample: {len(counterexamples)} piece(s) {reason}, "
                     "so read the pattern before trusting it."
                 )
     else:
@@ -220,11 +221,13 @@ def _voice_rules(stats: Mapping[str, object]) -> list[str]:
 
 def _rule_line(item: dict[str, object], *, confirmed: bool) -> str:
     kind = str(item.get("kind") or "cut")
-    verb = "Cut" if kind == "cut" else "Add"
-    word = item.get("word") or item.get("id") or "?"
+    word = str(item.get("word") or item.get("id") or "?")
     support = item.get("support")
     scope = item.get("scope")
     detail: list[str] = []
+    if kind == "struct":
+        rule_id = str(item.get("id") or f"struct:{word}")
+        detail.append(f"`{rule_id}`")
     if isinstance(support, int) and not isinstance(support, bool):
         detail.append(f"{support} piece(s)")
     sections = item.get("sections")
@@ -239,6 +242,10 @@ def _rule_line(item: dict[str, object], *, confirmed: bool) -> str:
         if isinstance(receipts, list) and receipts:
             detail.append("receipts: " + ", ".join(str(receipt) for receipt in receipts[:4]))
     suffix = f" ({'; '.join(detail)})" if detail else ""
+    if kind == "struct":
+        label = STRUCTURAL_RULE_LABELS.get(word, word)
+        return f"- {label}{suffix}"
+    verb = "Cut" if kind == "cut" else "Add"
     return f"- {verb} `{word}`{suffix}"
 
 

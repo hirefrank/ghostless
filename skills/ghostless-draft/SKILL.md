@@ -43,7 +43,7 @@ ghostless judge draft.md
 ghostless judge draft.md --section notes
 ```
 
-Review flagged banned words, confirmed `cut:` rule hits (respecting `--section` scope), tidy frames, and em dashes in context. `ghostless judge` enforces confirmed `cut:` rules automatically and ignores unconfirmed hypotheses. The mechanical score does not check factual fidelity or prove the draft sounds like the writer. Do not "fix" a placeholder by guessing the opinion. Show the draft and the judge summary. One revision pass is enough unless the user asks for another. If the writer wants to revise in a resumable edit session, offer `ghostless start draft.md` (and `ghostless finish` when done).
+Review flagged banned words, confirmed `cut:` rule hits (respecting `--section` scope), tidy frames, and em dashes in context. `ghostless judge` enforces confirmed `cut:` rules automatically and ignores unconfirmed hypotheses. If `ghostless judge` warns that `voice-stats.json` is stale (or reports `"stale": true`), run `ghostless build` so targets, rules, and editorial notes reflect the latest corpus changes. The mechanical score does not check factual fidelity or prove the draft sounds like the writer. Do not "fix" a placeholder by guessing the opinion. Show the draft and the judge summary. One revision pass is enough unless the user asks for another. If the writer wants to revise in a resumable edit session, offer `ghostless start draft.md` (and `ghostless finish` when done).
 
 ## Confirmed checks
 

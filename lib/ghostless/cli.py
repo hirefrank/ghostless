@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from ghostless.build import build_voice as build_voice
+from ghostless.build import stale_inputs
 from ghostless.checks import checks_summary, confirm_check, reject_check, write_pair_checks
 from ghostless.eval import evaluate, format_eval
 from ghostless.export import write_export
@@ -37,7 +38,7 @@ from ghostless.project import (
     save_note,
 )
 from ghostless.rules import confirm_rule, reject_rule, retire_rule, rules_summary
-from ghostless.schema import CompiledStats
+from ghostless.schema import STRUCTURAL_RULE_LABELS, CompiledStats
 from ghostless.sessions import finish_session, list_sessions, snapshot_session, start_session
 from ghostless.updatecheck import run_once as check_for_update
 
@@ -240,7 +241,11 @@ def main(argv: list[str] | None = None) -> int:
         choices=("list", "confirm", "reject", "retire"),
         help="list candidates (default), or decide one",
     )
-    rules_parser.add_argument("rule_id", nargs="?", help="Rule id, e.g. cut:delve or add:contraction")
+    rules_parser.add_argument(
+        "rule_id",
+        nargs="?",
+        help="Rule id, e.g. cut:delve, add:honestly, or struct:cut-em-dash",
+    )
     rules_parser.add_argument("--section", help="Limit a confirmed rule to this section")
     rules_parser.add_argument("--json", action="store_true")
     _add_project(rules_parser)
@@ -478,6 +483,8 @@ def _cmd_judge(args: argparse.Namespace) -> int:
         print(f"ghostless: draft not found: {draft_path}", file=sys.stderr)
         return 2
     stats = _load_stats(root)
+    stale = stale_inputs(root)
+    _warn_if_stale(stale)
     manifest = load_manifest(root)
     report = judge_text(
         draft_path.read_text(encoding="utf-8"),
@@ -487,6 +494,8 @@ def _cmd_judge(args: argparse.Namespace) -> int:
         overrides=manifest["overrides"],
         placeholder=manifest["placeholder"],
     )
+    report["stale"] = bool(stale)
+    report["staleSources"] = stale
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False))
     else:
@@ -716,6 +725,7 @@ def _cmd_save(args: argparse.Namespace) -> int:
 def _cmd_export(args: argparse.Namespace) -> int:
     root = _project(args.project)
     stats = _load_stats(root)
+    _warn_if_stale(stale_inputs(root))
     destination = write_export(
         root,
         stats,
@@ -963,8 +973,7 @@ def _format_rules(summary: Mapping[str, object]) -> str:
 
 def _rule_heading(item: dict[str, object], *, confirmed: bool) -> str:
     kind = str(item.get("kind") or "cut")
-    verb = "cut" if kind == "cut" else "add"
-    word = item.get("word") or "?"
+    word = str(item.get("word") or "?")
     detail: list[str] = []
     support = item.get("support")
     if isinstance(support, int) and not isinstance(support, bool):
@@ -979,6 +988,11 @@ def _rule_heading(item: dict[str, object], *, confirmed: bool) -> str:
         if isinstance(at, str) and at:
             detail.append(f"confirmed {at[:10]}")
     suffix = f"  ({'; '.join(detail)})" if detail else ""
+    if kind == "struct":
+        rule_id = str(item.get("id") or f"struct:{word}")
+        label = STRUCTURAL_RULE_LABELS.get(word, word)
+        return f"  {rule_id}  {label}{suffix}"
+    verb = "cut" if kind == "cut" else "add"
     return f"  {verb} {word}{suffix}"
 
 
@@ -997,6 +1011,17 @@ def _cmd_which(args: argparse.Namespace) -> int:
     print(f"project={project}")
     print(f"project_source={source}")
     return 0
+
+
+def _warn_if_stale(stale: list[str]) -> None:
+    if not stale:
+        return
+    shown = ", ".join(stale[:3])
+    extra = f" (+{len(stale) - 3} more)" if len(stale) > 3 else ""
+    print(
+        f"ghostless: voice-stats.json is older than {shown}{extra}. Run `ghostless build` to refresh.",
+        file=sys.stderr,
+    )
 
 
 def _load_stats(root: Path) -> Mapping[str, object]:

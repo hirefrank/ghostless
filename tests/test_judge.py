@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -15,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SAMPLE = ROOT / "fixtures" / "sample-voice"
 sys.path.insert(0, str(ROOT / "lib"))
 
-from ghostless.build import build_voice  # noqa: E402
+from ghostless.build import build_voice, stale_inputs  # noqa: E402
 from ghostless.cli import main  # noqa: E402
 from ghostless.guide import _num  # noqa: E402
 from ghostless.judge import apply_overrides, draft_summary, find_placeholders, judge_text  # noqa: E402
@@ -235,15 +236,22 @@ class JudgeTests(unittest.TestCase):
 
             del manifest["overrides"]
             (project / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            stats_mtime = (project / "voice-stats.json").stat().st_mtime_ns
+            os.utime(project / "manifest.json", ns=(stats_mtime + 2_000_000_000, stats_mtime + 2_000_000_000))
             out = io.StringIO()
-            with contextlib.redirect_stdout(out):
+            err = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 main(["judge", str(draft), "--json", "--project", str(project)])
             restored = json.loads(out.getvalue())
             restored_check = next(item for item in restored["checks"] if item["metric"] == "emDashesPer1k")
             self.assertEqual(restored_check["target"], measured_em)
+            self.assertTrue(restored["stale"])
+            self.assertIn("manifest.json", restored["staleSources"])
+            self.assertIn("manifest.json", err.getvalue())
 
             out = io.StringIO()
-            with contextlib.redirect_stdout(out):
+            err = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 main(["judge", str(draft), "--section", "notes", "--json", "--project", str(project)])
             restored_section = json.loads(out.getvalue())
             restored_section_check = next(
@@ -410,6 +418,141 @@ class JudgeTests(unittest.TestCase):
             report["placeholders"],
             ["[WRITER: heading gap]", "[WRITER: prose gap]"],
         )
+
+
+class StaleInputsTests(unittest.TestCase):
+    def _bump_mtime(self, path: Path, stats_path: Path) -> int:
+        old_ns = path.stat().st_mtime_ns
+        newer = stats_path.stat().st_mtime_ns + 2_000_000_000
+        os.utime(path, ns=(newer, newer))
+        return old_ns
+
+    def test_fresh_build_is_not_stale_and_non_inputs_do_not_trigger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            shutil.copytree(SAMPLE, project)
+            build_voice(project)
+            stats_path = project / "voice-stats.json"
+            self.assertEqual(stale_inputs(project), [])
+
+            draft = project / "drafts" / "closer.md"
+            self._bump_mtime(draft, stats_path)
+            (project / "corpus" / "gold" / "README.md").write_text("# Ignore me\n", encoding="utf-8")
+            self._bump_mtime(project / "corpus" / "gold" / "README.md", stats_path)
+            session_file = project / "sessions" / "2026-01-02" / "after.md"
+            session_file.parent.mkdir(parents=True, exist_ok=True)
+            session_file.write_text("Working draft.\n", encoding="utf-8")
+            self._bump_mtime(session_file, stats_path)
+            self.assertEqual(stale_inputs(project), [])
+
+            out = io.StringIO()
+            err = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = main(["judge", str(draft), "--json", "--project", str(project)])
+            self.assertEqual(code, 0)
+            self.assertEqual(err.getvalue(), "")
+            report = json.loads(out.getvalue())
+            self.assertFalse(report["stale"])
+            self.assertEqual(report["staleSources"], [])
+
+            out_exp = io.StringIO()
+            err_exp = io.StringIO()
+            with contextlib.redirect_stdout(out_exp), contextlib.redirect_stderr(err_exp):
+                code_exp = main(["export", "--project", str(project)])
+            self.assertEqual(code_exp, 0)
+            self.assertEqual(err_exp.getvalue(), "")
+
+    def test_judge_and_export_warn_without_rewriting_stats_across_all_input_kinds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            shutil.copytree(SAMPLE, project)
+            (project / "STYLE.md").write_text("# Style\n\n- Be direct.\n", encoding="utf-8")
+            (project / "AUDIENCE.md").write_text("# Audience\n\n- Builders.\n", encoding="utf-8")
+            (project / "rules.json").write_text(
+                '{"kind": "ghostless-rules", "version": 1, "confirmed": {}, "rejected": {}, "retired": {}, "scope": {}}\n',
+                encoding="utf-8",
+            )
+            (project / "checks.json").write_text(
+                '{"kind": "ghostless-checks", "version": 1, "confirmed": {}, "rejected": {}}\n',
+                encoding="utf-8",
+            )
+            (project / "transcripts").mkdir(parents=True, exist_ok=True)
+            (project / "transcripts" / "talk.md").write_text("I keep it brief.\n", encoding="utf-8")
+            (project / "gold" / "2026-01-02-notes").mkdir(parents=True, exist_ok=True)
+            (project / "gold" / "2026-01-02-notes" / "before.md").write_text("Before.\n", encoding="utf-8")
+            (project / "gold" / "2026-01-02-notes" / "after.md").write_text("After.\n", encoding="utf-8")
+            (project / "gold" / "2026-01-02-notes" / "meta.json").write_text(
+                '{"date": "2026-01-02", "origin": "writer-first", "beforeFile": "before.md", "afterFile": "after.md"}\n',
+                encoding="utf-8",
+            )
+            build_voice(project)
+
+            stats_path = project / "voice-stats.json"
+            guide_path = project / "voice-guide.md"
+            draft = project / "drafts" / "closer.md"
+
+            rel_targets = (
+                "manifest.json",
+                "rules.json",
+                "checks.json",
+                "STYLE.md",
+                "AUDIENCE.md",
+                "corpus/gold/notes/desk.md",
+                "transcripts/talk.md",
+                "gold/2026-01-02-notes/after.md",
+            )
+            for rel in rel_targets:
+                with self.subTest(rel=rel):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(main(["build", "--project", str(project)]), 0)
+                    stats_before = stats_path.read_bytes()
+                    guide_before = guide_path.read_bytes()
+                    stats_mtime_before = stats_path.stat().st_mtime_ns
+                    guide_mtime_before = guide_path.stat().st_mtime_ns
+
+                    old_ns = self._bump_mtime(project / rel, stats_path)
+                    try:
+                        out_judge = io.StringIO()
+                        err_judge = io.StringIO()
+                        with contextlib.redirect_stdout(out_judge), contextlib.redirect_stderr(err_judge):
+                            judge_rc = main(["judge", str(draft), "--json", "--project", str(project)])
+                        self.assertIn(judge_rc, (0, 1))
+                        report = json.loads(out_judge.getvalue())
+                        self.assertTrue(report["stale"])
+                        self.assertEqual(report["staleSources"], [rel])
+                        self.assertIn(rel, err_judge.getvalue())
+                        self.assertIn("ghostless build", err_judge.getvalue())
+
+                        out_export = io.StringIO()
+                        err_export = io.StringIO()
+                        with contextlib.redirect_stdout(out_export), contextlib.redirect_stderr(err_export):
+                            export_rc = main(["export", "--project", str(project)])
+                        self.assertEqual(export_rc, 0)
+                        self.assertIn(rel, err_export.getvalue())
+                        self.assertIn("ghostless build", err_export.getvalue())
+
+                        self.assertEqual(stats_path.read_bytes(), stats_before)
+                        self.assertEqual(guide_path.read_bytes(), guide_before)
+                        self.assertEqual(stats_path.stat().st_mtime_ns, stats_mtime_before)
+                        self.assertEqual(guide_path.stat().st_mtime_ns, guide_mtime_before)
+                    finally:
+                        restored = min(old_ns, stats_mtime_before - 1_000_000_000)
+                        os.utime(project / rel, ns=(restored, restored))
+
+            # Backdating voice-stats.json simulates every input being modified before rebuild; build clears staleness.
+            past = stats_path.stat().st_mtime_ns - 2_000_000_000
+            os.utime(stats_path, ns=(past, past))
+            self.assertTrue(stale_inputs(project))
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["build", "--project", str(project)]), 0)
+            out_clean = io.StringIO()
+            err_clean = io.StringIO()
+            with contextlib.redirect_stdout(out_clean), contextlib.redirect_stderr(err_clean):
+                self.assertIn(main(["judge", str(draft), "--json", "--project", str(project)]), (0, 1))
+            self.assertEqual(err_clean.getvalue(), "")
+            cleaned = json.loads(out_clean.getvalue())
+            self.assertFalse(cleaned["stale"])
+            self.assertEqual(cleaned["staleSources"], [])
 
 
 if __name__ == "__main__":

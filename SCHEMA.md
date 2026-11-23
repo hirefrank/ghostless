@@ -300,6 +300,8 @@ Counts come from the unweighted block, so they describe the real sample rather t
 
 `voice-guide.md` carries the same numbers under `## Sample size`, and the human-readable judge report prints a `corpus:` line and a `confidence:` line.
 
+`ghostless judge --json` also includes `"stale"` (`true` or `false`) and `"staleSources"` (a sorted list of relative paths) comparing `voice-stats.json`'s modification time against `manifest.json`, `rules.json`, `checks.json`, `STYLE.md`, `AUDIENCE.md`, and files under `corpus/`, `transcripts/`, and `gold/`. When inputs are newer than `voice-stats.json`, `judge` and `export` print a one-line notice on `stderr` advising `ghostless build`, keeping `stdout` clean and never rewriting `voice-stats.json` or `voice-guide.md` on read.
+
 ## Held-out evaluation
 
 `ghostless eval` (module `ghostless.eval`) tests whether the score predicts acceptance rather than adding metrics.
@@ -380,18 +382,22 @@ Correlations need at least three judged pairs; below that the fields are `null` 
 
 ## Voice rules
 
-`build` mines `edits-summary.json` for words the writer cuts or adds across distinct finished pieces. A word is a *candidate* only after it recurs in `rules.minimumSupport` distinct pieces (default 3). One or two edits are never enough. Even a qualifying candidate is only a hypothesis until the writer confirms it.
+`build` mines `edits-summary.json` for words and structural habits the writer cuts, adds, or restructures across distinct finished pieces. A pattern is a *candidate* only after it recurs in `rules.minimumSupport` distinct pieces (default 3). One or two edits are never enough. Even a qualifying candidate is only a hypothesis until the writer confirms it.
 
-Two pattern kinds exist in v0.1:
+Eight candidate rule patterns exist:
 
 | Id | Meaning |
 | --- | --- |
 | `cut:<word>` | the writer removes `<word>` |
 | `add:<word>` | the writer adds `<word>` |
+| `struct:cut-em-dash` | net negative delta on em dashes (`—`) |
+| `struct:add-em-dash` | net positive delta on em dashes (`—`) |
+| `struct:cut-semicolon` | net negative delta on semicolons (`;`) |
+| `struct:cut-exclamation` | net negative delta on exclamation marks (`!`) |
+| `struct:split-paragraphs` | net positive delta on paragraph count |
+| `struct:merge-paragraphs` | net negative delta on paragraph count |
 
-Structural patterns (repeated paragraph moves, punctuation changes) are not candidates yet; `mine_candidates` in `lib/ghostless/rules.py` is the single place to extend.
-
-Each candidate carries `support` (distinct pieces), `pieces`, `sections`, `origins`, up to three `examples` (`{slug, receipt, before_snippet, after_snippet}`), and up to three `counterexamples` (`{slug, receipt, snippet}`: pieces that had the word on the relevant side but did not make the edit). `receipt` points at `sessions/<id>/receipt.json` when a finished session produced the pair, otherwise at `gold/<slug>`.
+Each candidate carries `support` (distinct pieces), `pieces`, `sections`, `origins`, up to three `examples` (`{slug, receipt, before_snippet, after_snippet}`), and up to three `counterexamples` (`{slug, receipt, snippet}`: for `cut:`/`add:`, pieces that had the word on the relevant side but did not make the edit; for `struct:`, pieces that moved the same structural feature in the opposite direction). `receipt` points at `sessions/<id>/receipt.json` when a finished session produced the pair, otherwise at `gold/<slug>`.
 
 `rules.json` at the project root is tracked and is the single source of truth for decisions. `build` reads it; only `ghostless rules` writes it.
 
