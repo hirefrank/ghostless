@@ -58,16 +58,35 @@ The check only GETs the public GitHub release. It does not send your writing.
 """
 
 
+_MAINTENANCE_COMMANDS = {
+    "install-skills",
+    "setup",
+    "update",
+    "doctor",
+    "agents",
+    "routing",
+    "reset",
+    "uninstall",
+}
+
+
+def _maybe_check_for_update(project: Path | None = None) -> None:
+    """Check once a day for a newer npm release and print a notice to stderr."""
+    if os.environ.get("GHOSTLESS_LAUNCHER") != "npm":
+        return
+    decision = check_for_update(project=project)
+    if decision.startswith("update "):
+        print(
+            f"ghostless: {decision[7:]} is available. Run 'ghostless update' to install it.",
+            file=sys.stderr,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if (os.environ.get("GHOSTLESS_LAUNCHER") == "npm" and argv
-            and argv[0] not in {"-h", "--help", "help", "-V", "--version", "version", "update"}):
-        decision = check_for_update()
-        if decision.startswith("update "):
-            print(f"ghostless: {decision[7:]} is available. Run 'ghostless update' to install it.", file=sys.stderr)
-    if argv and argv[0] in {
-        "install-skills", "setup", "update", "doctor", "agents", "routing", "reset", "uninstall"
-    }:
+    if argv and argv[0] in _MAINTENANCE_COMMANDS:
+        if argv[0] != "update":
+            _maybe_check_for_update()
         try:
             return harness_main(argv)
         except (ProjectError, OSError) as exc:
@@ -259,6 +278,10 @@ def main(argv: list[str] | None = None) -> int:
     if not args.command:
         parser.print_help()
         return 0
+    if args.command not in {"update"}:
+        _maybe_check_for_update(
+            Path(args.project) if getattr(args, "project", None) else None
+        )
     try:
         return _dispatch(args)
     except ProjectError as exc:
@@ -873,23 +896,6 @@ def build_voice(root: Path) -> dict[str, object]:
     overrides = manifest.get("overrides")
     overrides = overrides if isinstance(overrides, dict) else {}
     stats["overrides"] = overrides
-    if overrides:
-        # The pinned value is the target from here on: judge reads it from
-        # voice-stats.json, and the guide table shows it as Weighted. The
-        # measured value stays visible in the Unweighted column.
-        from ghostless.judge import apply_overrides
-
-        weighted = stats.get("weighted")
-        if isinstance(weighted, dict) and isinstance(weighted.get("metrics"), dict):
-            weighted["metrics"] = apply_overrides(weighted["metrics"], overrides)
-        sections = stats.get("sections")
-        if isinstance(sections, dict):
-            for section in sections.values():
-                if not isinstance(section, dict):
-                    continue
-                block = section.get("weighted")
-                if isinstance(block, dict) and isinstance(block.get("metrics"), dict):
-                    block["metrics"] = apply_overrides(block["metrics"], overrides)
     placeholder = manifest.get("placeholder")
     stats["placeholder"] = placeholder if isinstance(placeholder, str) else None
     # A derived snapshot for the guide. `rules.json` stays the source of truth

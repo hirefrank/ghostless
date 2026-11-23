@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from ghostless.judge import corpus_confidence
+from ghostless.judge import METRIC_LABELS, apply_overrides, corpus_confidence
 
 
 def render_guide(stats: dict[str, object]) -> str:
@@ -23,7 +23,8 @@ def _render(
 ) -> str:
     weighted = _block(stats.get("weighted"))
     unweighted = _block(stats.get("unweighted"))
-    metrics = _metrics(weighted)
+    measured_metrics = _metrics(weighted)
+    display_metrics = apply_overrides(measured_metrics, _overrides_dict(stats))
     bare = _metrics(unweighted)
     lines: list[str] = []
     if paste:
@@ -64,21 +65,21 @@ def _render(
     )
     for label, key, formatter in rows:
         lines.append(
-            f"| {label} | {formatter(metrics.get(key))} | {formatter(bare.get(key))} |"
+            f"| {label} | {formatter(display_metrics.get(key))} | {formatter(bare.get(key))} |"
         )
     lines.append("")
-    lines.extend(_overrides(stats, metrics, bare))
+    lines.extend(_overrides(stats, measured_metrics, bare))
     lines.extend(_sample_size(stats))
     lines.append("## Sentence length")
     lines.append("")
     lines.append("Short is 1–10 words, medium is 11–20, long is 21 or more.")
     lines.append("")
-    lines.append(f"- Weighted: {_distribution(metrics.get('sentenceLengthDistribution'))}")
+    lines.append(f"- Weighted: {_distribution(measured_metrics.get('sentenceLengthDistribution'))}")
     lines.append(f"- Unweighted: {_distribution(bare.get('sentenceLengthDistribution'))}")
     lines.append("")
     lines.append("## Openers")
     lines.append("")
-    lines.append(_openers(metrics.get("openers"), "Weighted"))
+    lines.append(_openers(measured_metrics.get("openers"), "Weighted"))
     lines.append(_openers(bare.get("openers"), "Unweighted"))
     lines.append("")
     lines.extend(_phrases(weighted))
@@ -298,24 +299,26 @@ def _overrides(
     unweighted: dict[str, object],
 ) -> list[str]:
     """Manifest overrides, stated plainly so the pinned target is not mistaken for measured."""
-    from ghostless.judge import METRIC_LABELS
-
-    raw = stats.get("overrides")
-    if not isinstance(raw, dict) or not raw:
+    raw = _overrides_dict(stats)
+    if not raw:
         return []
     lines = [
         "Overrides from the manifest. These pin the target — the Weighted column "
-        "above shows the pinned value, the Unweighted column shows what the corpus "
-        "actually measured. They apply to the whole project and every section.",
+        "above shows the pinned value, the measured weighted value is shown below, "
+        "and the Unweighted column shows the unweighted corpus measurement. "
+        "They apply to the whole project and every section.",
         "",
     ]
     for key in sorted(raw):
         value = raw[key]
-        measured = unweighted.get(key)
+        measured = weighted.get(key)
+        if measured is None:
+            measured = unweighted.get(key)
+        fmt = _pct if key == "openerShare" else _num
         label = METRIC_LABELS.get(key, key)
         lines.append(
-            f"- {label}: target pinned to {_num(value)} "
-            f"(measured {_num(measured)})"
+            f"- {label}: target pinned to {fmt(value)} "
+            f"(measured {fmt(measured)})"
         )
     lines.append("")
     return lines
@@ -417,11 +420,12 @@ def _sections(stats: dict[str, object]) -> list[str]:
         return lines
     lines.append("Pass `--section` to `ghostless judge` to use a section's weighted targets. The ban list stays global.")
     lines.append("")
+    overrides = _overrides_dict(stats)
     for name in sorted(raw):
         block = raw[name]
         if not isinstance(block, dict):
             continue
-        weighted = _metrics(_block(block.get("weighted")))
+        weighted = apply_overrides(_metrics(_block(block.get("weighted"))), overrides)
         lines.append(f"### {name}")
         lines.append("")
         lines.append(f"- Pieces: {block.get('pieces')}")
@@ -513,6 +517,11 @@ def _block(value: object) -> dict[str, object]:
 def _metrics(block: dict[str, object]) -> dict[str, object]:
     metrics = block.get("metrics")
     return metrics if isinstance(metrics, dict) else {}
+
+
+def _overrides_dict(stats: dict[str, object]) -> dict[str, object]:
+    raw = stats.get("overrides")
+    return raw if isinstance(raw, dict) else {}
 
 
 def _num(value: object) -> str:

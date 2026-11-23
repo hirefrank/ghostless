@@ -116,7 +116,11 @@ def judge_text(
     placeholder: str | None = None,
 ) -> dict[str, object]:
     targets, target_label = _targets(stats, section)
-    target_metrics = apply_overrides(_metrics(targets), overrides)
+    effective_overrides = overrides
+    if effective_overrides is None:
+        raw_overrides = stats.get("overrides")
+        effective_overrides = raw_overrides if isinstance(raw_overrides, dict) else None
+    target_metrics = apply_overrides(_metrics(targets), effective_overrides)
     confidence = corpus_confidence(stats, section)
     if not text.strip():
         return {

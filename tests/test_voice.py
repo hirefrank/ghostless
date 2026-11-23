@@ -427,6 +427,7 @@ class JudgeTests(unittest.TestCase):
             manifest["overrides"] = {"emDashesPer1k": 0}
             (project / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
             stats = build_voice(project)
+            # sample-voice itself has 0 em dashes; measured stats stay untouched.
             self.assertEqual(stats["weighted"]["metrics"]["emDashesPer1k"], 0)
             self.assertEqual(stats["overrides"], {"emDashesPer1k": 0})
             guide = (project / "voice-guide.md").read_text(encoding="utf-8")
@@ -445,6 +446,102 @@ class JudgeTests(unittest.TestCase):
             check = next(item for item in report["checks"] if item["metric"] == "emDashesPer1k")
             self.assertEqual(check["target"], 0)
             self.assertEqual(check["status"], "high")
+
+    def test_override_preserves_measured_targets_and_unpins_without_rebuild(self) -> None:
+        from ghostless.guide import _num
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            shutil.copytree(SAMPLE, project)
+            (project / "corpus" / "gold" / "notes" / "dashes.md").write_text(
+                (
+                    "I write short lines — then I pause — and then I write again.\n"
+                    "We keep the cadence clear — never ornate — and stop on time.\n"
+                ) * 3,
+                encoding="utf-8",
+            )
+            manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
+            manifest["overrides"] = {"emDashesPer1k": 0}
+            (project / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+            stats = build_voice(project)
+            on_disk = json.loads((project / "voice-stats.json").read_text(encoding="utf-8"))
+            measured_em = stats["weighted"]["metrics"]["emDashesPer1k"]
+            section_measured_em = stats["sections"]["notes"]["weighted"]["metrics"]["emDashesPer1k"]
+            self.assertGreater(measured_em, 0)
+            self.assertGreater(section_measured_em, 0)
+            self.assertEqual(on_disk["weighted"]["metrics"]["emDashesPer1k"], measured_em)
+            self.assertEqual(
+                on_disk["sections"]["notes"]["weighted"]["metrics"]["emDashesPer1k"],
+                section_measured_em,
+            )
+            self.assertEqual(stats["overrides"], {"emDashesPer1k": 0})
+
+            guide = (project / "voice-guide.md").read_text(encoding="utf-8")
+            self.assertIn("| Em dashes per 1k words | 0 |", guide)
+            self.assertIn(f"target pinned to 0 (measured {_num(measured_em)})", guide)
+            notes_section = guide.split("### notes", 1)[1].split("### ", 1)[0]
+            self.assertIn("- Em dashes per 1k: 0\n", notes_section)
+
+            draft = project / "draft.md"
+            draft_text = (
+                (project / "drafts" / "closer.md").read_text(encoding="utf-8")
+                + "\n\nOne more line — with a dash.\n"
+            )
+            draft.write_text(draft_text, encoding="utf-8")
+
+            direct = judge_text(draft_text, stats)
+            direct_check = next(item for item in direct["checks"] if item["metric"] == "emDashesPer1k")
+            self.assertEqual(direct_check["target"], 0)
+            self.assertEqual(direct_check["status"], "high")
+
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main(["judge", str(draft), "--json", "--project", str(project)])
+            report = json.loads(out.getvalue())
+            check = next(item for item in report["checks"] if item["metric"] == "emDashesPer1k")
+            self.assertEqual(check["target"], 0)
+            self.assertEqual(check["status"], "high")
+
+            del manifest["overrides"]
+            (project / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main(["judge", str(draft), "--json", "--project", str(project)])
+            restored = json.loads(out.getvalue())
+            restored_check = next(item for item in restored["checks"] if item["metric"] == "emDashesPer1k")
+            self.assertEqual(restored_check["target"], measured_em)
+
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main(["judge", str(draft), "--section", "notes", "--json", "--project", str(project)])
+            restored_section = json.loads(out.getvalue())
+            restored_section_check = next(
+                item for item in restored_section["checks"] if item["metric"] == "emDashesPer1k"
+            )
+            self.assertEqual(restored_section_check["target"], section_measured_em)
+
+    def test_override_opener_share_formats_as_percentage_in_guide(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            shutil.copytree(SAMPLE, project)
+            manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
+            manifest["overrides"] = {"openerShare": 0.2}
+            (project / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+            stats = build_voice(project)
+            measured_share = stats["weighted"]["metrics"]["openerShare"]
+            measured_pct = f"{measured_share * 100:.0f}%"
+            self.assertNotEqual(measured_pct, "20%")
+
+            guide = (project / "voice-guide.md").read_text(encoding="utf-8")
+            self.assertIn("| Sentences opening with And/But/So | 20% |", guide)
+            self.assertIn(
+                f"- And/But/So opener share: target pinned to 20% (measured {measured_pct})",
+                guide,
+            )
+            notes_section = guide.split("### notes", 1)[1].split("### ", 1)[0]
+            self.assertIn("- And/But/So openers: 20%\n", notes_section)
 
     def test_any_uppercase_name_placeholder_flags_review(self) -> None:
         from ghostless.judge import draft_summary
@@ -1485,6 +1582,76 @@ class UpdatePlanTests(unittest.TestCase):
                     os.environ["GHOSTLESS_HOME"] = old_home
                 if old_no is not None:
                     os.environ["GHOSTLESS_NO_UPDATE"] = old_no
+
+    def test_project_manifest_disables_check_from_unrelated_cwd_and_respects_project_flag(self) -> None:
+        from ghostless.updatecheck import run_once
+
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as unrelated_tmp:
+            base = Path(tmp)
+            home = base / "home"
+            home.mkdir()
+            unrelated = Path(unrelated_tmp)
+            project = base / "voice"
+            shutil.copytree(SAMPLE, project)
+            manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
+            manifest["updateCheck"] = False
+            (project / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+            def explode(*_args: object, **_kwargs: object) -> object:
+                raise AssertionError("network check should not run when project updateCheck is false")
+
+            old = Path.cwd()
+            try:
+                os.chdir(unrelated)
+                with patch.dict(
+                    os.environ,
+                    {"GHOSTLESS_HOME": str(home), "GHOSTLESS_LAUNCHER": "npm"},
+                ):
+                    for var in (
+                        "GHOSTLESS_NO_UPDATE",
+                        "GHOSTLESS_UPDATE_CHECK",
+                        "GHOSTLESS_JUST_UPDATED",
+                        "GHOSTLESS_PROJECT",
+                    ):
+                        os.environ.pop(var, None)
+                    self.assertFalse(updates_disabled())
+                    self.assertTrue(updates_disabled(project=project))
+                    self.assertEqual(run_once(fetcher=explode, project=project), "disabled")
+                    with patch("urllib.request.urlopen", side_effect=explode):
+                        out = io.StringIO()
+                        with contextlib.redirect_stdout(out):
+                            code = main(["build", "--project", str(project)])
+                        self.assertEqual(code, 0)
+                        self.assertTrue((project / "voice-guide.md").is_file())
+            finally:
+                os.chdir(old)
+
+    def test_cli_defers_update_check_until_after_project_parse(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            unrelated = base / "unrelated"
+            unrelated.mkdir()
+            project = base / "voice"
+            shutil.copytree(SAMPLE, project)
+
+            old = Path.cwd()
+            try:
+                os.chdir(unrelated)
+                with patch.dict(os.environ, {"GHOSTLESS_LAUNCHER": "npm"}):
+                    with patch("ghostless.cli.check_for_update", return_value="disabled") as mock_check:
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            self.assertEqual(main(["--version"]), 0)
+                            self.assertEqual(main(["--help"]), 0)
+                            self.assertEqual(main([]), 0)
+                            self.assertEqual(main(["build", "--help"]), 0)
+                        mock_check.assert_not_called()
+
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            code = main(["build", "--project", str(project)])
+                        self.assertEqual(code, 0)
+                        mock_check.assert_called_once_with(project=project)
+            finally:
+                os.chdir(old)
 
 
 def _diction_text(pieces: list[Piece]) -> str:
