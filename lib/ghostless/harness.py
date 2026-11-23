@@ -31,9 +31,18 @@ AGENTS = {
 COPY_MARKER = ".ghostless-installed"
 
 
+def _is_windows() -> bool:
+    """Platform check tests can replace without changing process-wide os.name.
+
+    pathlib.Path() follows os.name, so patching that to "posix" on Windows
+    makes every Path() try to build a PosixPath and raise UnsupportedOperation.
+    """
+    return os.name == "nt"
+
+
 def _shim_command(executable: str, *args: str) -> list[str]:
     """Wrap Windows .cmd shims through cmd /c so CreateProcess can run them."""
-    if os.name == "nt":
+    if _is_windows():
         return ["cmd", "/c", executable, *args]
     return [executable, *args]
 
@@ -321,13 +330,13 @@ def update(*, agent: str) -> int:
             "`ghostless install-skills --force`."
         )
         return 1
-    npm = shutil.which("npm.cmd" if os.name == "nt" else "npm")
+    npm = shutil.which("npm.cmd" if _is_windows() else "npm")
     if npm is None:
         raise ProjectError("npm is needed to update this installation.")
     result = subprocess.run(_shim_command(npm, "install", "-g", "ghostless@latest"), check=False)
     if result.returncode:
         return int(result.returncode)
-    installed = shutil.which("ghostless.cmd" if os.name == "nt" else "ghostless")
+    installed = shutil.which("ghostless.cmd" if _is_windows() else "ghostless")
     if installed is not None:
         env = os.environ.copy()
         env["GHOSTLESS_JUST_UPDATED"] = "1"

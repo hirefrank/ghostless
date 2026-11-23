@@ -74,6 +74,11 @@ class SessionTests(unittest.TestCase):
             start_session(self.project, self.base / "missing.md", section=None, origin="ai-first", sources=[])
         with self.assertRaisesRegex(ProjectError, "portable reference"):
             start_session(self.project, self.draft, section=None, origin="ai-first", sources=[str(self.draft)])
+        for absolute in ("/home/user/ref", r"C:\Users\me\ref", "C:/Users/me/ref"):
+            with self.assertRaisesRegex(ProjectError, "portable reference"):
+                start_session(
+                    self.project, self.draft, section=None, origin="ai-first", sources=[absolute]
+                )
         session = self.start()
         folder = self.project / str(session["path"])
         with self.assertRaisesRegex(ProjectError, "identical"):

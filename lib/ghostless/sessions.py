@@ -14,7 +14,7 @@ import os
 import re
 import tempfile
 from datetime import datetime, timezone
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from ghostless.learn import DIFF_SUMMARY_KEYS, diff_texts, learn_edit
 from ghostless.paths import ProjectError
@@ -87,6 +87,15 @@ def _session_dir(root: Path, session: str | None) -> Path:
     return active[0]
 
 
+def _absolute_source(source: str) -> bool:
+    """True for a POSIX or Windows absolute path, on either host.
+
+    Path() only knows the current flavour, so a Windows check misses
+    ``/home/user/ref`` and a POSIX check misses ``C:\\Users\\me\\ref``.
+    """
+    return PurePosixPath(source).is_absolute() or PureWindowsPath(source).is_absolute()
+
+
 def start_session(
     root: Path,
     draft: Path,
@@ -103,9 +112,7 @@ def start_session(
     checked_origin = parse_origin(origin, path="--origin")
     if any(not source.strip() for source in sources):
         raise ProjectError("--source values cannot be empty.")
-    if any(
-        Path(source).is_absolute() or PureWindowsPath(source).is_absolute() for source in sources
-    ):
+    if any(_absolute_source(source) for source in sources):
         raise ProjectError("--source must be a portable reference, URL, or project-relative path.")
     date_text = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     session_id = new_session_id(root, date=date_text, section=section)

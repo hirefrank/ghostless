@@ -147,14 +147,14 @@ class PathWarningTests(unittest.TestCase):
         import ghostless.harness as harness
 
         npm = r"C:\Program Files\nodejs\npm.cmd"
-        with patch.object(harness.os, "name", "nt"):
+        with patch.object(harness, "_is_windows", return_value=True):
             self.assertEqual(
                 harness._npm_prefix_command(npm),
                 ["cmd", "/c", npm, "config", "get", "prefix"],
             )
-        # The POSIX expectation must also pin os.name: on Windows it is
-        # genuinely "nt", so without the patch this asserts the cmd form.
-        with patch.object(harness.os, "name", "posix"):
+        # Pin the platform helper, not os.name. Path() follows os.name, so a
+        # process-wide "posix" patch cannot build paths on Windows.
+        with patch.object(harness, "_is_windows", return_value=False):
             self.assertEqual(
                 harness._npm_prefix_command("/usr/local/bin/npm"),
                 ["/usr/local/bin/npm", "config", "get", "prefix"],
@@ -197,7 +197,7 @@ class UpdateTests(unittest.TestCase):
             which_map = {"npm": "/usr/local/bin/npm", "ghostless": "/usr/local/bin/ghostless"}
             with (
                 patch.dict(os.environ, env),
-                patch.object(harness.os, "name", "posix"),
+                patch.object(harness, "_is_windows", return_value=False),
                 patch("ghostless.harness.shutil.which", side_effect=lambda name: which_map.get(name)),
                 patch("ghostless.harness.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as mock_run,
             ):
@@ -224,7 +224,7 @@ class UpdateTests(unittest.TestCase):
             with (
                 patch.dict(os.environ, env),
                 patch("ghostless.harness._root", return_value=suite),
-                patch.object(harness.os, "name", "nt"),
+                patch.object(harness, "_is_windows", return_value=True),
                 patch("ghostless.harness.shutil.which", side_effect=lambda name: which_map.get(name)),
                 patch("ghostless.harness.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as mock_run,
             ):
