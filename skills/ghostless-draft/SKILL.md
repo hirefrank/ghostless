@@ -42,3 +42,15 @@ ghostless judge draft.md --section notes
 ```
 
 Review flagged words, tidy frames, and em dashes in context. The mechanical score does not check factual fidelity or prove the draft sounds like the writer. Do not "fix" a placeholder by guessing the opinion. Show the draft and the judge summary. One revision pass is enough unless the user asks for another.
+
+## Confirmed checks
+
+If the voice guide has a Confirmed checks section, follow those sentences. They are judgments the writer saved from a real edit. The mechanical score does not see them, and it does not change. Do not invent a check, and do not soften one the writer confirmed.
+
+When this skill or `voice-guide.md` changes, regrade in a fresh session. Do not reuse a pass from the chat you are already in:
+
+```bash
+ghostless eval
+```
+
+The checks line is passes over checks, for example `12/14`. It counts the held-out befores, and each check's after file is the case that already passes. Leave the judge score as it is. Do not blend the two numbers, and do not send the draft to a model to grade it.

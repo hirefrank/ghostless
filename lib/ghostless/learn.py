@@ -16,6 +16,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ghostless.checks import new_pair_checks, prepare_checks
 from ghostless.paths import ProjectError
 from ghostless.project import (
     fresh_directory,
@@ -397,6 +398,7 @@ def learn_edit(
     model: str | None = None,
     tool: str | None = None,
     promote: bool = False,
+    checks: list[str] | None = None,
 ) -> dict[str, object]:
     if not before.is_file():
         raise ProjectError(f"Before file not found: {before}")
@@ -417,6 +419,7 @@ def learn_edit(
             if (prior_before.read_text(encoding="utf-8").rstrip("\n") == before_text.rstrip("\n")
                     and prior_after.read_text(encoding="utf-8").rstrip("\n") == after_text.rstrip("\n")):
                 raise ProjectError(f"This edit pair was already learned in {existing.parent.name}.")
+    prepared = prepare_checks(root, before_text, after_text, checks) if checks else []
     destination = fresh_directory(root / "gold", slug)
     destination.mkdir(parents=True, exist_ok=False)
     stored_before = _trailing_newline(before_text)
@@ -451,6 +454,9 @@ def learn_edit(
         "beforeSha256": _sha256(stored_before),
         "afterSha256": _sha256(stored_after),
     }
+    stored_checks = new_pair_checks(prepared)
+    if stored_checks:
+        meta["checks"] = stored_checks
     meta.update(summary)
     (destination / "meta.json").write_text(
         json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
@@ -467,6 +473,7 @@ def learn_edit(
         "tier": placement,
         "model": model,
         "tool": tool,
+        "checks": prepared,
         "warning": _mostly_model_warning(
             summary if placement == "gold" and checked_origin == "ai-first" else None
         ),

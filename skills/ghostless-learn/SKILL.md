@@ -32,6 +32,23 @@ ghostless build
 
 Tell the user the slug and the main shifts (words, edit rate, moved text, sentence length, contractions). Do not paste their whole piece into a chat log they didn't ask for, and do not upload the gold files anywhere.
 
+## A judgment the counts cannot see
+
+If the writer names one yes/no from this edit — the opener states the problem, a term is explained, a label was not copied — save their sentence. Do not invent one, and do not turn a sentence-length or ban-list note into a check. Quote the span the edit added or cut:
+
+```bash
+ghostless learn --before before.md --after after.md --section notes \
+  --check "The opener does not copy \"Level 9:\"."
+```
+
+The check is inactive until they confirm it. A check they already rejected stays rejected.
+
+```bash
+ghostless checks
+ghostless checks confirm <id>
+ghostless checks reject <id>
+```
+
 ## Also: a durable rule
 
 If the writer confirms a rule that should generalize — a substantive standard or a reader note, not a wording preference — save it instead of letting it live only in this piece:
