@@ -16,7 +16,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 
-from ghostless.learn import diff_texts, learn_edit
+from ghostless.learn import DIFF_SUMMARY_KEYS, diff_texts, learn_edit
 from ghostless.paths import ProjectError
 from ghostless.project import (
     new_session_id,
@@ -203,6 +203,7 @@ def finish_session(
     if existing:
         learned_path = existing
         tier, confirmation = _existing_placement(root, existing)
+        changes = diff_texts(before, after)
     else:
         section = metadata.get("section") if isinstance(metadata.get("section"), str) else None
         date_value = metadata.get("date")
@@ -218,6 +219,12 @@ def finish_session(
         learned_path = str(result["path"])
         tier = result.get("tier")
         confirmation = result.get("confirmation")
+        result_meta = result["meta"]
+        changes = (
+            {key: result_meta[key] for key in DIFF_SUMMARY_KEYS}
+            if isinstance(result_meta, dict)
+            else diff_texts(before, after)
+        )
     receipt: dict[str, object] = {
         "kind": "ghostless-edit-receipt",
         "version": 1,
@@ -236,7 +243,7 @@ def finish_session(
         "learnedPath": learned_path,
         "tier": tier,
         "confirmation": confirmation,
-        "changes": diff_texts(before, after),
+        "changes": changes,
     }
     _write_json(receipt_path, receipt)
     metadata["status"] = "final"

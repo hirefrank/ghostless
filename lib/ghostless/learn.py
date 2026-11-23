@@ -9,6 +9,7 @@ gold from the start. See `placement_for` in `project.py`.
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import re
 from collections import Counter
@@ -29,7 +30,36 @@ from ghostless.project import (
     validate_date,
 )
 from ghostless.stats import weighted_median
-from ghostless.text import measure, normalize, paragraphs, track_token, word_tokens
+from ghostless.text import STOPWORDS, measure, normalize, paragraphs, track_token, word_tokens
+
+DIFF_VERSION = 2
+DIFF_SUMMARY_KEYS = (
+    "wordsBefore",
+    "wordsAfter",
+    "wordsRemoved",
+    "wordsAdded",
+    "medianSentenceLengthBefore",
+    "medianSentenceLengthAfter",
+    "contractionsPer1kBefore",
+    "contractionsPer1kAfter",
+    "removedWords",
+    "addedWords",
+    "tokenEdits",
+    "unchangedTokens",
+    "deletions",
+    "insertions",
+    "replacements",
+    "movedTokens",
+    "movedSpans",
+    "editRate",
+    "editRateDenominator",
+    "paragraphsBefore",
+    "paragraphsAfter",
+    "sentencesBefore",
+    "sentencesAfter",
+    "structuralChanges",
+    "structuralChangeCount",
+)
 
 # Below this edit rate a final is mostly the model's prose. Promotion still
 # works, but the CLI says so before the writer counts it as gold.
@@ -152,27 +182,12 @@ def _align_tokens(before: str, after: str) -> dict[str, object]:
                 insertions += len(after_run) - paired
                 insert_blocks.append((j1 + paired, after_run[paired:]))
 
-    # Match deleted runs against inserted runs. Anything that appears on both
-    # sides is the same word moved, not a word written or cut. Use a multiset
-    # overlap rather than an ordered alignment: a swapped pair reverses order,
-    # so an ordered LCS would miss half of a clean reorder. Greedy difflib
-    # tie-breaks would also anchor one half of the swap and call the rest an
-    # insert plus a delete.
-    deleted_flat = [
-        (start + offset, token)
-        for start, tokens in delete_blocks
-        for offset, token in enumerate(tokens)
-    ]
-    inserted_flat = [
-        (start + offset, token)
-        for start, tokens in insert_blocks
-        for offset, token in enumerate(tokens)
-    ]
-    moved_counts = Counter(token for _, token in deleted_flat) & Counter(
-        token for _, token in inserted_flat
-    )
-    moved_tokens = sum(moved_counts.values())
-    moved_spans = _moved_spans(deleted_flat, inserted_flat, moved_counts) if moved_tokens else []
+    # Match longest contiguous multi-token spans between deleted and inserted runs.
+    # Requiring multi-token spans prevents isolated words or stopword pairs
+    # across unrelated edits from inflating move counts, while greedy splitting
+    # still catches swapped clauses that ordered difflib alignment misses.
+    moved_spans = _match_moved_spans(delete_blocks, insert_blocks)
+    moved_tokens = sum(int(span["tokens"]) for span in moved_spans)
 
     return {
         "deletions": deletions - moved_tokens,
@@ -184,60 +199,103 @@ def _align_tokens(before: str, after: str) -> dict[str, object]:
     }
 
 
-def _moved_spans(
-    deleted_flat: list[tuple[int, str]],
-    inserted_flat: list[tuple[int, str]],
-    moved_counts: Counter[str],
-) -> list[dict[str, object]]:
-    """Group moved tokens into contiguous runs on the before side."""
-    remaining = Counter(moved_counts)
-    available = Counter(moved_counts)
-    positions: dict[str, list[int]] = {}
-    for position, (_, token) in enumerate(inserted_flat):
-        positions.setdefault(token, []).append(position)
-    cursors: dict[str, int] = {token: 0 for token in positions}
-    spans: list[dict[str, object]] = []
-    run: list[int] = []
+def _valid_move_span(span: list[str]) -> bool:
+    """Require at least 3 tokens, or 2 tokens containing a non-stopword."""
+    return len(span) >= 3 or (len(span) == 2 and any(token not in STOPWORDS for token in span))
 
-    def flush(indexes: list[int]) -> None:
-        if not indexes:
-            return
-        tokens = [deleted_flat[index][1] for index in indexes]
-        targets: list[int] = []
-        for token in tokens:
-            if available[token] <= 0:
+
+def _best_common_span(
+    del_slices: list[tuple[int, list[str]]],
+    ins_slices: list[tuple[int, list[str]]],
+) -> tuple[int, int, int, int, int] | None:
+    """Return the longest valid contiguous common slice with deterministic tie-breaking."""
+    ins_positions: list[dict[str, list[int]]] = []
+    for _, ins_tokens in ins_slices:
+        pos_map: dict[str, list[int]] = {}
+        for pos, token in enumerate(ins_tokens):
+            pos_map.setdefault(token, []).append(pos)
+        ins_positions.append(pos_map)
+
+    best: tuple[int, int, int, int, int] | None = None
+    best_key: tuple[int, int, int] | None = None
+
+    for del_idx, (del_start, del_tokens) in enumerate(del_slices):
+        if len(del_tokens) < 2:
+            continue
+        for ins_idx, (ins_start, ins_tokens) in enumerate(ins_slices):
+            if len(ins_tokens) < 2:
                 continue
-            candidates = positions.get(token, [])
-            cursor = cursors.get(token, 0)
-            if cursor >= len(candidates):
+            if best_key is not None and min(len(del_tokens), len(ins_tokens)) < -best_key[0]:
                 continue
-            chosen = candidates[cursor]
-            cursors[token] = cursor + 1
-            available[token] -= 1
-            targets.append(inserted_flat[chosen][0])
-        if not targets:
-            return
+            pos_map = ins_positions[ins_idx]
+            prev: dict[int, int] = {}
+            for i, token in enumerate(del_tokens):
+                positions = pos_map.get(token)
+                if not positions:
+                    prev = {}
+                    continue
+                curr: dict[int, int] = {}
+                for j in positions:
+                    length = prev.get(j - 1, 0) + 1
+                    curr[j] = length
+                    if length >= 2:
+                        del_off = i - length + 1
+                        ins_off = j - length + 1
+                        if _valid_move_span(del_tokens[del_off : i + 1]):
+                            key = (-length, del_start + del_off, ins_start + ins_off)
+                            if best_key is None or key < best_key:
+                                best_key = key
+                                best = (del_idx, del_off, ins_idx, ins_off, length)
+                prev = curr
+    return best
+
+
+def _split_slice(
+    slices: list[tuple[int, list[str]]],
+    index: int,
+    offset: int,
+    length: int,
+) -> None:
+    """Replace a slice with its non-empty prefix and suffix around a match."""
+    start, tokens = slices[index]
+    replacement: list[tuple[int, list[str]]] = []
+    if offset > 0:
+        replacement.append((start, tokens[:offset]))
+    tail = offset + length
+    if tail < len(tokens):
+        replacement.append((start + tail, tokens[tail:]))
+    slices[index : index + 1] = replacement
+
+
+def _match_moved_spans(
+    delete_blocks: list[tuple[int, list[str]]],
+    insert_blocks: list[tuple[int, list[str]]],
+) -> list[dict[str, object]]:
+    """Match contiguous moved spans iteratively from longest to shortest."""
+    del_slices = [(start, list(tokens)) for start, tokens in delete_blocks if tokens]
+    ins_slices = [(start, list(tokens)) for start, tokens in insert_blocks if tokens]
+    spans: list[dict[str, object]] = []
+
+    while del_slices and ins_slices:
+        match = _best_common_span(del_slices, ins_slices)
+        if match is None:
+            break
+        del_idx, del_off, ins_idx, ins_off, length = match
+        del_start, del_tokens = del_slices[del_idx]
+        ins_start, _ = ins_slices[ins_idx]
+        span = del_tokens[del_off : del_off + length]
         spans.append(
             {
-                "tokens": len(indexes),
-                "text": " ".join(tokens),
-                "from": deleted_flat[indexes[0]][0],
-                "to": min(targets),
+                "tokens": length,
+                "text": " ".join(span),
+                "from": del_start + del_off,
+                "to": ins_start + ins_off,
             }
         )
+        _split_slice(del_slices, del_idx, del_off, length)
+        _split_slice(ins_slices, ins_idx, ins_off, length)
 
-    for index, (position, token) in enumerate(deleted_flat):
-        if remaining[token] <= 0:
-            if run:
-                flush(run)
-                run = []
-            continue
-        remaining[token] -= 1
-        if run and deleted_flat[index - 1][0] + 1 != position:
-            flush(run)
-            run = []
-        run.append(index)
-    flush(run)
+    spans.sort(key=lambda item: (int(item["from"]), int(item["to"])))
     return spans
 
 
@@ -361,9 +419,11 @@ def learn_edit(
                 raise ProjectError(f"This edit pair was already learned in {existing.parent.name}.")
     destination = fresh_directory(root / "gold", slug)
     destination.mkdir(parents=True, exist_ok=False)
-    (destination / "before.md").write_text(_trailing_newline(before_text), encoding="utf-8")
-    (destination / "after.md").write_text(_trailing_newline(after_text), encoding="utf-8")
-    summary = diff_texts(before_text, after_text)
+    stored_before = _trailing_newline(before_text)
+    stored_after = _trailing_newline(after_text)
+    (destination / "before.md").write_text(stored_before, encoding="utf-8")
+    (destination / "after.md").write_text(stored_after, encoding="utf-8")
+    summary = diff_texts(stored_before, stored_after)
     if promote:
         confirmation = "promoted"
     elif checked_origin == "writer-first":
@@ -387,6 +447,9 @@ def learn_edit(
         "kind": "prose",
         "beforeFile": "before.md",
         "afterFile": "after.md",
+        "diffVersion": DIFF_VERSION,
+        "beforeSha256": _sha256(stored_before),
+        "afterSha256": _sha256(stored_after),
     }
     meta.update(summary)
     (destination / "meta.json").write_text(
@@ -505,6 +568,29 @@ def _mostly_model_warning(summary: dict[str, object] | None) -> str | None:
     )
 
 
+def _sha256(text: str) -> str:
+    """Return the lowercase hex SHA-256 digest of a UTF-8 string."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _cached_summary(
+    meta: dict[str, object],
+    before_text: str,
+    after_text: str,
+) -> dict[str, object] | None:
+    """Return cached diff fields when version, SHA-256 digests, and keys match."""
+    version = meta.get("diffVersion")
+    if type(version) is not int or version != DIFF_VERSION:
+        return None
+    if meta.get("beforeSha256") != _sha256(before_text):
+        return None
+    if meta.get("afterSha256") != _sha256(after_text):
+        return None
+    if not all(key in meta for key in DIFF_SUMMARY_KEYS):
+        return None
+    return {key: meta[key] for key in DIFF_SUMMARY_KEYS}
+
+
 def refresh_edit_summary(root: Path) -> dict[str, object]:
     learns: list[dict[str, object]] = []
     folder = root / "gold"
@@ -518,10 +604,11 @@ def refresh_edit_summary(root: Path) -> dict[str, object]:
             after_path = pair_file_path(meta, meta_path, "afterFile", "after.md", base=pair_dir)
             if not before_path.is_file() or not after_path.is_file():
                 continue
-            summary = diff_texts(
-                before_path.read_text(encoding="utf-8"),
-                after_path.read_text(encoding="utf-8"),
-            )
+            before_text = before_path.read_text(encoding="utf-8")
+            after_text = after_path.read_text(encoding="utf-8")
+            summary = _cached_summary(meta, before_text, after_text)
+            if summary is None:
+                summary = diff_texts(before_text, after_text)
             provenance = read_provenance(meta, path=str(meta_path))
             learns.append(
                 {
