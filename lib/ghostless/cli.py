@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from ghostless.build import build_voice as build_voice
+from ghostless.build import stale_inputs
 from ghostless.checks import checks_summary, confirm_check, reject_check, write_pair_checks
 from ghostless.eval import evaluate, format_eval
 from ghostless.export import write_export
@@ -478,6 +479,8 @@ def _cmd_judge(args: argparse.Namespace) -> int:
         print(f"ghostless: draft not found: {draft_path}", file=sys.stderr)
         return 2
     stats = _load_stats(root)
+    stale = stale_inputs(root)
+    _warn_if_stale(stale)
     manifest = load_manifest(root)
     report = judge_text(
         draft_path.read_text(encoding="utf-8"),
@@ -487,6 +490,8 @@ def _cmd_judge(args: argparse.Namespace) -> int:
         overrides=manifest["overrides"],
         placeholder=manifest["placeholder"],
     )
+    report["stale"] = bool(stale)
+    report["staleSources"] = stale
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False))
     else:
@@ -716,6 +721,7 @@ def _cmd_save(args: argparse.Namespace) -> int:
 def _cmd_export(args: argparse.Namespace) -> int:
     root = _project(args.project)
     stats = _load_stats(root)
+    _warn_if_stale(stale_inputs(root))
     destination = write_export(
         root,
         stats,
@@ -997,6 +1003,17 @@ def _cmd_which(args: argparse.Namespace) -> int:
     print(f"project={project}")
     print(f"project_source={source}")
     return 0
+
+
+def _warn_if_stale(stale: list[str]) -> None:
+    if not stale:
+        return
+    shown = ", ".join(stale[:3])
+    extra = f" (+{len(stale) - 3} more)" if len(stale) > 3 else ""
+    print(
+        f"ghostless: voice-stats.json is older than {shown}{extra}. Run `ghostless build` to refresh.",
+        file=sys.stderr,
+    )
 
 
 def _load_stats(root: Path) -> Mapping[str, object]:

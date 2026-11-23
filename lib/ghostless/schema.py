@@ -398,6 +398,8 @@ class JudgeReport(TypedDict):
     targets: dict[str, object]
     confidence: CorpusConfidence
     lowConfidence: bool
+    stale: NotRequired[bool]
+    staleSources: NotRequired[list[str]]
     error: NotRequired[str]
 
 

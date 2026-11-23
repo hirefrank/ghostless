@@ -28,4 +28,4 @@ For a resumable edit session (or editing alongside the desktop editor), run `gho
 1. The cleaned draft.
 2. A short change list: what you cut or moved, and any pushback. A handful of lines, not a memo.
 
-Then offer `ghostless judge` on the cleaned file when a voice guide exists. Do not run `ghostless learn` or `ghostless finish` unless they say the piece is finished. That is the capture skill.
+Then offer `ghostless judge` on the cleaned file when a voice guide exists (and run `ghostless build` if `judge` warns that `voice-stats.json` is stale). Do not run `ghostless learn` or `ghostless finish` unless they say the piece is finished. That is the capture skill.

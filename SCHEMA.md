@@ -300,6 +300,8 @@ Counts come from the unweighted block, so they describe the real sample rather t
 
 `voice-guide.md` carries the same numbers under `## Sample size`, and the human-readable judge report prints a `corpus:` line and a `confidence:` line.
 
+`ghostless judge --json` also includes `"stale"` (`true` or `false`) and `"staleSources"` (a sorted list of relative paths) comparing `voice-stats.json`'s modification time against `manifest.json`, `rules.json`, `checks.json`, `STYLE.md`, `AUDIENCE.md`, and files under `corpus/`, `transcripts/`, and `gold/`. When inputs are newer than `voice-stats.json`, `judge` and `export` print a one-line notice on `stderr` advising `ghostless build`, keeping `stdout` clean and never rewriting `voice-stats.json` or `voice-guide.md` on read.
+
 ## Held-out evaluation
 
 `ghostless eval` (module `ghostless.eval`) tests whether the score predicts acceptance rather than adding metrics.
