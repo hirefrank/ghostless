@@ -617,6 +617,88 @@ class VersionFileTests(unittest.TestCase):
         self.assertIn('version = "0.1.0"', pyproject)
         self.assertIn('name = "ghostless"', pyproject)
 
+    def test_changelog_and_publish_workflow_guards(self) -> None:
+        package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        version = str(package["version"])
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+
+        self.assertIn(f"## v{version}", changelog)
+        self.assertIn("Verify CHANGELOG.md matches release version", workflow)
+        self.assertLess(
+            workflow.index("Verify CHANGELOG.md matches release version"),
+            workflow.index("npm publish"),
+        )
+
+        # Ensure Unreleased contains zero bullets and the current version section holds shipped items.
+        lines = changelog.splitlines()
+        unreleased_idx = next(i for i, line in enumerate(lines) if line.startswith("## Unreleased"))
+        next_heading_idx = next(
+            i for i in range(unreleased_idx + 1, len(lines)) if lines[i].startswith("## ")
+        )
+        unreleased_bullets = [
+            line for line in lines[unreleased_idx + 1 : next_heading_idx] if line.startswith("- ")
+        ]
+        self.assertEqual(unreleased_bullets, [])
+
+        version_idx = next(
+            i for i, line in enumerate(lines) if line.startswith(f"## v{version}")
+        )
+        version_end = next(
+            (i for i in range(version_idx + 1, len(lines)) if lines[i].startswith("## ")),
+            len(lines),
+        )
+        version_body = "\n".join(lines[version_idx + 1 : version_end])
+        for feature in ("STYLE.md", "AUDIENCE.md", "ghostless start", "ghostless rules", "Rune"):
+            self.assertIn(feature, version_body)
+
+        awk = shutil.which("awk")
+        if awk is None:
+            return
+
+        unreleased_awk = (
+            "/^## Unreleased( |$)/ { inside = 1; next }\n"
+            "inside && /^## / { exit }\n"
+            "inside && /^- / { found = 1 }\n"
+            "END { exit(found ? 0 : 1) }"
+        )
+        extract_awk = (
+            '$0 ~ ("^## v" ver "( |$)") { inside = 1; next }\n'
+            "inside && /^## / { exit }\n"
+            "inside { print }"
+        )
+        guard_real = subprocess.run(
+            [awk, unreleased_awk, str(ROOT / "CHANGELOG.md")],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(guard_real.returncode, 1)
+
+        extracted = subprocess.run(
+            [awk, "-v", f"ver={version}", extract_awk, str(ROOT / "CHANGELOG.md")],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(extracted.returncode, 0, extracted.stderr)
+        self.assertIn("STYLE.md", extracted.stdout)
+        self.assertIn("ghostless rules", extracted.stdout)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            synthetic = Path(tmp) / "CHANGELOG.md"
+            synthetic.write_text(
+                f"# Changelog\n\n## Unreleased\n\n- Stranded item.\n\n## v{version} — 2026-11-23\n\n- Shipped.\n",
+                encoding="utf-8",
+            )
+            guard_synthetic = subprocess.run(
+                [awk, unreleased_awk, str(synthetic)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(guard_synthetic.returncode, 0)
+
 
 def _require_git(test: unittest.TestCase) -> None:
     if shutil.which("git") is None:

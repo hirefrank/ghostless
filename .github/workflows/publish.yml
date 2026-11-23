@@ -42,6 +42,28 @@ jobs:
             exit 1
           fi
 
+      - name: Verify CHANGELOG.md matches release version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          if awk '
+            /^## Unreleased( |$)/ { inside = 1; next }
+            inside && /^## / { exit }
+            inside && /^- / { found = 1 }
+            END { exit(found ? 0 : 1) }
+          ' CHANGELOG.md; then
+            echo "::error::CHANGELOG.md still has bullet entries under ## Unreleased; move them into ## v$tag before tagging"
+            exit 1
+          fi
+          notes="$(awk -v ver="$tag" '
+            $0 ~ ("^## v" ver "( |$)") { inside = 1; next }
+            inside && /^## / { exit }
+            inside { print }
+          ' CHANGELOG.md)"
+          if [ -z "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then
+            echo "::error::CHANGELOG.md is missing a non-empty ## v$tag section"
+            exit 1
+          fi
+
       - name: Run tests
         run: bash tests/run.sh
 
@@ -72,7 +94,7 @@ jobs:
           notes="$(mktemp)"
           awk -v ver="$version" '
             $0 ~ ("^## v" ver "( |$)") { inside = 1; next }
-            inside && /^## v/ { exit }
+            inside && /^## / { exit }
             inside { print }
           ' CHANGELOG.md > "$notes"
           if [ -s "$notes" ]; then
