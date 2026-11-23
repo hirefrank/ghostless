@@ -16,6 +16,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ghostless.io import atomic_write_json, atomic_write_text
+from ghostless.launch import (
+    editor_report,
+    install_scope_line,
+    install_stable_launcher,
+    launcher_status_line,
+    remove_owned_launcher,
+)
 from ghostless.paths import ProjectError, data_home, find_project_with_source, suite_root, version
 
 SKILLS = ("ghostless-draft", "ghostless-edit", "ghostless-learn")
@@ -349,8 +356,7 @@ def install_skills(*, agent: str, force: bool, copy: bool, no_launcher: bool, ve
         log.write(f"{datetime.now(UTC).isoformat()} install-skills suite={root} installed={installed}\n")
     print(f"ghostless skills installed: {installed}; existing paths kept: {len(skipped)}")
     _print_path_warning()
-    if not no_launcher:
-        print("CLI launcher: supplied by npm or the Python package")
+    print(install_stable_launcher(enabled=not no_launcher, transient=transient))
     return 0
 
 
@@ -373,6 +379,11 @@ def doctor() -> int:
         print(f"Project: {project} (via {source})")
     except ProjectError as exc:
         print(f"Project: none ({exc})")
+    print(launcher_status_line())
+    scope = install_scope_line(root)
+    if scope is not None:
+        print(scope)
+    print(editor_report(root))
     _print_path_warning()
     if root is None:
         return 0
@@ -419,9 +430,13 @@ def reset(*, agent: str, data: bool, yes: bool) -> int:
                     removed += 1
                 else:
                     print(f"kept {dest} (not installed by ghostless)")
-    if data and data_home().exists():
-        shutil.rmtree(data_home())
-        print(f"removed {data_home()}")
+    if data:
+        removed_launcher = remove_owned_launcher()
+        if removed_launcher is not None:
+            print(f"removed {removed_launcher}")
+        if data_home().exists():
+            shutil.rmtree(data_home())
+            print(f"removed {data_home()}")
     elif not data and (data_home() / INSTALLED_MANIFEST).is_file():
         _save_installed(installed)
     print(f"Reset complete ({removed} skill paths removed). The CLI is still installed.")

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -179,6 +180,8 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(bin_doctor.returncode, 0, bin_doctor.stderr)
             self.assertEqual(py_doctor.returncode, 0, py_doctor.stderr)
             self.assertIn("Project:", bin_doctor.stdout)
+            self.assertIn("Launcher:", bin_doctor.stdout)
+            self.assertIn("editor:", bin_doctor.stdout)
             self.assertEqual(bin_doctor.stdout, py_doctor.stdout)
 
     def test_ghostless_skills_dir_install_and_reset(self) -> None:
@@ -225,6 +228,102 @@ class HarnessTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def _suite(self, path: Path, marker: str) -> Path:
+        path.mkdir(parents=True)
+        (path / "package.json").write_text('{"name":"ghostless","version":"0.1.0"}\n', encoding="utf-8")
+        binary = path / "bin" / "ghostless"
+        binary.parent.mkdir()
+        binary.write_text(
+            "#!/bin/sh\n"
+            f"echo suite-id={marker}\n"
+            "echo \"stable=${GHOSTLESS_STABLE_LAUNCHER:-}\"\n",
+            encoding="utf-8",
+        )
+        binary.chmod(0o755)
+        for skill in ("ghostless-draft", "ghostless-edit", "ghostless-learn"):
+            skill_dir = path / "skills" / skill
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(f"# {skill}\n", encoding="utf-8")
+        return path
+
+    def _install(self, home: Path, suite: Path) -> subprocess.CompletedProcess[str]:
+        env = self._env(home, GHOSTLESS_SUITE=str(suite))
+        env["PYTHONPATH"] = str(ROOT / "lib")
+        return subprocess.run(
+            [sys.executable, "-m", "ghostless", "install-skills", "--agent", "cursor"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    def test_stable_launcher_follows_a_node_version_change(self) -> None:
+        with tempfile_home() as home:
+            old = self._suite(
+                home / "mise" / "installs" / "node" / "24.22.2" / "lib" / "node_modules" / "ghostless",
+                "old",
+            )
+            new = self._suite(
+                home / "mise" / "installs" / "node" / "24.22.3" / "lib" / "node_modules" / "ghostless",
+                "new",
+            )
+            installed = self._install(home, old)
+            self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+            launcher = home / ".local" / "bin" / "ghostless"
+            self.assertIn("ghostless launcher", launcher.read_text(encoding="utf-8"))
+            self.assertIn(str(launcher), installed.stdout)
+
+            env = self._env(home)
+            ran = subprocess.run(
+                [str(launcher), "ignored"],
+                check=False, capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+            self.assertIn("suite-id=old", ran.stdout)
+            self.assertIn("stable=1", ran.stdout)
+
+            doctor_env = self._env(home, GHOSTLESS_SUITE=str(old), GHOSTLESS_STABLE_LAUNCHER="1")
+            doctor_env["PYTHONPATH"] = str(ROOT / "lib")
+            doctor = subprocess.run(
+                [sys.executable, "-m", "ghostless", "doctor"],
+                check=False, capture_output=True, text=True, env=doctor_env,
+            )
+            self.assertEqual(doctor.returncode, 0, doctor.stderr + doctor.stdout)
+            self.assertIn("Install: version-scoped", doctor.stdout)
+            self.assertIn(str(old.resolve()), doctor.stdout)
+            self.assertIn("stable launcher", doctor.stdout)
+            self.assertIn("editor: not in this install", doctor.stdout)
+
+            shutil.rmtree(old)
+            gone = subprocess.run(
+                [str(launcher), "doctor"],
+                check=False, capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(gone.returncode, 1)
+            self.assertIn(str(old.resolve()), gone.stderr)
+            self.assertIn("install-skills --force", gone.stderr)
+
+            reinstalled = self._install(home, new)
+            self.assertEqual(reinstalled.returncode, 0, reinstalled.stdout + reinstalled.stderr)
+            moved = subprocess.run(
+                [str(launcher), "ignored"],
+                check=False, capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(moved.returncode, 0, moved.stderr)
+            self.assertIn("suite-id=new", moved.stdout)
+
+    def test_stable_launcher_keeps_a_foreign_command(self) -> None:
+        with tempfile_home() as home:
+            suite = self._suite(home / "checkout", "checkout")
+            launcher = home / ".local" / "bin" / "ghostless"
+            launcher.parent.mkdir(parents=True)
+            launcher.write_text("#!/bin/sh\necho foreign\n", encoding="utf-8")
+            launcher.chmod(0o755)
+            installed = self._install(home, suite)
+            self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+            self.assertIn(f"kept {launcher} (not a ghostless launcher)", installed.stdout)
+            self.assertEqual(launcher.read_text(encoding="utf-8"), "#!/bin/sh\necho foreign\n")
 
 
 class tempfile_home:

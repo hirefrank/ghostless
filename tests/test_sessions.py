@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
 
+from ghostless.cli import main  # noqa: E402
 from ghostless.paths import ProjectError  # noqa: E402
 from ghostless.project import init_project  # noqa: E402
 from ghostless.sessions import (  # noqa: E402
@@ -118,6 +123,93 @@ class SessionTests(unittest.TestCase):
         self.assertEqual((folder / "after.md").read_text(), "From another editor.\n")
         self.assertEqual((folder / "notes.md").read_text(), "Typed elsewhere.")
         self.assertEqual(receipt["learnedPath"].split("/", 1)[0], "gold")
+
+    def test_start_help_does_not_claim_to_open_the_editor(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = main(["--help"])
+        text = stdout.getvalue().lower()
+        self.assertEqual(code, 0)
+        self.assertNotIn("open an edit session", text)
+        self.assertIn("working copy", text)
+        self.assertIn("desktop", text)
+        self.assertIn("editor", text)
+
+    def test_edit_starts_a_session_and_invokes_the_editor(self) -> None:
+        log = self.base / "editor-args"
+        script = self.base / "fake-editor"
+        script.write_text(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GHOSTLESS_EDITOR_LOG\"\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        env = {
+            "GHOSTLESS_EDITOR": str(script),
+            "GHOSTLESS_EDITOR_LOG": str(log),
+            "GHOSTLESS_NO_UPDATE": "1",
+            "GHOSTLESS_HOME": str(self.base / "home"),
+        }
+        with (
+            patch.dict(os.environ, env),
+            contextlib.chdir(self.project),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            os.environ.pop("GHOSTLESS_PROJECT", None)
+            code = main(["edit", str(self.draft), "--json"])
+        self.assertEqual(code, 0, log.read_text() if log.exists() else "editor was not invoked")
+        recorded = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(recorded[0], "--project")
+        self.assertEqual(Path(recorded[1]), self.project.resolve())
+        self.assertEqual(recorded[2], "--session")
+        session = self.project / "sessions" / recorded[3]
+        self.assertTrue((session / "before.md").is_file())
+        self.assertEqual((session / "before.md").read_text(encoding="utf-8"), "A first thought.\n")
+
+    def test_edit_keeps_the_session_when_the_editor_is_missing(self) -> None:
+        env = {
+            "GHOSTLESS_EDITOR": str(self.base / "missing-editor"),
+            "GHOSTLESS_NO_UPDATE": "1",
+            "GHOSTLESS_HOME": str(self.base / "home"),
+        }
+        with (
+            patch.dict(os.environ, env),
+            contextlib.chdir(self.project),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+        ):
+            os.environ.pop("GHOSTLESS_PROJECT", None)
+            code = main(["edit", str(self.draft)])
+        self.assertEqual(code, 2)
+        message = stderr.getvalue()
+        self.assertIn("GHOSTLESS_EDITOR does not exist", message)
+        self.assertIn("Finish later with: ghostless finish --session", message)
+        sessions = list((self.project / "sessions").glob("*/session.json"))
+        self.assertEqual(len(sessions), 1)
+
+    def test_sessions_open_invokes_the_editor_for_that_id(self) -> None:
+        log = self.base / "open-args"
+        script = self.base / "open-editor"
+        script.write_text(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GHOSTLESS_EDITOR_LOG\"\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        session = self.start()
+        env = {
+            "GHOSTLESS_EDITOR": str(script),
+            "GHOSTLESS_EDITOR_LOG": str(log),
+            "GHOSTLESS_NO_UPDATE": "1",
+            "GHOSTLESS_HOME": str(self.base / "home"),
+        }
+        with (
+            patch.dict(os.environ, env),
+            contextlib.chdir(self.project),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            os.environ.pop("GHOSTLESS_PROJECT", None)
+            code = main(["sessions", "--open", str(session["id"])])
+        self.assertEqual(code, 0)
+        recorded = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(recorded[2:], ["--session", str(session["id"])])
 
 
 if __name__ == "__main__":

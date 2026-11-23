@@ -44,7 +44,12 @@ class NativeHarnessTests(unittest.TestCase):
             foreign = skills / "ghostless-draft"
             foreign.mkdir(parents=True)
             (foreign / "SKILL.md").write_text("foreign", encoding="utf-8")
-            env = {"GHOSTLESS_SKILLS_DIR": str(skills), "GHOSTLESS_HOME": str(base / "data")}
+            env = {
+                "GHOSTLESS_SKILLS_DIR": str(skills),
+                "GHOSTLESS_HOME": str(base / "data"),
+                "HOME": str(base),
+                "USERPROFILE": str(base),
+            }
             with patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(main(["install-skills", "--copy"]), 0)
             self.assertEqual((foreign / "SKILL.md").read_text(encoding="utf-8"), "foreign")

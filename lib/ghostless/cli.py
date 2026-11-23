@@ -16,6 +16,7 @@ from ghostless.eval import evaluate, format_eval
 from ghostless.export import write_export
 from ghostless.harness import main as harness_main
 from ghostless.judge import format_report, judge_text
+from ghostless.launch import launch_editor
 from ghostless.learn import learn_edit, promote_final
 from ghostless.paths import (
     ProjectError,
@@ -46,7 +47,7 @@ EPILOG = """
 Maintenance commands:
   install-skills    Link skills into detected harnesses
   update            Install the latest release and relink skills
-  doctor            Check Python, the data dir, and skill links
+  doctor            Check Python, the launcher, the editor, and skill links
   agents            List harnesses and skill directories
   routing           Print a project-instruction snippet
   reset             Remove installed skill links
@@ -174,13 +175,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     _add_project(promote_parser)
 
-    start_parser = sub.add_parser("start", help="Capture an immutable draft and open an edit session")
+    start_parser = sub.add_parser(
+        "start",
+        help="Capture an immutable draft and a working copy for a later finish",
+    )
     start_parser.add_argument("draft", help="Draft markdown file")
     start_parser.add_argument("--section", help="Section tag for the learned final")
     start_parser.add_argument("--origin", default="ai-first", choices=("ai-first", "writer-first"))
     start_parser.add_argument("--source", action="append", default=[], help="Source reference; repeat as needed")
     start_parser.add_argument("--json", action="store_true")
     _add_project(start_parser)
+
+    edit_parser = sub.add_parser(
+        "edit",
+        help="Start an edit session and open it in the desktop editor",
+    )
+    edit_parser.add_argument("draft", help="Draft markdown file")
+    edit_parser.add_argument("--section", help="Section tag for the learned final")
+    edit_parser.add_argument("--origin", default="ai-first", choices=("ai-first", "writer-first"))
+    edit_parser.add_argument("--source", action="append", default=[], help="Source reference; repeat as needed")
+    edit_parser.add_argument("--json", action="store_true")
+    _add_project(edit_parser)
 
     finish_parser = sub.add_parser("finish", help="Finalize an edit session and learn its changes once")
     finish_parser.add_argument("final", nargs="?", help="Final markdown file (default: session after.md)")
@@ -197,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     _add_project(finish_parser)
 
     sessions_parser = sub.add_parser("sessions", help="List edit sessions")
+    sessions_parser.add_argument("--open", metavar="ID", help="Open this session in the desktop editor")
     sessions_parser.add_argument("--json", action="store_true")
     _add_project(sessions_parser)
 
@@ -341,6 +357,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             return _cmd_promote(args)
         case "start":
             return _cmd_start(args)
+        case "edit":
+            return _cmd_edit(args)
         case "finish":
             return _cmd_finish(args)
         case "sessions":
@@ -598,21 +616,44 @@ def _cmd_promote(args: argparse.Namespace) -> int:
 
 def _cmd_start(args: argparse.Namespace) -> int:
     root = _project(args.project)
-    result = start_session(
+    result = _start_from_args(root, args)
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        _print_started(root, result)
+    return 0
+
+
+def _cmd_edit(args: argparse.Namespace) -> int:
+    root = _project(args.project)
+    result = _start_from_args(root, args)
+    session_id = str(result["id"])
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        _print_started(root, result)
+        print(f"Opening the desktop editor for {session_id}")
+    code = launch_editor(root, session=session_id)
+    if code != 0:
+        print(f"Finish later with: ghostless finish --session {session_id}", file=sys.stderr)
+    return code
+
+
+def _start_from_args(root: Path, args: argparse.Namespace) -> dict[str, object]:
+    return start_session(
         root,
         Path(args.draft),
         section=args.section,
         origin=args.origin,
         sources=args.source,
     )
-    if args.json:
-        print(json.dumps(result, indent=2, ensure_ascii=False))
-    else:
-        print(f"Started {result['id']}")
-        print(f"  original: {root / str(result['path']) / 'before.md'}")
-        print(f"  working:  {root / str(result['path']) / 'after.md'}")
-        print(f"Finish with: ghostless finish --session {result['id']}")
-    return 0
+
+
+def _print_started(root: Path, result: Mapping[str, object]) -> None:
+    print(f"Started {result['id']}")
+    print(f"  original: {root / str(result['path']) / 'before.md'}")
+    print(f"  working:  {root / str(result['path']) / 'after.md'}")
+    print(f"Finish with: ghostless finish --session {result['id']}")
 
 
 def _cmd_finish(args: argparse.Namespace) -> int:
@@ -638,7 +679,19 @@ def _cmd_finish(args: argparse.Namespace) -> int:
 
 
 def _cmd_sessions(args: argparse.Namespace) -> int:
-    found = list_sessions(_project(args.project))
+    root = _project(args.project)
+    found = list_sessions(root)
+    if args.open:
+        match = next((item for item in found if str(item.get("id")) == args.open), None)
+        if match is None:
+            raise ProjectError(
+                f"No edit session {args.open}. Run `ghostless sessions` to list them."
+            )
+        if args.json:
+            print(json.dumps(match, indent=2, ensure_ascii=False))
+        else:
+            print(f"Opening {args.open}")
+        return launch_editor(root, session=args.open)
     if args.json:
         print(json.dumps(found, indent=2, ensure_ascii=False))
     elif not found:

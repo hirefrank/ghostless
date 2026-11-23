@@ -568,6 +568,49 @@ fn run_cli(args: &[&str], input: Option<&str>) -> Result<String, String> {
     String::from_utf8(output.stdout).map_err(|error| error.to_string())
 }
 
+fn resolve_project(explicit: Option<PathBuf>) -> Result<PathBuf, String> {
+    if let Some(path) = explicit {
+        return require_project(&path);
+    }
+    let output = run_cli(&["which"], None)?;
+    let reported = output.lines().find_map(|line| line.strip_prefix("project="));
+    match reported.map(str::trim) {
+        Some(value) if !value.is_empty() && value != "none" => require_project(&PathBuf::from(value)),
+        _ => Err("Pass --project DIR, or run `ghostless init` in the folder where your writing lives.".into()),
+    }
+}
+
+fn require_project(path: &std::path::Path) -> Result<PathBuf, String> {
+    if !path.exists() {
+        return Err(format!(
+            "Project directory does not exist: {}. Run `ghostless init` to create one.",
+            path.display()
+        ));
+    }
+    if !path.is_dir() || !manifest_is_ghostless(path) {
+        return Err(format!(
+            "Not a ghostless project: {}. Run `ghostless init` to create one.",
+            path.display()
+        ));
+    }
+    path.canonicalize().map_err(|error| {
+        format!("Project directory does not exist: {} ({error})", path.display())
+    })
+}
+
+fn require_draft(path: &std::path::Path) -> Result<PathBuf, String> {
+    if !path.is_file() {
+        return Err(format!("Draft does not exist: {}", path.display()));
+    }
+    path.canonicalize().map_err(|error| format!("Draft does not exist: {} ({error})", path.display()))
+}
+
+fn manifest_is_ghostless(dir: &std::path::Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(dir.join("manifest.json")) else { return false };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else { return false };
+    value.get("kind").and_then(Value::as_str) == Some("ghostless")
+}
+
 fn valid_session_id(id: &str) -> bool {
     // `YYYY-MM-DD[-section][-N]`: a date, then lowercase slug segments only.
     // This also rejects `/`, `..`, and other path traversal.
@@ -602,18 +645,18 @@ fn prepare() -> Result<Session, String> {
                 args.next().ok_or(format!("Missing value after {arg}"))?;
             }
             "-h" | "--help" => {
-                println!("ghostless-editor --project DIR (--draft FILE | --session ID)\nStart from a draft or reopen a local edit session.\nSet GHOSTLESS_CLI to an installed CLI path if needed.");
+                println!("ghostless-editor [--project DIR] (--draft FILE | --session ID)\n--project is optional when the current directory, GHOSTLESS_PROJECT, or defaultProject already names a voice project.\nStart from a draft or reopen a local edit session.\nSet GHOSTLESS_CLI to an installed CLI path if needed.");
                 std::process::exit(0);
             }
             _ => return Err(format!("Unknown argument: {arg}")),
         }
     }
-    let project = project.ok_or("Pass --project DIR")?.canonicalize().map_err(|error| error.to_string())?;
+    let project = resolve_project(project)?;
     if draft.is_some() == session.is_some() {
         return Err("Pass exactly one of --draft FILE or --session ID".into());
     }
     let id = if let Some(draft) = draft {
-        let draft = draft.canonicalize().map_err(|error| error.to_string())?;
+        let draft = require_draft(&draft)?;
         let output = run_cli(&["start", draft.to_str().ok_or("Draft path is not UTF-8")?,
             "--project", project.to_str().ok_or("Project path is not UTF-8")?, "--json"], None)?;
         serde_json::from_str::<Value>(&output).map_err(|error| error.to_string())?
@@ -625,12 +668,19 @@ fn prepare() -> Result<Session, String> {
         return Err("Invalid session ID".into());
     }
     let folder = project.join("sessions").join(&id);
+    if !folder.join("session.json").is_file() {
+        return Err(format!("Session does not exist: {}", folder.display()));
+    }
     let metadata: Value = serde_json::from_slice(&std::fs::read(folder.join("session.json"))
-        .map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+        .map_err(|error| format!("Cannot read {}: {error}", folder.join("session.json").display()))?)
+        .map_err(|error| format!("Cannot read session metadata in {}: {error}", folder.display()))?;
     if metadata.get("kind").and_then(Value::as_str) != Some("ghostless-edit-session") {
         return Err("Unsupported session format".into());
     }
-    let read = |file: &str| std::fs::read_to_string(folder.join(file)).map_err(|error| error.to_string());
+    let read = |file: &str| {
+        let path = folder.join(file);
+        std::fs::read_to_string(&path).map_err(|error| format!("Cannot read {}: {error}", path.display()))
+    };
     Ok(Session {
         project,
         id,
@@ -677,6 +727,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
 
     type RecordedCall = (Vec<String>, Option<String>);
@@ -920,5 +971,109 @@ mod tests {
         let (large_h, large_rows) = working_textarea_metrics(Some(720.0));
         assert!(large_h > small_h);
         assert!(large_rows > small_rows);
+    }
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct CwdGuard(PathBuf);
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
+
+    struct EnvVar {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVar {
+        fn set(key: &'static str, value: Option<&str>) -> Self {
+            let previous = std::env::var(key).ok();
+            // Tests that call the CLI hold ENV_LOCK, so no other test thread
+            // reads these variables while they change.
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVar {
+        fn drop(&mut self) {
+            unsafe {
+                match self.previous.take() {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ghostless-editor-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_project(dir: &Path) {
+        std::fs::write(dir.join("manifest.json"), "{\"kind\":\"ghostless\"}\n").unwrap();
+    }
+
+    #[test]
+    fn missing_paths_name_the_path_and_init() {
+        let missing = scratch("missing-project");
+        std::fs::remove_dir_all(&missing).unwrap();
+        let error = require_project(&missing).unwrap_err();
+        assert!(error.contains("Project directory does not exist"), "{error}");
+        assert!(error.contains(&missing.display().to_string()), "{error}");
+        assert!(error.contains("ghostless init"), "{error}");
+
+        let empty = scratch("not-a-project");
+        let error = require_project(&empty).unwrap_err();
+        assert!(error.contains("Not a ghostless project"), "{error}");
+        assert!(error.contains(&empty.display().to_string()), "{error}");
+        assert!(error.contains("ghostless init"), "{error}");
+
+        let draft = missing.join("draft.md");
+        let error = require_draft(&draft).unwrap_err();
+        assert!(error.contains("Draft does not exist"), "{error}");
+        assert!(error.contains(&draft.display().to_string()), "{error}");
+    }
+
+    #[test]
+    fn resolves_project_from_cwd_env_and_default() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let project = scratch("cwd");
+        write_project(&project);
+        let elsewhere = scratch("empty");
+        let home = scratch("home");
+        let data = home.join(".ghostless");
+        std::fs::create_dir_all(&data).unwrap();
+        let canonical = project.canonicalize().unwrap();
+
+        let _cwd = CwdGuard(std::env::current_dir().unwrap());
+        let _clear_project = EnvVar::set("GHOSTLESS_PROJECT", None);
+        let _home = EnvVar::set("GHOSTLESS_HOME", Some(data.to_str().unwrap()));
+
+        std::env::set_current_dir(&project).unwrap();
+        let resolved = resolve_project(None).expect("cwd project");
+        assert_eq!(resolved, canonical);
+
+        std::env::set_current_dir(&elsewhere).unwrap();
+        let via_env = {
+            let _project_env = EnvVar::set("GHOSTLESS_PROJECT", Some(project.to_str().unwrap()));
+            resolve_project(None).expect("GHOSTLESS_PROJECT")
+        };
+        assert_eq!(via_env, canonical);
+
+        let payload = serde_json::json!({"defaultProject": canonical});
+        std::fs::write(data.join("config.json"), serde_json::to_string(&payload).unwrap()).unwrap();
+        let via_default = resolve_project(None).expect("defaultProject");
+        assert_eq!(via_default, canonical);
     }
 }

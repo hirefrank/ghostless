@@ -4,6 +4,10 @@
 
 ## v0.1.0 — 2026-11-23
 
+- The README leads with a checkout install while v0.1 is unpublished. `install-skills` writes a version-independent `ghostless` launcher that names a missing suite after a Node upgrade and will not replace a command it did not install.
+- `ghostless edit DRAFT` starts a session and opens the desktop editor. `ghostless start` only captures the session. `ghostless sessions --open ID` reopens one.
+- The desktop editor resolves the voice project the same way as the CLI (`--project`, `GHOSTLESS_PROJECT`, the current directory, `defaultProject`) and names a missing project or draft path.
+- `ghostless doctor` reports the stable launcher, a version-scoped Node install, and whether the editor is built.
 - `init`, `build`, `judge`, `learn`, `export`, `install-skills`, and `update`.
 - Weighted corpus: gold 3, silver 1, bronze 0.5, with bronze becoming format-only once gold reaches a configurable count.
 - Spoken transcripts count only toward sentence length, contractions, first-person I, and And/But/So openers.

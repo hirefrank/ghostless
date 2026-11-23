@@ -14,7 +14,7 @@ This is their draft. Make it sharper. Keep the voice they already have.
 
 If a ghostless project is available (`ghostless locate`, then `voice-guide.md`), use it so cuts match their sentence length, contractions, ban list, and confirmed rules under `## Voice rules` (ignore unconfirmed hypotheses; manage them with `ghostless rules`). Also read `## Style` / `## Audience` in `voice-guide.md` (from `STYLE.md` / `AUDIENCE.md`) so cuts preserve what the piece must prove and who reads it. If there is no project, still edit, and say that you are editing without a voice guide.
 
-For a resumable edit session (or editing alongside the desktop editor), run `ghostless start draft.md` to capture an immutable baseline and working copy (`sessions/<id>/after.md`), and `ghostless finish` once the writer says the edit is done.
+For a resumable edit session, run `ghostless start draft.md` to capture an immutable baseline and working copy (`sessions/<id>/after.md`), and `ghostless finish` once the writer says the edit is done. `ghostless edit draft.md` does that capture and opens the desktop editor when the editor binary is built.
 
 ## What to do
 
