@@ -305,17 +305,23 @@ Counts come from the unweighted block, so they describe the real sample rather t
 `ghostless eval` (module `ghostless.eval`) tests whether the score predicts acceptance rather than adding metrics.
 
 1. Read every `gold/<slug>/` pair and recompute its edit rate from `before.md` and `after.md` with `ghostless.learn.diff_texts` (#10). `meta.json` is not trusted for this, so old pairs stay on the current definition.
-2. Split the pairs into train and holdout with a seeded shuffle (`--seed`, default 0; `--holdout`, default about a third, at least one).
-3. Build targets from the corpus with the held-out pairs' `after.md` pieces removed. Held-out finals never enter training.
-4. Judge each held-out `before` draft against those targets, then compare scores with the pairs' edit rates. A pair with an edit rate at or below 0.15 counts as accepted.
-5. Report Pearson and Spearman correlation (Spearman is the direction used, because it is rank-based), the mean score for accepted vs revised drafts, and the item-level rows. A score that predicts acceptance correlates negatively with edit rate.
+2. Choose the holdout strategy:
+   - **Leave-one-out CV (`--cv`)**: automatic when there are 3–30 edit pairs and `--holdout` is omitted, or forced with `--cv`. Each fold removes one pair's `after.md`, compiles targets from the remaining corpus, and judges that pair's `before.md` out of sample (`"cv": true`).
+   - **Single seeded split (`--holdout`)**: split pairs into train and holdout with a seeded shuffle (`--seed`, default 0; `--holdout`, default about a third, at least one; `"cv": false`). Build targets with all held-out pairs' `after.md` pieces removed. `--cv` and `--holdout` cannot be combined.
+3. Judge each held-out `before` draft against its fold/train targets, then compare scores with the pairs' edit rates. A pair with an edit rate at or below 0.15 counts as accepted.
+4. Report Pearson and Spearman correlation (Spearman is the direction used, because it is rank-based), the mean score for accepted vs revised drafts, and the item-level rows. A score that predicts acceptance correlates negatively with edit rate. `holdout.passRate` is computed over judged (scored) items only (`null` when `judged` is 0).
 
-With no learned pairs, `eval` holds out gold prose pieces instead, judges them, and reports mean score and pass rate. That is only a generalization check: `acceptance` is `null` and no correlation is claimed.
+Prose files placed in `holdouts/` (`.md`, `.markdown`, `.txt`; skipping dotfiles, `README.md`, `.gitkeep`, and empty bodies; section from frontmatter `section` or subfolder) are never read by `build`. Whenever both `holdouts/` and corpus pieces exist, `eval` scores `holdouts/` against the full corpus targets with zero leakage and attaches a `"holdouts"` block (`pieces`, `train`, `summary`, `items`).
+
+With no learned pairs:
+- If `holdouts/` has prose and the corpus has fewer than two gold prose pieces, `eval` runs `"mode": "holdouts"` against the corpus targets instead of failing.
+- Otherwise `eval` holds out gold prose pieces (`"mode": "prose"`), judges them, and reports mean score and pass rate (attaching `"holdouts"` if present). That is only a generalization check: `acceptance` is `null` and no correlation is claimed.
 
 ```json
 {
   "ok": true,
   "mode": "edits",
+  "cv": false,
   "seed": 0,
   "totalCount": 4,
   "holdoutCount": 3,
@@ -330,7 +336,8 @@ With no learned pairs, `eval` holds out gold prose pieces instead, judges them, 
   },
   "direction": "negative",
   "verdict": "Higher scores came with lighter edits (r=-1.00, n=3).",
-  "items": []
+  "items": [],
+  "holdouts": null
 }
 ```
 

@@ -7,6 +7,7 @@ requires Bash, so the same project and edit-session files work on Windows.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -29,6 +30,7 @@ AGENTS = {
     "agents": (".agents", "skills"),
 }
 COPY_MARKER = ".ghostless-installed"
+INSTALLED_MANIFEST = "installed.json"
 
 
 def _is_windows() -> bool:
@@ -150,9 +152,128 @@ def _ephemeral_package(root: Path) -> bool:
     )
 
 
-def _owned(dest: Path, src: Path) -> bool:
+def _norm_path(path: Path) -> str:
+    """Normalize a path via abspath so a symlink's own location is preserved."""
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
+def _load_installed() -> dict[str, dict[str, str]]:
+    """Read installed.json; missing or corrupt data never blocks maintenance commands."""
+    path = data_home() / INSTALLED_MANIFEST
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict) or data.get("version") != 1:
+        return {}
+    raw_entries = data.get("entries")
+    if not isinstance(raw_entries, dict):
+        return {}
+    entries: dict[str, dict[str, str]] = {}
+    for dest_key, entry in raw_entries.items():
+        if not isinstance(dest_key, str) or not dest_key or not isinstance(entry, dict):
+            continue
+        skill = entry.get("skill")
+        target = entry.get("target")
+        if not isinstance(skill, str) or not skill or not isinstance(target, str) or not target:
+            continue
+        if not all(isinstance(k, str) and isinstance(v, str) for k, v in entry.items()):
+            continue
+        entries[os.path.normcase(dest_key)] = dict(entry)
+    return entries
+
+
+def _save_installed(entries: dict[str, dict[str, str]]) -> None:
+    """Persist recorded skill installations as sorted, indented UTF-8 JSON."""
+    home = data_home()
+    home.mkdir(parents=True, exist_ok=True)
+    payload = {"version": 1, "entries": entries}
+    (home / INSTALLED_MANIFEST).write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _recorded_suite_root() -> Path | None:
+    """Return the previously recorded suite-root path if present and non-empty."""
+    path = data_home() / "suite-root"
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return Path(text) if text else None
+
+
+def _symlink_targets(dest: Path) -> tuple[str, Path]:
+    """Read a symlink's target as both unresolved abspath and strict=False resolved Path."""
+    raw = os.readlink(dest)
+    abs_target = os.path.abspath(str(dest.parent / raw))
+    try:
+        resolved = dest.resolve(strict=False)
+    except (OSError, RuntimeError):
+        resolved = Path(abs_target)
+    return abs_target, resolved
+
+
+def _is_ghostless_package_skill(path_text: str, skill_name: str) -> bool:
+    """True for a global npm skill directory, not a project's local install.
+
+    Global installs sit under ``lib/node_modules`` (Unix, nvm, mise) or
+    ``npm/node_modules`` (Windows). A link into ``<project>/node_modules``
+    stays the user's own dependency.
+    """
+    normalized = path_text.replace("\\", "/").rstrip("/").lower()
+    suffix = f"/node_modules/ghostless/skills/{skill_name.lower()}"
+    if not normalized.endswith(suffix):
+        return False
+    parent = normalized[: -len(suffix)].rsplit("/", 1)[-1]
+    return parent in {"lib", "npm"}
+
+
+def _same_symlink_target(norm_abs: str, resolved: Path, candidate: Path | str) -> bool:
+    """True when a symlink's unresolved or resolved target matches candidate."""
+    candidate_text = str(candidate)
+    if not candidate_text:
+        return False
+    try:
+        if norm_abs == os.path.normcase(os.path.abspath(candidate_text)):
+            return True
+        return resolved == Path(candidate_text).resolve(strict=False)
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
+def _owned(
+    dest: Path,
+    src: Path,
+    *,
+    installed: dict[str, dict[str, str]] | None = None,
+    recorded_suite_root: Path | None = None,
+) -> bool:
+    if installed is None:
+        installed = _load_installed()
+    if recorded_suite_root is None:
+        recorded_suite_root = _recorded_suite_root()
     if dest.is_symlink():
-        return dest.resolve() == src.resolve()
+        try:
+            abs_target, resolved = _symlink_targets(dest)
+        except OSError:
+            return False
+        norm_abs = os.path.normcase(abs_target)
+        entry = installed.get(_norm_path(dest))
+        if isinstance(entry, dict) and entry.get("skill") == src.name:
+            entry_target = entry.get("target")
+            if isinstance(entry_target, str) and _same_symlink_target(norm_abs, resolved, entry_target):
+                return True
+        if _same_symlink_target(norm_abs, resolved, src):
+            return True
+        if recorded_suite_root is not None and _same_symlink_target(
+            norm_abs, resolved, recorded_suite_root / "skills" / src.name
+        ):
+            return True
+        return _is_ghostless_package_skill(abs_target, src.name) or _is_ghostless_package_skill(
+            str(resolved), src.name
+        )
     if dest.is_dir():
         marker = dest / COPY_MARKER
         return marker.is_file() and marker.read_text(encoding="utf-8").strip() == f"ghostless:{src.name}"
@@ -174,6 +295,8 @@ def install_skills(*, agent: str, force: bool, copy: bool, no_launcher: bool, ve
         (name, agent_dir(name)) for name in selected_agents(agent)
     ]
     source_dir = root / "skills"
+    installed_entries = _load_installed()
+    recorded_suite = _recorded_suite_root()
     installed = 0
     skipped: list[str] = []
     for label, parent in targets:
@@ -184,7 +307,11 @@ def install_skills(*, agent: str, force: bool, copy: bool, no_launcher: bool, ve
                 raise ProjectError(f"Missing packaged skill: {src}")
             dest = parent / skill
             present = dest.is_symlink() or dest.exists()
-            owned = _owned(dest, src) if present else False
+            owned = (
+                _owned(dest, src, installed=installed_entries, recorded_suite_root=recorded_suite)
+                if present
+                else False
+            )
             if present and not owned and not force:
                 skipped.append(str(dest))
                 print(f"kept {dest} (not installed by ghostless)")
@@ -200,6 +327,12 @@ def install_skills(*, agent: str, force: bool, copy: bool, no_launcher: bool, ve
             else:
                 dest.symlink_to(src, target_is_directory=True)
                 method = "linked"
+            installed_entries[_norm_path(dest)] = {
+                "skill": skill,
+                "target": str(src.resolve()),
+                "suiteRoot": str(root.resolve()),
+                "method": method,
+            }
             installed += 1
             if verbose:
                 print(f"{method} {dest}")
@@ -214,6 +347,7 @@ def install_skills(*, agent: str, force: bool, copy: bool, no_launcher: bool, ve
     if not transient:
         (home / "suite-root").write_text(str(root) + "\n", encoding="utf-8")
     (home / "version").write_text(version() + "\n", encoding="utf-8")
+    _save_installed(installed_entries)
     with (home / "logs" / "setup.log").open("a", encoding="utf-8") as log:
         log.write(f"{datetime.now(timezone.utc).isoformat()} install-skills suite={root} installed={installed}\n")
     print(f"ghostless skills installed: {installed}; existing paths kept: {len(skipped)}")
@@ -267,19 +401,30 @@ def reset(*, agent: str, data: bool, yes: bool) -> int:
         if input("Continue? [y/N] ").strip().lower() not in {"y", "yes"}:
             print("Aborted.")
             return 1
+    installed = _load_installed()
+    recorded_suite = _recorded_suite_root()
     removed = 0
     for _, parent in targets:
         for skill in SKILLS:
             dest = parent / skill
-            if _owned(dest, root / "skills" / skill):
-                _remove_owned_or_forced(dest)
-                print(f"removed {dest}")
-                removed += 1
-            elif dest.is_symlink() or dest.exists():
-                print(f"kept {dest} (not installed by ghostless)")
+            if dest.is_symlink() or dest.exists():
+                if _owned(
+                    dest,
+                    root / "skills" / skill,
+                    installed=installed,
+                    recorded_suite_root=recorded_suite,
+                ):
+                    _remove_owned_or_forced(dest)
+                    installed.pop(_norm_path(dest), None)
+                    print(f"removed {dest}")
+                    removed += 1
+                else:
+                    print(f"kept {dest} (not installed by ghostless)")
     if data and data_home().exists():
         shutil.rmtree(data_home())
         print(f"removed {data_home()}")
+    elif not data and (data_home() / INSTALLED_MANIFEST).is_file():
+        _save_installed(installed)
     print(f"Reset complete ({removed} skill paths removed). The CLI is still installed.")
     return 0
 

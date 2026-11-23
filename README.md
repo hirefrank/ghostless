@@ -150,32 +150,35 @@ ghostless start draft.md [--section NAME] [--origin ai-first|writer-first] [--so
 ghostless finish [final.md] [--session ID] [--note TEXT] [--project DIR] [--json]
 ghostless sessions [--project DIR] [--json]
 ghostless rules [list|confirm|reject|retire] [ID] [--section NAME] [--project DIR] [--json]
+ghostless checks [list|confirm|reject|add] [ID|SLUG] [--text TEXT] [--section NAME] [--project DIR] [--json]
 ghostless snapshot --session ID [--project DIR]
-ghostless eval [--holdout N] [--seed N] [--project DIR] [--json]
+ghostless eval [--holdout N | --cv] [--seed N] [--project DIR] [--json]
 ghostless export [--excerpts] [--out PATH] [--project DIR]
 ghostless save --style TEXT | --audience TEXT [--project DIR]
 ghostless install-skills [--agent auto|all|name,...] [--force] [--copy] [--no-launcher] [-v]
 ghostless update [--agent ...]
 ghostless doctor
 ghostless agents
+ghostless use DIR
 ghostless which
 ghostless locate
 ghostless routing
 ghostless reset [--yes] [--data]
+ghostless uninstall [--agent ...] [--yes]
 ghostless --version
 ```
 
-`judge` exits 1 when its mechanical score is under `failUnder` (default 70). Banned tells, tidy frames, and unresolved placeholders are flagged for review. The score does not check factual fidelity or establish that the draft sounds like you. `setup` is an alias of `install-skills`.
+`judge` exits 1 when its mechanical score is under `failUnder` (default 70). Banned tells, writer-confirmed `cut:` rules (respecting `--section` scope), tidy frames, and unresolved placeholders are flagged for review. The score does not check factual fidelity or establish that the draft sounds like you. `setup` is an alias of `install-skills`.
 
 `judge` also reports how much corpus it is comparing against: pieces, measured words, written prose words, and sentences. When the sample is small (under 1,500 words or fewer than three pieces) it marks the score low-confidence instead of showing a bare number. The guide has the same sample-size block, so a thin corpus is visible before you trust a score.
 
-`ghostless eval` checks that the score means something. It holds out part of the corpus, builds targets from the rest, judges the held-out pieces, and reports whether the score tracks your edits. With learned pairs, it compares each held-out pair's score with that pair's edit rate (edited token positions divided by aligned positions, the same measure `learn` stores): higher scores should come with lighter edits. With no learned pairs it holds out gold prose pieces instead and reports only whether the targets generalize.
+`ghostless eval` checks that the score means something. With learned pairs, it compares each held-out pair's score with that pair's edit rate (edited token positions divided by aligned positions, the same measure `learn` stores): higher scores should come with lighter edits. With 3–30 pairs and no `--holdout`, that comparison is leave-one-out, one pair at a time. Pass `--cv` to force leave-one-out for any number of pairs, or `--holdout N` for one seeded split. `--cv` applies only to learned pairs; without them, eval holds out gold prose pieces and reports whether the targets generalize. Files in `holdouts/` are scored against the full corpus and do not change those targets.
 
 ```bash
-ghostless eval [--holdout N] [--seed N] [--project DIR] [--json]
+ghostless eval [--holdout N | --cv] [--seed N] [--project DIR] [--json]
 ```
 
-`eval` exits 1 when there is not enough corpus to hold anything out. The split is seeded (`--seed`, default 0), so a rerun is reproducible.
+`eval` exits 1 when there is not enough corpus to hold anything out, and exits 2 when `--cv` is passed with no learned pairs or combined with `--holdout`. The single split is seeded (`--seed`, default 0). Leave-one-out does not use that seed.
 
 ## The tier model
 

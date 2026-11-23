@@ -23,6 +23,8 @@ If that fails, ask the user where the project is, or run `ghostless init` in the
 - Match the weighted targets in the guide (sentence length, contractions, I, openers, paragraphs, em dashes, questions).
 - Reach a first-person target with observational and opinion statements ("I see this a lot", "I think", "I keep coming back to"). Never invent an anecdote to hit the number — no "I remember when..." stories the writer did not tell you. If the piece needs a story only the writer can tell, leave it as a placeholder for them.
 - Do not use the ban list.
+- Follow `## Style` (what the piece must prove) and `## Audience` (who reads it) in `voice-guide.md` when present.
+- Under `## Voice rules`, follow confirmed rules (within their section scope). Ignore hypotheses — they are unconfirmed patterns waiting for the writer's decision (`ghostless rules`).
 - Use a signature phrase only when it fits. Do not stuff them in.
 - If the piece has a section the guide knows, keep that section's targets in mind.
 - Spoken-layer notes in the guide are already baked into the targets. Do not treat a transcript as a format sample.
@@ -41,7 +43,7 @@ ghostless judge draft.md
 ghostless judge draft.md --section notes
 ```
 
-Review flagged words, tidy frames, and em dashes in context. The mechanical score does not check factual fidelity or prove the draft sounds like the writer. Do not "fix" a placeholder by guessing the opinion. Show the draft and the judge summary. One revision pass is enough unless the user asks for another.
+Review flagged banned words, confirmed `cut:` rule hits (respecting `--section` scope), tidy frames, and em dashes in context. `ghostless judge` enforces confirmed `cut:` rules automatically and ignores unconfirmed hypotheses. The mechanical score does not check factual fidelity or prove the draft sounds like the writer. Do not "fix" a placeholder by guessing the opinion. Show the draft and the judge summary. One revision pass is enough unless the user asks for another. If the writer wants to revise in a resumable edit session, offer `ghostless start draft.md` (and `ghostless finish` when done).
 
 ## Confirmed checks
 

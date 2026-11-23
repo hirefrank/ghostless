@@ -28,7 +28,14 @@ ghostless learn --before before.md --after after.md --section notes
 ghostless build
 ```
 
-`learn` writes `gold/<date-slug>/` with `before.md`, `after.md`, and `meta.json`, and updates `edits-summary`. `build` folds the final into the guide at its tier (gold or edited).
+For a resumable edit session started with `ghostless start draft.md`, finalize the session instead of passing `--before` and `--after`:
+
+```bash
+ghostless finish [final.md] --session <id>
+ghostless build
+```
+
+`learn` (or `finish`) writes `gold/<date-slug>/` with `before.md`, `after.md`, and `meta.json`, and updates `edits-summary`. `build` folds the final into the guide at its tier (gold or edited).
 
 Tell the user the slug and the main shifts (words, edit rate, moved text, sentence length, contractions). Do not paste their whole piece into a chat log they didn't ask for, and do not upload the gold files anywhere.
 
@@ -59,3 +66,14 @@ ghostless save --audience "Readers know the domain terms; skip definitions."
 ```
 
 Then `ghostless build`. Wording and tone are already measured, and recurring cut/add words belong to `ghostless rules`, not `STYLE.md`.
+
+To review recurring edit hypotheses mined from finished edits, run `ghostless rules` and let the writer decide explicitly:
+
+```bash
+ghostless rules
+ghostless rules confirm cut:delve --section notes
+ghostless rules reject add:honestly
+ghostless rules retire cut:very
+```
+
+Then run `ghostless build` so confirmed rules take effect in `voice-guide.md`.

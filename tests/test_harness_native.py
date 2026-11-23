@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -376,6 +377,369 @@ class UpdateTests(unittest.TestCase):
                 with contextlib.redirect_stdout(out):
                     self.assertEqual(harness.update(agent="auto"), 1)
             self.assertIn("not launched from npm", out.getvalue())
+
+
+class InstalledManifestTests(unittest.TestCase):
+    def test_load_installed_handles_missing_corrupt_and_malformed_entries(self) -> None:
+        import ghostless.harness as harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "data"
+            with patch.dict(os.environ, {"GHOSTLESS_HOME": str(data)}):
+                self.assertEqual(harness._load_installed(), {})
+
+                data.mkdir(parents=True)
+                manifest = data / harness.INSTALLED_MANIFEST
+                manifest.write_text("{not json", encoding="utf-8")
+                self.assertEqual(harness._load_installed(), {})
+
+                manifest.write_text(json.dumps({"version": 2, "entries": {}}), encoding="utf-8")
+                self.assertEqual(harness._load_installed(), {})
+
+                manifest.write_text(
+                    json.dumps(
+                        {
+                            "version": 1,
+                            "entries": {
+                                "": {"skill": "ghostless-draft", "target": "/a"},
+                                "bad-type": "not-a-dict",
+                                "bad-skill": {"skill": 123, "target": "/a"},
+                                "missing-target": {"skill": "ghostless-draft"},
+                                "bad-method": {
+                                    "skill": "ghostless-draft",
+                                    "target": "/a",
+                                    "method": 99,
+                                },
+                                "/valid/dest": {
+                                    "skill": "ghostless-draft",
+                                    "target": "/valid/src",
+                                    "suiteRoot": "/valid",
+                                    "method": "linked",
+                                },
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                loaded = harness._load_installed()
+                self.assertEqual(
+                    loaded,
+                    {
+                        os.path.normcase("/valid/dest"): {
+                            "skill": "ghostless-draft",
+                            "target": "/valid/src",
+                            "suiteRoot": "/valid",
+                            "method": "linked",
+                        }
+                    },
+                )
+
+    def test_is_ghostless_package_skill_recognizes_posix_and_windows_paths(self) -> None:
+        from ghostless.harness import _is_ghostless_package_skill
+
+        self.assertTrue(
+            _is_ghostless_package_skill(
+                "/home/u/.nvm/versions/node/v24.22.2/lib/node_modules/ghostless/skills/ghostless-draft",
+                "ghostless-draft",
+            )
+        )
+        self.assertTrue(
+            _is_ghostless_package_skill(
+                r"C:\Users\me\AppData\Roaming\npm\node_modules\GHOSTLESS\skills\ghostless-edit",
+                "ghostless-edit",
+            )
+        )
+        self.assertFalse(
+            _is_ghostless_package_skill(
+                "/home/u/proj/node_modules/ghostless/skills/ghostless-draft",
+                "ghostless-draft",
+            )
+        )
+        self.assertFalse(
+            _is_ghostless_package_skill(
+                "/home/u/node_modules/ghostless/skills/ghostless-edit",
+                "ghostless-draft",
+            )
+        )
+        self.assertFalse(
+            _is_ghostless_package_skill(
+                "/home/u/node_modules/other-pkg/skills/ghostless-draft",
+                "ghostless-draft",
+            )
+        )
+
+    def test_copy_install_and_reset_updates_installed_manifest(self) -> None:
+        import ghostless.harness as harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            skills = base / "skills"
+            data = base / "data"
+            env = {"GHOSTLESS_SKILLS_DIR": str(skills), "GHOSTLESS_HOME": str(data), "PATH": ""}
+            with patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["install-skills", "--copy", "--no-launcher"]), 0)
+                manifest = json.loads((data / harness.INSTALLED_MANIFEST).read_text(encoding="utf-8"))
+                self.assertEqual(manifest["version"], 1)
+                self.assertEqual(len(manifest["entries"]), len(harness.SKILLS))
+                for skill in harness.SKILLS:
+                    entry = manifest["entries"][harness._norm_path(skills / skill)]
+                    self.assertEqual(entry["skill"], skill)
+                    self.assertEqual(entry["method"], "copied")
+
+                self.assertEqual(main(["reset", "--yes"]), 0)
+                after = json.loads((data / harness.INSTALLED_MANIFEST).read_text(encoding="utf-8"))
+                self.assertEqual(after["entries"], {})
+
+
+@unittest.skipIf(os.name == "nt", "symlink tests require POSIX")
+class SkillOwnershipTests(unittest.TestCase):
+    def _make_suite(self, root: Path) -> Path:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "package.json").write_text('{"name": "ghostless", "version": "0.1.0"}\n', encoding="utf-8")
+        (root / "bin").mkdir(exist_ok=True)
+        (root / "bin" / "ghostless").write_text("#!/bin/sh\n", encoding="utf-8")
+        for skill in ("ghostless-draft", "ghostless-edit", "ghostless-learn"):
+            skill_dir = root / "skills" / skill
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(f"# {skill}\n", encoding="utf-8")
+        return root
+
+    @contextlib.contextmanager
+    def _fake_home_env(self, home: Path, suite: Path) -> Iterator[None]:
+        env = {
+            "HOME": str(home),
+            "GHOSTLESS_HOME": str(home / ".ghostless"),
+            "GHOSTLESS_SUITE": str(suite),
+            "GHOSTLESS_NO_UPDATE": "1",
+            "PATH": "",
+        }
+        with patch.dict(os.environ, env):
+            os.environ.pop("GHOSTLESS_SKILLS_DIR", None)
+            os.environ.pop("NPM_CONFIG_PREFIX", None)
+            yield
+
+    def _run_cli(self, home: Path, suite: Path, argv: list[str]) -> str:
+        out = io.StringIO()
+        with self._fake_home_env(home, suite), contextlib.redirect_stdout(out):
+            code = main(argv)
+        self.assertEqual(code, 0, out.getvalue())
+        return out.getvalue()
+
+    def test_moved_node_package_root_relinks_without_force(self) -> None:
+        import ghostless.harness as harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            (home / ".claude").mkdir(parents=True)
+            old_suite = self._make_suite(
+                base / "nvm" / "versions" / "node" / "v24.22.2" / "lib" / "node_modules" / "ghostless"
+            )
+            new_suite = self._make_suite(
+                base / "nvm" / "versions" / "node" / "v24.22.3" / "lib" / "node_modules" / "ghostless"
+            )
+
+            self._run_cli(home, old_suite, ["install-skills"])
+            stdout = self._run_cli(home, new_suite, ["install-skills"])
+
+            self.assertIn("ghostless skills installed: 3; existing paths kept: 0", stdout)
+            self.assertNotIn("not installed by ghostless", stdout)
+            skills_dir = home / ".claude" / "skills"
+            for skill in harness.SKILLS:
+                dest = skills_dir / skill
+                self.assertTrue(dest.is_symlink())
+                self.assertEqual(dest.resolve(), (new_suite / "skills" / skill).resolve())
+
+            manifest = json.loads((home / ".ghostless" / harness.INSTALLED_MANIFEST).read_text(encoding="utf-8"))
+            self.assertEqual(len(manifest["entries"]), 3)
+            for skill in harness.SKILLS:
+                entry = manifest["entries"][harness._norm_path(skills_dir / skill)]
+                self.assertEqual(entry["suiteRoot"], str(new_suite.resolve()))
+                self.assertEqual(entry["target"], str((new_suite / "skills" / skill).resolve()))
+
+    def test_deleted_old_package_root_dangling_links_relink_and_reset(self) -> None:
+        import ghostless.harness as harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            (home / ".claude").mkdir(parents=True)
+            old_suite = self._make_suite(
+                base / "nvm" / "versions" / "node" / "v24.22.2" / "lib" / "node_modules" / "ghostless"
+            )
+            new_suite = self._make_suite(
+                base / "nvm" / "versions" / "node" / "v24.22.3" / "lib" / "node_modules" / "ghostless"
+            )
+
+            # Dangling links from a deleted package root relink cleanly without --force.
+            self._run_cli(home, old_suite, ["install-skills"])
+            shutil.rmtree(old_suite)
+            skills_dir = home / ".claude" / "skills"
+            for skill in harness.SKILLS:
+                dest = skills_dir / skill
+                self.assertTrue(dest.is_symlink())
+                self.assertFalse(dest.exists())
+
+            relink_out = self._run_cli(home, new_suite, ["install-skills"])
+            self.assertIn("ghostless skills installed: 3; existing paths kept: 0", relink_out)
+            self.assertNotIn("not installed by ghostless", relink_out)
+            for skill in harness.SKILLS:
+                dest = skills_dir / skill
+                self.assertTrue(dest.exists())
+                self.assertEqual(dest.resolve(), (new_suite / "skills" / skill).resolve())
+
+            # Dangling links from a deleted checkout/package root are removed by reset --yes.
+            old_checkout = self._make_suite(base / "checkouts" / "old-ghostless")
+            self._run_cli(home, old_checkout, ["install-skills"])
+            shutil.rmtree(old_checkout)
+            for skill in harness.SKILLS:
+                dest = skills_dir / skill
+                self.assertTrue(dest.is_symlink())
+                self.assertFalse(dest.exists())
+
+            reset_out = self._run_cli(home, new_suite, ["reset", "--yes"])
+            self.assertIn("Reset complete (3 skill paths removed).", reset_out)
+            self.assertNotIn("not installed by ghostless", reset_out)
+            for skill in harness.SKILLS:
+                dest = skills_dir / skill
+                self.assertFalse(dest.is_symlink())
+                self.assertFalse(dest.exists())
+            manifest = json.loads((home / ".ghostless" / harness.INSTALLED_MANIFEST).read_text(encoding="utf-8"))
+            self.assertEqual(manifest["entries"], {})
+
+    def test_legacy_pre_manifest_node_module_links_existing_and_deleted(self) -> None:
+        import ghostless.harness as harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            skills_dir = home / ".claude" / "skills"
+            skills_dir.mkdir(parents=True)
+            new_suite = self._make_suite(
+                base / "nvm" / "versions" / "node" / "v24.22.3" / "lib" / "node_modules" / "ghostless"
+            )
+
+            for delete_legacy in (False, True):
+                legacy_suite = self._make_suite(
+                    base / "nvm" / "versions" / "node" / f"v24.22.2-{int(delete_legacy)}"
+                    / "lib" / "node_modules" / "ghostless"
+                )
+                for skill in harness.SKILLS:
+                    dest = skills_dir / skill
+                    if dest.is_symlink() or dest.exists():
+                        dest.unlink()
+                    dest.symlink_to(legacy_suite / "skills" / skill, target_is_directory=True)
+                if delete_legacy:
+                    shutil.rmtree(legacy_suite)
+
+                # Ensure neither installed.json nor suite-root exists before running.
+                if (home / ".ghostless").exists():
+                    shutil.rmtree(home / ".ghostless")
+
+                install_out = self._run_cli(home, new_suite, ["install-skills"])
+                self.assertIn("ghostless skills installed: 3; existing paths kept: 0", install_out)
+                self.assertNotIn("not installed by ghostless", install_out)
+                for skill in harness.SKILLS:
+                    self.assertEqual((skills_dir / skill).resolve(), (new_suite / "skills" / skill).resolve())
+
+                # Recreate the legacy pre-manifest state and verify reset --yes removes all 3.
+                if delete_legacy:
+                    legacy_suite = self._make_suite(
+                        base / "nvm" / "versions" / "node" / "v24.22.2-reset"
+                        / "lib" / "node_modules" / "ghostless"
+                    )
+                for skill in harness.SKILLS:
+                    (skills_dir / skill).unlink()
+                    (skills_dir / skill).symlink_to(legacy_suite / "skills" / skill, target_is_directory=True)
+                if delete_legacy:
+                    shutil.rmtree(legacy_suite)
+                shutil.rmtree(home / ".ghostless")
+
+                reset_out = self._run_cli(home, new_suite, ["reset", "--yes"])
+                self.assertIn("Reset complete (3 skill paths removed).", reset_out)
+                self.assertNotIn("not installed by ghostless", reset_out)
+                for skill in harness.SKILLS:
+                    dest = skills_dir / skill
+                    self.assertFalse(dest.is_symlink())
+                    self.assertFalse(dest.exists())
+
+    def test_foreign_and_repointed_symlinks_kept_until_force(self) -> None:
+        import ghostless.harness as harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            skills_dir = home / ".claude" / "skills"
+            skills_dir.mkdir(parents=True)
+            suite = self._make_suite(
+                base / "nvm" / "versions" / "node" / "v24.22.3" / "lib" / "node_modules" / "ghostless"
+            )
+
+            foreign_a = base / "foreign-a"
+            foreign_a.mkdir()
+            (foreign_a / "SKILL.md").write_text("# foreign a\n", encoding="utf-8")
+            (skills_dir / "ghostless-draft").symlink_to(foreign_a, target_is_directory=True)
+
+            # First install leaves the pre-existing foreign symlink alone.
+            out = self._run_cli(home, suite, ["install-skills"])
+            self.assertIn("kept ", out)
+            self.assertIn("not installed by ghostless", out)
+            self.assertIn("ghostless skills installed: 2; existing paths kept: 1", out)
+            self.assertEqual((skills_dir / "ghostless-draft").resolve(), foreign_a.resolve())
+
+            # Repoint an owned symlink to a foreign target after ghostless installed it.
+            foreign_b = base / "foreign-b"
+            foreign_b.mkdir()
+            (foreign_b / "SKILL.md").write_text("# foreign b\n", encoding="utf-8")
+            (skills_dir / "ghostless-edit").unlink()
+            (skills_dir / "ghostless-edit").symlink_to(foreign_b, target_is_directory=True)
+
+            out_repoint = self._run_cli(home, suite, ["install-skills"])
+            self.assertIn("ghostless skills installed: 1; existing paths kept: 2", out_repoint)
+            self.assertEqual((skills_dir / "ghostless-draft").resolve(), foreign_a.resolve())
+            self.assertEqual((skills_dir / "ghostless-edit").resolve(), foreign_b.resolve())
+
+            reset_out = self._run_cli(home, suite, ["reset", "--yes"])
+            self.assertIn("Reset complete (1 skill paths removed).", reset_out)
+            self.assertIn("not installed by ghostless", reset_out)
+            self.assertEqual((skills_dir / "ghostless-draft").resolve(), foreign_a.resolve())
+            self.assertEqual((skills_dir / "ghostless-edit").resolve(), foreign_b.resolve())
+            self.assertFalse((skills_dir / "ghostless-learn").is_symlink())
+
+            # Only --force replaces foreign symlinks.
+            force_out = self._run_cli(home, suite, ["install-skills", "--force"])
+            self.assertIn("replacing ", force_out)
+            self.assertIn("(--force)", force_out)
+            self.assertIn("ghostless skills installed: 3; existing paths kept: 0", force_out)
+            for skill in harness.SKILLS:
+                self.assertEqual((skills_dir / skill).resolve(), (suite / "skills" / skill).resolve())
+
+    def test_project_local_node_modules_link_is_kept(self) -> None:
+        import ghostless.harness as harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            skills_dir = home / ".claude" / "skills"
+            skills_dir.mkdir(parents=True)
+            suite = self._make_suite(
+                base / "nvm" / "versions" / "node" / "v24.22.3" / "lib" / "node_modules" / "ghostless"
+            )
+            local = self._make_suite(base / "proj" / "node_modules" / "ghostless")
+            local_skill = local / "skills" / "ghostless-draft"
+            (skills_dir / "ghostless-draft").symlink_to(local_skill, target_is_directory=True)
+
+            out = self._run_cli(home, suite, ["install-skills"])
+            self.assertIn("kept ", out)
+            self.assertEqual((skills_dir / "ghostless-draft").resolve(), local_skill.resolve())
+
+            reset_out = self._run_cli(home, suite, ["reset", "--yes"])
+            self.assertIn("not installed by ghostless", reset_out)
+            self.assertEqual((skills_dir / "ghostless-draft").resolve(), local_skill.resolve())
+            for skill in harness.SKILLS:
+                if skill == "ghostless-draft":
+                    continue
+                self.assertFalse((skills_dir / skill).exists())
 
 
 if __name__ == "__main__":
