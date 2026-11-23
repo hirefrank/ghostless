@@ -88,17 +88,25 @@ def main() -> int:
         if not executable.is_file():
             raise RuntimeError(f"npm did not install the CLI: {executable}")
 
+        home = base / "home"
+        home.mkdir()
         env = os.environ.copy()
         env.update({
             "GHOSTLESS_PYTHON": sys.executable,
             "GHOSTLESS_NO_UPDATE": "1",
-            "GHOSTLESS_HOME": str(base / "home"),
+            "GHOSTLESS_HOME": str(home / ".ghostless"),
             "GHOSTLESS_SKILLS_DIR": str(base / "skills"),
+            "HOME": str(home),
+            "USERPROFILE": str(home),
         })
         def cli(*args: str) -> str:
             return run([str(executable), *args], cwd=base, env=env)
         assert "ghostless 0.1.0" in cli("--version")
         cli("install-skills")
+        launcher_name = "ghostless.cmd" if os.name == "nt" else "ghostless"
+        launcher = home / ".local" / "bin" / launcher_name
+        if not launcher.is_file() or "ghostless launcher" not in launcher.read_text(encoding="utf-8"):
+            raise RuntimeError(f"Stable launcher was not installed: {launcher}")
         skill = base / "skills" / "ghostless-draft"
         assert (skill / "SKILL.md").is_file()
         assert (skill / ".ghostless-installed").is_file() if os.name == "nt" else skill.is_symlink()

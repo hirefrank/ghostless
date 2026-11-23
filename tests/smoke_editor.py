@@ -219,6 +219,33 @@ def main() -> None:
             raise RuntimeError(
                 f"Expected working draft height to grow with window size: 800 -> {normal_height}, 1040 -> {tall_height}"
             )
+
+        missing_project = base / "missing-voice"
+        missing = subprocess.run(
+            [str(EDITOR), "--project", str(missing_project), "--draft", str(draft)],
+            cwd=base, env=env, text=True, capture_output=True, check=False,
+        )
+        if missing.returncode == 0 or f"Project directory does not exist: {missing_project}" not in missing.stderr:
+            raise RuntimeError(f"Missing project path was not named:\n{missing.stderr}")
+        if "ghostless init" not in missing.stderr:
+            raise RuntimeError(f"Missing project did not point at ghostless init:\n{missing.stderr}")
+        missing_draft = base / "missing-draft.md"
+        missing_file = subprocess.run(
+            [str(EDITOR), "--project", str(project), "--draft", str(missing_draft)],
+            cwd=base, env=env, text=True, capture_output=True, check=False,
+        )
+        if f"Draft does not exist: {missing_draft}" not in missing_file.stderr:
+            raise RuntimeError(f"Missing draft path was not named:\n{missing_file.stderr}")
+        cwd_draft = base / "cwd-draft.md"
+        cwd_draft.write_text("Opened from the project directory.\n", encoding="utf-8")
+        before = {path.name for path in (project / "sessions").iterdir()}
+        run([str(EDITOR), "--draft", str(cwd_draft),
+             "--script", str(ROOT / "editor" / "tests" / "open-quit.json"),
+             "--snap", str(base / "cwd.png"), "--at", "mark:end", "--size", "800x600"],
+            cwd=project, env=env)
+        opened = {path.name for path in (project / "sessions").iterdir()} - before
+        if len(opened) != 1:
+            raise RuntimeError("Editor did not open a session from the project directory without --project")
     print(f"Rune editor + installed CLI smoke passed on {sys.platform}")
 
 

@@ -12,18 +12,43 @@ It works with any harness that loads [Agent Skills](https://agentskills.io): Cla
 
 ## Install
 
-Node 18+ and Python 3.11+ are required for the npm install. The npm package uses a portable Node launcher for the Python voice engine. Native CLI commands run on macOS, Windows, and Linux without Bash.
+Node 18+ and Python 3.11+ are required. The CLI is a portable Node launcher around the Python voice engine. Commands run on macOS, Windows, and Linux without Bash.
+
+v0.1 is not published to npm yet, so `npm i -g ghostless@latest` returns a registry 404. Publishing needs the maintainer's credentials; the workflows and `pyproject.toml` are in place ([docs/RELEASE.md](docs/RELEASE.md)). Install from a checkout:
+
+```bash
+git clone https://github.com/hirefrank/ghostless.git
+cd ghostless
+npm i -g .
+ghostless install-skills
+```
+
+A global install from a checkout is a link, not a copy. npm points `node_modules/ghostless` at the checkout, so `git switch`, a rebase, or an uncommitted edit changes the installed CLI, and `ghostless --version` reports the package version rather than the commit. For a frozen snapshot, pack the checkout and install the tarball:
+
+```bash
+npm pack
+npm i -g ghostless-0.1.0.tgz
+ghostless install-skills
+```
+
+`install-skills` writes a stable launcher at `~/.local/bin/ghostless` (or `~/bin` when that directory is already on `PATH`; on Windows, `%USERPROFILE%\.local\bin\ghostless.cmd`). The launcher reads `~/.ghostless/suite-root` and still runs after a Node upgrade deletes the version-scoped npm bin. If that recorded suite is gone, it names the missing path and the reinstall command. It will not replace a `ghostless` command it did not install. Pass `--no-launcher` to skip it. A one-off npx or pnpm dlx run does not write one.
+
+npm keeps global packages inside the active Node version. After switching Node versions, run the stable launcher, or reinstall and then `ghostless install-skills --force` when skill paths are reported as not installed by ghostless ([#34](https://github.com/hirefrank/ghostless/issues/34)).
+
+Once the package is published:
 
 ```bash
 npm i -g ghostless@latest
 ghostless install-skills
 ```
 
-The global npm install puts `ghostless` on `PATH`. `install-skills` creates `~/.ghostless/` and installs the three skills into detected harnesses. It links on macOS/Linux and copies on Windows, where creating symlinks can require extra privileges.
+That registry command does not work today. The npm package is the unscoped name `ghostless`. The GitHub repository stays [hirefrank/ghostless](https://github.com/hirefrank/ghostless).
 
-If `ghostless` is not found right after a global install, the npm prefix's `bin` directory is not on `PATH` in that shell — for example `~/.local/bin` when the prefix is `~/.local`. Add it with `export PATH="$HOME/.local/bin:$PATH"` (using your own bin directory), or run `ghostless doctor` once the binary is reachable: it prints the bin directory and the exact export line when it is missing.
+`install-skills` creates `~/.ghostless/` and installs the three skills into detected harnesses. It links on macOS/Linux and copies on Windows, where creating symlinks can require extra privileges.
 
-One-off install of the skills:
+If `ghostless` is not found right after a global install, the npm prefix's `bin` directory is not on `PATH` in that shell — for example `~/.local/bin` when the prefix is `~/.local`. Add it with `export PATH="$HOME/.local/bin:$PATH"` (using your own bin directory), or run `ghostless doctor` once the binary is reachable: it prints the bin directory and the exact export line when it is missing. `doctor` also reports a version-scoped Node install, the stable launcher, and whether the desktop editor is built.
+
+One-off install of the skills. These hit the registry, so they 404 until publish:
 
 ```bash
 npx --yes ghostless@latest install-skills
@@ -35,25 +60,7 @@ pnpm dlx ghostless@latest install-skills
 
 One-off runs copy the skills so clearing the package-manager cache cannot break them. They do not install a persistent `ghostless` command; use the global install for that.
 
-From a checkout of this repo:
-
-```bash
-npm i -g .
-ghostless install-skills
-```
-
-A global install from a checkout is a link, not a copy. npm points `node_modules/ghostless` at the checkout, so `git switch`, a rebase, or an uncommitted edit changes the installed CLI, and `ghostless --version` reports the package version rather than the commit. For a frozen snapshot, pack the checkout and install the tarball it writes:
-
-```bash
-npm pack
-npm i -g ghostless-0.1.0.tgz
-```
-
-npm also keeps global packages inside the active Node version. After switching Node versions with a version manager, reinstall ghostless, then run `ghostless install-skills --force` when it reports the existing skill paths as not installed by ghostless ([#34](https://github.com/hirefrank/ghostless/issues/34)).
-
-The npm package is the unscoped name `ghostless`. The GitHub repository stays [hirefrank/ghostless](https://github.com/hirefrank/ghostless). v0.1 is not published yet. Publishing needs the maintainer's credentials. The workflows and `pyproject.toml` are in place; see [docs/RELEASE.md](docs/RELEASE.md).
-
-The native desktop editor lives in [`editor/`](editor/) and is not part of the npm package; see [docs/EDITOR.md](docs/EDITOR.md) and [#35](https://github.com/hirefrank/ghostless/issues/35). The cross-platform CLI work is [#13](https://github.com/hirefrank/ghostless/issues/13). The `start`/`finish` session workflow from [#8](https://github.com/hirefrank/ghostless/issues/8) ships in this CLI.
+The native desktop editor is not part of the npm package. Build it from this checkout; see [docs/EDITOR.md](docs/EDITOR.md). `ghostless edit draft.md` opens it, and `ghostless sessions --open ID` reopens a session.
 See [desktop distribution](docs/CROSS_PLATFORM.md) for platform behavior, updates, and uninstall.
 
 ```bash
@@ -147,8 +154,9 @@ ghostless judge draft.md [--section NAME] [--project DIR] [--json]
 ghostless learn --before a.md --after b.md [--section NAME] [--origin ai-first|writer-first] [--model NAME] [--tool NAME] [--promote] [--date YYYY-MM-DD]
 ghostless promote SLUG [--demote] [--project DIR]
 ghostless start draft.md [--section NAME] [--origin ai-first|writer-first] [--source REF] [--project DIR] [--json]
+ghostless edit draft.md [--section NAME] [--origin ai-first|writer-first] [--source REF] [--project DIR] [--json]
 ghostless finish [final.md] [--session ID] [--note TEXT] [--project DIR] [--json]
-ghostless sessions [--project DIR] [--json]
+ghostless sessions [--open ID] [--project DIR] [--json]
 ghostless rules [list|confirm|reject|retire] [ID] [--section NAME] [--project DIR] [--json]
 ghostless checks [list|confirm|reject|add] [ID|SLUG] [--text TEXT] [--section NAME] [--project DIR] [--json]
 ghostless snapshot --session ID [--project DIR]
@@ -258,11 +266,13 @@ For a resumable, editor-agnostic workflow, capture an immutable baseline and fin
 ```bash
 ghostless start draft.md --project voice --source https://example.org/reference
 # Edit the printed sessions/<id>/after.md in any Markdown editor.
+ghostless edit draft.md --project voice
+ghostless sessions --open <id> --project voice
 ghostless finish --session <id> --project voice
 ghostless build --project voice
 ```
 
-`start` copies the draft to `before.md` (immutable) and `after.md` (the working copy). `finish` writes a final, learns the pair into `gold/` once, and records an edit receipt with provenance, content hashes, and the measured shift. Repeating `finish` with the same final returns the same receipt; changing it after finish needs a new session. `ghostless sessions` lists them. The native Rune desktop editor in [`editor/`](editor/) shows the original beside the working copy, a word-level diff, and notes over this same session format; see [docs/EDITOR.md](docs/EDITOR.md).
+`start` copies the draft to `before.md` (immutable) and `after.md` (the working copy). It does not open a window. `ghostless edit` does the same capture and opens the desktop editor when that binary is built. `finish` writes a final, learns the pair into `gold/` once, and records an edit receipt with provenance, content hashes, and the measured shift. Repeating `finish` with the same final returns the same receipt; changing it after finish needs a new session. `ghostless sessions` lists them, and `ghostless sessions --open ID` reopens one in the editor. The native Rune desktop editor in [`editor/`](editor/) shows the original beside the working copy, a word-level diff, and notes over this same session format; see [docs/EDITOR.md](docs/EDITOR.md). It is not part of the npm package.
 
 `learn --before --after` remains available for pairs captured outside a session.
 
