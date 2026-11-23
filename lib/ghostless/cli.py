@@ -89,6 +89,9 @@ def main(argv: list[str] | None = None) -> int:
             _maybe_check_for_update()
         try:
             return harness_main(argv)
+        except SystemExit as exc:
+            code = exc.code
+            return int(code) if isinstance(code, int) else 2
         except (ProjectError, OSError) as exc:
             print(f"ghostless: {exc}", file=sys.stderr)
             return 2
@@ -251,21 +254,6 @@ def main(argv: list[str] | None = None) -> int:
     which_parser = sub.add_parser("which", help="Print suite, data, and project paths")
     _add_project(which_parser)
 
-    skills_parser = sub.add_parser("install-skills", help="Link skills into detected harnesses")
-    skills_parser.add_argument("args", nargs=argparse.REMAINDER)
-    setup_parser = sub.add_parser("setup", help="Alias for install-skills")
-    setup_parser.add_argument("args", nargs=argparse.REMAINDER)
-    for name, help_text in (
-        ("update", "Install the latest release and relink skills"),
-        ("doctor", "Check Python, the data dir, and skill links"),
-        ("agents", "List harnesses and skill directories"),
-        ("routing", "Print a project-instruction snippet"),
-        ("reset", "Remove installed skill links"),
-        ("uninstall", "Remove skill links and ~/.ghostless"),
-    ):
-        launcher_parser = sub.add_parser(name, help=help_text)
-        launcher_parser.add_argument("args", nargs=argparse.REMAINDER)
-
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
@@ -331,10 +319,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             return _cmd_use(args)
         case "which":
             return _cmd_which(args)
-        case "install-skills" | "setup":
-            return _cmd_install_skills(args.args)
-        case "update" | "doctor" | "agents" | "routing" | "reset" | "uninstall":
-            return _cmd_launcher(command, args.args)
         case _:
             print(f"ghostless: unknown command {command}", file=sys.stderr)
             return 2
@@ -861,14 +845,6 @@ def _cmd_which(args: argparse.Namespace) -> int:
     print(f"project={project}")
     print(f"project_source={source}")
     return 0
-
-
-def _cmd_launcher(command: str, extra: list[str]) -> int:
-    return harness_main([command, *extra])
-
-
-def _cmd_install_skills(extra: list[str]) -> int:
-    return harness_main(["install-skills", *extra])
 
 
 def build_voice(root: Path) -> dict[str, object]:

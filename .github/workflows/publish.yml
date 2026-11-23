@@ -46,7 +46,7 @@ jobs:
         run: bash tests/run.sh
 
       - name: Check CLI syntax
-        run: bash -n bin/ghostless setup lib/agents.sh
+        run: bash -n bin/ghostless setup
 
       - name: Publish to npm
         run: npm publish
