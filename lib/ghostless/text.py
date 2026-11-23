@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-WORD_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?")
-SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+WORD_RE = re.compile(r"[^\W\d_]+(?:'[^\W\d_]+)?|\d+(?:\.\d+)?")
+SENTENCE_END = re.compile(r'(?<=[.!?])["\')\]\u201d\u2019]*\s+')
 FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n?", re.DOTALL)
 
 # Formatting that is not prose. Measurement strips these before counting, so a
@@ -40,7 +40,7 @@ ABBREV_RE = re.compile(
 )
 DECIMAL_RE = re.compile(r"(?<=\d)\.(?=\d)")
 CONTRACTION_RE = re.compile(
-    r"(?i)^(?:[a-z]+n't|[a-z]+'(?:re|ve|ll|d|m)|(?:it|that|there|here|what|who|let)'s)$"
+    r"(?i)^(?:[a-z]+n't|[a-z]+'(?:re|ve|ll|d|m)|(?:it|that|there|here|what|who|let|he|she|how|where|when|why)'s)$"
 )
 I_TOKENS = frozenset({"i", "i'm", "i've", "i'd", "i'll"})
 OPENERS = ("and", "but", "so")
@@ -132,9 +132,6 @@ STOPWORDS = frozenset(
         "would",
         "should",
         "will",
-        "of",
-        "that",
-        "this",
         "there",
         "here",
         "also",
@@ -318,7 +315,15 @@ def paragraphs(text: str) -> list[str]:
 def _split_sentences_clean(cleaned: str) -> list[str]:
     protected = ABBREV_RE.sub(lambda match: match.group(0).replace(".", _PLACEHOLDER), cleaned)
     protected = DECIMAL_RE.sub(_PLACEHOLDER, protected)
-    parts = SENTENCE_END.split(protected.strip())
+    stripped = protected.strip()
+    parts: list[str] = []
+    start = 0
+    for match in SENTENCE_END.finditer(stripped):
+        # Keep any closing quote or bracket attached to the sentence that just ended.
+        split_at = match.start() + len(match.group(0).rstrip())
+        parts.append(stripped[start:split_at])
+        start = match.end()
+    parts.append(stripped[start:])
     sentences: list[str] = []
     for part in parts:
         sentence = part.replace(_PLACEHOLDER, ".").strip()
@@ -333,7 +338,7 @@ def split_sentences(text: str) -> list[str]:
 
 def first_word(sentence: str) -> str:
     stripped = sentence.lstrip(" \t\"'`“”‘’([{<-–—*• ")
-    match = re.match(r"[A-Za-z]+", stripped)
+    match = re.match(r"[^\W\d_]+", stripped)
     if not match:
         return ""
     return match.group(0).casefold()
@@ -372,13 +377,15 @@ def measure(text: str) -> Measured:
         paragraph_lengths.append(len(block_words))
         for sentence in _split_sentences_clean(block):
             tokens = _words_clean(sentence)
+            if not tokens:
+                continue
             folded = [token.casefold() for token in tokens]
             sentence_lengths.append(len(tokens))
             sentence_tokens.append(tuple(folded))
             word_total += len(tokens)
             contractions += sum(1 for token in folded if is_contraction(token))
             i_count += sum(1 for token in folded if token in I_TOKENS)
-            if sentence.rstrip().endswith("?"):
+            if sentence.rstrip(" \t\"')]\u201d\u2019").endswith("?"):
                 questions += 1
             opener = first_word(sentence)
             if opener in openers:
