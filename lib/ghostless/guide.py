@@ -108,7 +108,7 @@ def _render(
 
 def _rules(stats: dict[str, object], *, paste: bool) -> list[str]:
     lines = ["## Rules", ""]
-    lines.append("- Use the targets above as diagnostics. They are counts from the writer's own text, not a measure of writing quality.")
+    lines.append("- Use the targets below as diagnostics. They are counts from the writer's own text, not a measure of writing quality.")
     lines.append("- Review words and phrases on the absent-tell list in context, especially with a small corpus.")
     token = stats.get("placeholder")
     token = token if isinstance(token, str) and token else "WRITER"
@@ -567,9 +567,22 @@ def _weights(stats: dict[str, object]) -> list[str]:
     weights = stats.get("weights")
     lines = ["## Weights", ""]
     if isinstance(weights, dict):
-        lines.append(
-            f"- gold {weights.get('gold')}, silver {weights.get('silver')}, bronze {weights.get('bronze')}"
-        )
+        parts = [
+            f"gold {_num(weights.get('gold'))}",
+            f"silver {_num(weights.get('silver'))}",
+            f"bronze {_num(weights.get('bronze'))}",
+        ]
+        edited_weight = weights.get("edited")
+        if edited_weight is not None:
+            edited_block = stats.get("edited")
+            max_share = edited_block.get("maxShare") if isinstance(edited_block, dict) else None
+            cap = (
+                f", capped at {_pct(max_share)}"
+                if isinstance(max_share, (int, float)) and not isinstance(max_share, bool)
+                else ""
+            )
+            parts.append(f"edited {_num(edited_weight)} (paragraph length only{cap})")
+        lines.append("- " + ", ".join(parts))
     lines.append(
         f"- Gold pieces: {stats.get('goldPieces')}. "
         f"Bronze becomes format-only at {stats.get('goldVoiceMinimum')}."

@@ -11,5 +11,6 @@ Local voice project. The corpus, transcripts, and gold edits stay on this machin
 - Read `voice-guide.md` in the project (`ghostless locate`). Run `ghostless build` if it is missing.
 - Substantive rules live in `STYLE.md` (what a piece must prove) and `AUDIENCE.md` (who reads it); both are folded into `voice-guide.md` by `ghostless build`. Route a confirmed rule with `ghostless save --style/--audience`.
 - After a draft, run `ghostless judge`.
-- Leave `[WRITER: your take]` where an opinion, quote, statistic, or anecdote is needed. Do not invent those.
-- When the user says a piece is finished and both drafts exist, run `ghostless learn`, then `ghostless build`.
+- Leave a placeholder using the token named in `voice-guide.md` (default `[WRITER: your take]`) where an opinion, quote, statistic, or anecdote is needed. Do not invent those.
+- For resumable edit sessions, start with `ghostless start draft.md` and finalize with `ghostless finish` (or run `ghostless learn` when both drafts exist), then `ghostless build`.
+- Review recurring edit hypotheses with `ghostless rules` and yes/no edit judgments with `ghostless checks`; confirm only what the writer decides.

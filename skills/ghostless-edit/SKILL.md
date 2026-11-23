@@ -12,7 +12,9 @@ This is their draft. Make it sharper. Keep the voice they already have.
 
 ## Before editing
 
-If a ghostless project is available (`ghostless locate`, then `voice-guide.md`), use it so cuts match their sentence length, contractions, and ban list. If there is no project, still edit, and say that you are editing without a voice guide.
+If a ghostless project is available (`ghostless locate`, then `voice-guide.md`), use it so cuts match their sentence length, contractions, ban list, and confirmed rules under `## Voice rules` (ignore unconfirmed hypotheses; manage them with `ghostless rules`). Also read `## Style` / `## Audience` in `voice-guide.md` (from `STYLE.md` / `AUDIENCE.md`) so cuts preserve what the piece must prove and who reads it. If there is no project, still edit, and say that you are editing without a voice guide.
+
+For a resumable edit session (or editing alongside the desktop editor), run `ghostless start draft.md` to capture an immutable baseline and working copy (`sessions/<id>/after.md`), and `ghostless finish` once the writer says the edit is done.
 
 ## What to do
 
@@ -26,4 +28,4 @@ If a ghostless project is available (`ghostless locate`, then `voice-guide.md`),
 1. The cleaned draft.
 2. A short change list: what you cut or moved, and any pushback. A handful of lines, not a memo.
 
-Then offer `ghostless judge` on the cleaned file when a voice guide exists. Do not run `ghostless learn` unless they say the piece is finished. That is the capture skill.
+Then offer `ghostless judge` on the cleaned file when a voice guide exists. Do not run `ghostless learn` or `ghostless finish` unless they say the piece is finished. That is the capture skill.
