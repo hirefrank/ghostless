@@ -18,17 +18,18 @@ from pathlib import Path
 from ghostless.paths import ProjectError
 from ghostless.project import (
     fresh_directory,
+    pair_file_path,
     parse_confirmation,
     parse_origin,
     placement_for,
     provenance_json,
     read_provenance,
+    require_contained_path,
     slug_for,
+    validate_date,
 )
 from ghostless.stats import weighted_median
 from ghostless.text import measure, normalize, paragraphs, track_token, word_tokens
-
-DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 # Below this edit rate a final is mostly the model's prose. Promotion still
 # works, but the CLI says so before the writer counts it as gold.
@@ -347,8 +348,7 @@ def learn_edit(
         raise ProjectError("Before and after are the same file.")
     checked_origin = parse_origin(origin, path="--origin")
     date_text = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    if not DATE_RE.fullmatch(date_text):
-        raise ProjectError("--date must be YYYY-MM-DD.")
+    validate_date(date_text, label="--date")
     slug = slug_for(date_text, section)
     before_text = before.read_text(encoding="utf-8")
     after_text = after.read_text(encoding="utf-8")
@@ -416,7 +416,10 @@ def promote_final(root: Path, slug: str, *, gold: bool = True) -> dict[str, obje
     Only provenance changes: `before.md`, `after.md`, and the edit receipt are
     untouched, because the writer's changes are evidence either way.
     """
-    meta_path = root / "gold" / slug / "meta.json"
+    if not isinstance(slug, str) or not slug or slug in {".", ".."} or "/" in slug or "\\" in slug:
+        raise ProjectError(f"Invalid learned pair slug: {slug!r}")
+    pair_dir = require_contained_path(root / "gold", root / "gold" / slug, label="slug")
+    meta_path = pair_dir / "meta.json"
     if not meta_path.is_file():
         raise ProjectError(f"No learned pair at gold/{slug}.")
     try:
@@ -452,7 +455,10 @@ def promote_final(root: Path, slug: str, *, gold: bool = True) -> dict[str, obje
     )
     placement = placement_for(read_provenance(meta, path=str(meta_path)))
     edits = refresh_edit_summary(root)
-    summary = _receipt_summary(meta_path.parent / "before.md", meta_path.parent / "after.md")
+    summary = _receipt_summary(
+        pair_file_path(meta, meta_path, "beforeFile", "before.md", base=pair_dir),
+        pair_file_path(meta, meta_path, "afterFile", "after.md", base=pair_dir),
+    )
     return {
         "slug": slug,
         "previous": previous,
@@ -504,13 +510,12 @@ def refresh_edit_summary(root: Path) -> dict[str, object]:
     folder = root / "gold"
     if folder.is_dir():
         for meta_path in sorted(folder.glob("*/meta.json")):
+            pair_dir = require_contained_path(folder, meta_path.parent, label=str(meta_path))
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             if not isinstance(meta, dict):
                 continue
-            before_name = meta.get("beforeFile") if isinstance(meta.get("beforeFile"), str) else "before.md"
-            after_name = meta.get("afterFile") if isinstance(meta.get("afterFile"), str) else "after.md"
-            before_path = meta_path.parent / str(before_name)
-            after_path = meta_path.parent / str(after_name)
+            before_path = pair_file_path(meta, meta_path, "beforeFile", "before.md", base=pair_dir)
+            after_path = pair_file_path(meta, meta_path, "afterFile", "after.md", base=pair_dir)
             if not before_path.is_file() or not after_path.is_file():
                 continue
             summary = diff_texts(
