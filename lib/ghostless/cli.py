@@ -277,6 +277,11 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         help="Edit pairs or gold pieces to hold out (default: about a third)",
     )
+    eval_parser.add_argument(
+        "--cv",
+        action="store_true",
+        help="Use leave-one-out cross-validation across all edit pairs (automatic for 3–30 pairs when --holdout is omitted)",
+    )
     eval_parser.add_argument("--seed", type=int, default=0, help="Split seed (default: 0)")
     eval_parser.add_argument("--json", action="store_true")
     _add_project(eval_parser)
@@ -730,7 +735,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
 def _cmd_eval(args: argparse.Namespace) -> int:
     root = _project(args.project)
-    report = evaluate(root, holdout=args.holdout, seed=args.seed)
+    report = evaluate(root, holdout=args.holdout, seed=args.seed, cv=True if args.cv else None)
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False))
     else:

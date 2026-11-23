@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLE = ROOT / "fixtures" / "sample-voice"
@@ -21,9 +22,11 @@ sys.path.insert(0, str(ROOT / "lib"))
 from ghostless.cli import build_voice, main  # noqa: E402
 from ghostless.eval import (  # noqa: E402
     ACCEPT_EDIT_RATE,
+    _holdout_block,
     evaluate,
     format_eval,
     load_edit_pairs,
+    load_holdouts,
     split_items,
 )
 from ghostless.judge import (  # noqa: E402
@@ -34,8 +37,9 @@ from ghostless.judge import (  # noqa: E402
     judge_text,
 )
 from ghostless.learn import diff_texts  # noqa: E402
+from ghostless.paths import ProjectError  # noqa: E402
 from ghostless.project import discover, init_project, load_manifest  # noqa: E402
-from ghostless.stats import Piece, summarize  # noqa: E402
+from ghostless.stats import Piece, compile_stats, summarize  # noqa: E402
 from ghostless.text import measure, normalize, strip_non_prose, words  # noqa: E402
 
 WRITER = (
@@ -429,6 +433,323 @@ class EvalTests(unittest.TestCase):
             payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["mode"], "edits")
         self.assertEqual(payload["correlation"]["n"], 3)
+
+    def test_holdout_block_pass_rate_uses_judged_denominator(self) -> None:
+        mixed = _holdout_block(
+            [
+                {"score": 90, "ok": True},
+                {"score": None, "ok": False, "error": "Draft is empty."},
+            ]
+        )
+        self.assertEqual(mixed["pieces"], 2)
+        self.assertEqual(mixed["judged"], 1)
+        self.assertEqual(mixed["meanScore"], 90.0)
+        self.assertEqual(mixed["passRate"], 1.0)
+
+        with_failure = _holdout_block(
+            [
+                {"score": 90, "ok": True},
+                {"score": 40, "ok": False},
+                {"score": None, "ok": False, "error": "No usable voice data yet."},
+                {"score": True, "ok": True},
+            ]
+        )
+        self.assertEqual(with_failure["pieces"], 4)
+        self.assertEqual(with_failure["judged"], 2)
+        self.assertEqual(with_failure["passRate"], 0.5)
+
+        unscored_only = _holdout_block(
+            [
+                {"score": None, "ok": False, "error": "Draft is empty."},
+                {"score": None, "ok": True},
+            ]
+        )
+        self.assertEqual(unscored_only["pieces"], 2)
+        self.assertEqual(unscored_only["judged"], 0)
+        self.assertIsNone(unscored_only["meanScore"])
+        self.assertIsNone(unscored_only["passRate"])
+
+        empty = _holdout_block([])
+        self.assertEqual(empty["pieces"], 0)
+        self.assertEqual(empty["judged"], 0)
+        self.assertIsNone(empty["passRate"])
+
+    def test_load_holdouts_reads_prose_and_skips_ignored_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "voice"
+            init_project(root, git=False)
+            holdouts = root / "holdouts"
+            (holdouts / "README.md").write_text("Ignored readme.\n", encoding="utf-8")
+            (holdouts / ".hidden.md").write_text("Ignored dotfile.\n", encoding="utf-8")
+            (holdouts / ".hidden-dir").mkdir()
+            (holdouts / ".hidden-dir" / "secret.md").write_text("Ignored.\n", encoding="utf-8")
+            (holdouts / "image.png").write_text("not prose\n", encoding="utf-8")
+            (holdouts / "empty.md").write_text("   \n", encoding="utf-8")
+            (holdouts / "only-frontmatter.md").write_text("---\nsection: notes\n---\n\n", encoding="utf-8")
+            (holdouts / "plain.txt").write_text("Top level holdout prose.\n", encoding="utf-8")
+            (holdouts / "notes").mkdir()
+            (holdouts / "notes" / "first.md").write_text("Subfolder holdout.\n", encoding="utf-8")
+            (holdouts / "notes" / "override.markdown").write_text(
+                "---\nsection: essays\n---\nFrontmatter section wins.\n",
+                encoding="utf-8",
+            )
+            manifest = load_manifest(root)
+            pieces = load_holdouts(root, manifest)
+
+        self.assertEqual(
+            [piece.path for piece in pieces],
+            [
+                "holdouts/notes/first.md",
+                "holdouts/notes/override.markdown",
+                "holdouts/plain.txt",
+            ],
+        )
+        self.assertEqual([piece.section for piece in pieces], ["notes", "essays", None])
+        for piece in pieces:
+            self.assertEqual(piece.tier, "gold")
+            self.assertEqual(piece.kind, "prose")
+            self.assertEqual(piece.weight, float(manifest["weights"]["gold"]))
+            self.assertEqual(piece.origin, "unaided")
+            self.assertEqual(piece.confirmation, "origin")
+
+    def test_holdouts_scored_standalone_without_leaking_into_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "voice"
+            init_project(root, git=False)
+            (root / "corpus" / "gold" / "only.md").write_text(WRITER + "\n", encoding="utf-8")
+            (root / "holdouts" / "a-writer.md").write_text(WRITER + "\n", encoding="utf-8")
+            (root / "holdouts" / "b-tell.md").write_text(
+                "I keep the delve short. I don't polish the first line.\n",
+                encoding="utf-8",
+            )
+            build_voice(root)
+            stats = json.loads((root / "voice-stats.json").read_text(encoding="utf-8"))
+            report = evaluate(root)
+
+        self.assertEqual(stats["counts"]["total"], 1)
+        self.assertEqual([entry["path"] for entry in stats["files"]], ["corpus/gold/only.md"])
+        # If holdouts/b-tell.md had leaked into build, "delve" would drop off banList.
+        self.assertIn("delve", stats["weighted"]["banList"])
+
+        self.assertTrue(report["ok"], report)
+        self.assertEqual(report["mode"], "holdouts")
+        self.assertFalse(report["cv"])
+        self.assertEqual(report["totalCount"], 2)
+        self.assertEqual(report["holdoutCount"], 2)
+        self.assertEqual(report["train"]["pieces"], 1)
+        self.assertEqual(report["holdout"]["judged"], 2)
+        self.assertEqual(report["holdouts"]["pieces"], 2)
+        self.assertEqual(report["correlation"], {"pearson": None, "spearman": None, "n": 0})
+        self.assertIsNone(report["acceptance"])
+        self.assertEqual(report["confirmedChecks"]["total"], 0)
+        rendered = format_eval(report)
+        self.assertIn("Holdouts evaluation: 2 piece(s) from holdouts/", rendered)
+        self.assertIn("holdouts/a-writer.md", rendered)
+        self.assertIn("holdouts/b-tell.md", rendered)
+
+    def test_holdouts_evaluated_alongside_edits_and_prose_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "voice"
+            init_project(root, git=False)
+            _make_corpus(root)
+            (root / "holdouts" / "kept.md").write_text(WRITER + "\n", encoding="utf-8")
+
+            prose_report = evaluate(root, holdout=1, seed=0)
+            self.assertTrue(prose_report["ok"], prose_report)
+            self.assertEqual(prose_report["mode"], "prose")
+            self.assertIsInstance(prose_report["holdouts"], dict)
+            self.assertEqual(prose_report["holdouts"]["pieces"], 1)
+            self.assertEqual(prose_report["holdouts"]["summary"]["judged"], 1)
+            self.assertIn("holdouts/: 1 judged", format_eval(prose_report))
+
+            _make_pair(root, "2026-01-01", WRITER)
+            _make_pair(root, "2026-01-02", WRITER)
+            _make_pair(root, "2026-01-03", AI_DRAFT)
+            _make_pair(root, "2026-01-04", AI_DRAFT)
+
+            edits_report = evaluate(root, holdout=3, seed=0)
+            self.assertTrue(edits_report["ok"], edits_report)
+            self.assertEqual(edits_report["mode"], "edits")
+            self.assertFalse(edits_report["cv"])
+            self.assertEqual(edits_report["holdouts"]["pieces"], 1)
+            self.assertEqual(edits_report["holdouts"]["summary"]["passRate"], 1.0)
+            rendered = format_eval(edits_report)
+            self.assertIn("holdouts/: 1 judged, mean score", rendered)
+            self.assertIn("pass rate 100%", rendered)
+
+    def test_loocv_automatic_for_small_edit_datasets_and_zero_leakage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "voice"
+            init_project(root, git=False)
+            _make_corpus(root)
+            _make_pair(root, "2026-01-01", WRITER)
+            _make_pair(root, "2026-01-02", WRITER)
+            _make_pair(root, "2026-01-03", AI_DRAFT)
+
+            # Confirm a check so we also verify #37 confirmedChecks stay populated under CV.
+            meta_path = root / "gold" / "2026-01-03-notes" / "meta.json"
+            (root / "gold" / "2026-01-03-notes" / "before.md").write_text(
+                "Furthermore, we must delve into a seamless tapestry.\n",
+                encoding="utf-8",
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                main(
+                    [
+                        "checks",
+                        "add",
+                        "2026-01-03-notes",
+                        "--text",
+                        'Do not use "seamless tapestry".',
+                        "--project",
+                        str(root),
+                    ]
+                )
+                main(
+                    [
+                        "checks",
+                        "confirm",
+                        'Do not use "seamless tapestry".',
+                        "--project",
+                        str(root),
+                    ]
+                )
+
+            pairs, _ = load_edit_pairs(root)
+            all_pieces = discover(root, load_manifest(root))
+            seen_train_paths: list[set[str]] = []
+
+            def spy_compile(
+                train_pieces: list[Piece],
+                *,
+                weights: dict[str, float],
+                gold_voice_minimum: int,
+                edits: dict[str, object] | None = None,
+            ) -> dict[str, object]:
+                seen_train_paths.append({piece.path for piece in train_pieces})
+                return compile_stats(
+                    train_pieces,
+                    weights=weights,
+                    gold_voice_minimum=gold_voice_minimum,
+                    edits=edits,
+                )
+
+            with mock.patch("ghostless.eval.compile_stats", side_effect=spy_compile):
+                report = evaluate(root)
+
+        self.assertTrue(report["ok"], report)
+        self.assertEqual(report["mode"], "edits")
+        self.assertTrue(report["cv"])
+        self.assertEqual(report["totalCount"], 3)
+        self.assertEqual(report["holdoutCount"], 3)
+        self.assertEqual(report["train"]["pieces"], len(all_pieces) - 1)
+        self.assertEqual(report["correlation"]["n"], 3)
+        self.assertEqual(report["direction"], "negative")
+        self.assertLess(report["correlation"]["pearson"], 0)
+        self.assertLess(report["correlation"]["spearman"], 0)
+        self.assertGreater(report["acceptance"]["scoreGap"], 0)
+        self.assertEqual(len(seen_train_paths), 3)
+        for pair, fold_paths in zip(pairs, seen_train_paths):
+            self.assertNotIn(pair.after_path, fold_paths)
+            other_afters = {other.after_path for other in pairs if other.slug != pair.slug}
+            self.assertTrue(other_afters.issubset(fold_paths))
+
+        # Confirmed checks were graded across all 3 pairs' befores plus the check's after.
+        self.assertEqual(report["confirmedChecks"]["total"], 4)
+        self.assertEqual(report["confirmedChecks"]["passes"], 3)
+        self.assertIn("Leave-one-out evaluation: 3 edit pairs (out-of-sample)", format_eval(report))
+
+    def test_loocv_excludes_pair_after_tell_from_own_fold_and_supports_explicit_cv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "voice"
+            init_project(root, git=False)
+            # Three writer-first pairs, no extra corpus/. Pair 1 uses "delve" in both
+            # before and after; pairs 2 and 3 do not. If fold 1 leaked pair 1's after.md
+            # into targets, "delve" would leave the banList and fold 1 would not penalize it.
+            pair1_before = (
+                "I keep the delve short. I don't polish the first line.\n\n"
+                "And I stop when the coffee is cold. So the page stays messy."
+            )
+            pair1_after = (
+                "I keep the delve short. I don't polish the first line.\n\n"
+                "And I stop when the coffee is cold. So the page stays tidy."
+            )
+            for slug, before, after in (
+                ("2026-01-01-notes", pair1_before, pair1_after),
+                ("2026-01-02-notes", WRITER, WRITER),
+            ):
+                folder = root / "gold" / slug
+                folder.mkdir(parents=True)
+                (folder / "before.md").write_text(before + "\n", encoding="utf-8")
+                (folder / "after.md").write_text(after + "\n", encoding="utf-8")
+                (folder / "meta.json").write_text(
+                    json.dumps(
+                        {
+                            "date": slug[:10],
+                            "section": "notes",
+                            "origin": "writer-first",
+                            "kind": "prose",
+                            "beforeFile": "before.md",
+                            "afterFile": "after.md",
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+
+            # With only 2 pairs, auto-CV is off unless cv=True is requested.
+            two_pair_default = evaluate(root)
+            self.assertFalse(two_pair_default["cv"])
+            self.assertEqual(two_pair_default["holdoutCount"], 1)
+
+            two_pair_cv = evaluate(root, cv=True)
+            self.assertTrue(two_pair_cv["ok"], two_pair_cv)
+            self.assertTrue(two_pair_cv["cv"])
+            self.assertEqual(two_pair_cv["holdoutCount"], 2)
+            by_slug = {item["slug"]: item for item in two_pair_cv["items"]}
+            self.assertLessEqual(by_slug["2026-01-01-notes"]["score"], 90)
+            self.assertEqual(by_slug["2026-01-02-notes"]["score"], 100)
+
+    def test_cli_eval_cv_and_rejects_cv_with_holdout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "voice"
+            init_project(root, git=False)
+            _make_corpus(root)
+            _make_pair(root, "2026-01-01", WRITER)
+            _make_pair(root, "2026-01-02", AI_DRAFT)
+
+            with self.assertRaisesRegex(ProjectError, "either --cv or --holdout"):
+                evaluate(root, cv=True, holdout=1)
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                code = main(["eval", "--project", str(root), "--cv", "--holdout", "1"])
+            self.assertEqual(code, 2)
+            self.assertIn("either --cv or --holdout", stderr.getvalue())
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = main(["eval", "--project", str(root), "--cv"])
+            self.assertEqual(code, 0)
+            self.assertIn("Leave-one-out evaluation: 2 edit pairs (out-of-sample)", stdout.getvalue())
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = main(["eval", "--project", str(root), "--cv", "--json"])
+            self.assertEqual(code, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertTrue(payload["cv"])
+            self.assertEqual(payload["holdoutCount"], 2)
+
+    def test_loocv_reports_failure_when_all_folds_have_no_training_corpus(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "voice"
+            init_project(root, git=False)
+            _make_pair(root, "2026-01-01", WRITER)
+            report = evaluate(root, cv=True)
+        self.assertFalse(report["ok"])
+        self.assertTrue(report["cv"])
+        self.assertIn("no corpus to build targets from", str(report["error"]))
+
 
 
 if __name__ == "__main__":
