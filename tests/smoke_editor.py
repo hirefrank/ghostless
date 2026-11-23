@@ -27,6 +27,19 @@ def _show(text: str) -> str:
     return "".join(f"\\u{ord(ch):04x}" if ord(ch) > 126 else ch for ch in text)
 
 
+def _working_box_height(tree_path: Path) -> float:
+    data = json.loads(tree_path.read_text(encoding="utf-8"))
+    for element in data.get("elements", []):
+        if not isinstance(element, dict):
+            continue
+        path = str(element.get("path", ""))
+        if element.get("role") == "textbox" and "working-body" in path:
+            rect = element.get("rect")
+            if isinstance(rect, list) and len(rect) == 4:
+                return float(rect[3])
+    raise RuntimeError(f"Working draft textbox not found in {tree_path}")
+
+
 def _cli_cmd(executable: str, *args: str) -> list[str]:
     if os.name == "nt" and executable.lower().endswith((".cmd", ".bat")):
         return ["cmd", "/c", executable, *args]
@@ -173,6 +186,39 @@ def main() -> None:
              "--snap", str(recovered), "--size", "1120x800"], cwd=base, env=env)
         if not recovered.is_file():
             raise RuntimeError("Cannot reopen an interrupted session after moving the project")
+
+        # Closing before the 800 ms autosave timer expires still flushes dirty edits.
+        unsaved_draft = base / "unsaved-close.md"
+        unsaved_draft.write_text("Initial unsaved close draft.\n", encoding="utf-8")
+        run([str(EDITOR), "--project", str(project), "--draft", str(unsaved_draft),
+             "--script", str(ROOT / "editor" / "tests" / "close-without-save.json"),
+             "--snap", str(base / "unsaved-close.png"), "--at", "mark:end", "--size", "1120x800"],
+            cwd=base, env=env)
+        unsaved_sessions = [
+            p for p in (project / "sessions").glob("*")
+            if (p / "session.json").is_file() and p not in {session, recovery}
+        ]
+        if len(unsaved_sessions) != 1:
+            raise RuntimeError("Cannot find the unsaved-close session")
+        unsaved = unsaved_sessions[0]
+        if norm((unsaved / "after.md").read_text(encoding="utf-8")) != "Unsaved close text.":
+            raise RuntimeError("Unsaved working text was not flushed on exit")
+        if norm((unsaved / "notes.md").read_text(encoding="utf-8")) != "Flushed on exit.":
+            raise RuntimeError("Unsaved notes were not flushed on exit")
+        if (unsaved / "receipt.json").exists():
+            raise RuntimeError("Exit flush must not finish a session")
+
+        # Working-copy TextArea grows dynamically with window height.
+        tall_tree = base / "tall-tree.json"
+        run([str(EDITOR), "--project", str(moved), "--session", recovery.name,
+             "--snap", str(base / "tall.png"), "--tree", str(tall_tree), "--size", "1120x1040"],
+            cwd=base, env=env)
+        normal_height = _working_box_height(tree)
+        tall_height = _working_box_height(tall_tree)
+        if tall_height < normal_height + 200.0:
+            raise RuntimeError(
+                f"Expected working draft height to grow with window size: 800 -> {normal_height}, 1040 -> {tall_height}"
+            )
     print(f"Rune editor + installed CLI smoke passed on {sys.platform}")
 
 
