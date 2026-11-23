@@ -13,9 +13,18 @@ Origin = Literal["ai-first", "writer-first"]
 ProvenanceOrigin = Literal["unaided", "writer-first", "ai-first"]
 Confirmation = Literal["none", "origin", "promoted"]
 
-RuleKind = Literal["cut", "add"]
+RuleKind = Literal["cut", "add", "struct"]
 RuleStatus = Literal["confirmed", "rejected", "retired", "hypothesis", "sparse"]
 ConfidenceLevel = Literal["low", "medium", "high"]
+
+STRUCTURAL_RULE_LABELS: dict[str, str] = {
+    "cut-em-dash": "Cut em dashes",
+    "add-em-dash": "Add em dashes",
+    "cut-semicolon": "Cut semicolons",
+    "cut-exclamation": "Cut exclamation marks",
+    "split-paragraphs": "Split paragraphs",
+    "merge-paragraphs": "Merge paragraphs",
+}
 
 BOTH_DIRECTIONS = (
     "medianSentenceLength",

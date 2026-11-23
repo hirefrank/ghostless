@@ -140,6 +140,114 @@ class RuleMiningTests(unittest.TestCase):
         self.assertNotIn("delve", example["after_snippet"])
         self.assertIn("receipt", example)
 
+    def test_structural_candidates_require_threshold_and_track_opposite_counterexamples(self) -> None:
+        # Below threshold (2 pieces) stays sparse and hidden.
+        self.learn(
+            "We start here — and stop early.",
+            "We start here, and stop early.",
+            section="notes",
+        )
+        self.learn(
+            "Second line — keeps moving.",
+            "Second line, keeps moving.",
+            section="essays",
+        )
+        self.assertNotIn("struct:cut-em-dash", self.candidates())
+
+        # Third distinct piece surfaces struct:cut-em-dash, plus opposite-direction counterexample only.
+        self.learn(
+            "Third point — ends clearly.",
+            "Third point. Ends clearly.",
+            section="notes",
+        )
+        opposite_slug = self.learn(
+            "Another draft keeps it plain.",
+            "Another draft — adds a pause.",
+            section="essays",
+        )
+        neutral_slug = self.learn(
+            "Plain words stay plain.",
+            "Simple words stay simple.",
+            section="notes",
+        )
+
+        candidate = self.candidates()["struct:cut-em-dash"]
+        self.assertEqual(candidate["kind"], "struct")
+        self.assertEqual(candidate["word"], "cut-em-dash")
+        self.assertEqual(candidate["support"], 3)
+        self.assertEqual(candidate["sections"], ["essays", "notes"])
+        self.assertEqual([item["slug"] for item in candidate["counterexamples"]], [opposite_slug])
+        self.assertNotIn(neutral_slug, [item["slug"] for item in candidate["counterexamples"]])
+        self.assertIn("—", candidate["examples"][0]["before_snippet"])
+        self.assertIn("—", candidate["counterexamples"][0]["snippet"])
+
+    def test_all_structural_candidate_kinds_are_mined(self) -> None:
+        cases = (
+            (
+                "struct:add-em-dash",
+                "I keep the thought plain.",
+                "I keep the thought — quite plain.",
+            ),
+            (
+                "struct:cut-semicolon",
+                "We test first; we ship later.",
+                "We test first, and we ship later.",
+            ),
+            (
+                "struct:cut-exclamation",
+                "Watch this line closely!",
+                "Watch this line closely.",
+            ),
+            (
+                "struct:split-paragraphs",
+                "First sentence stays brief. Second sentence follows quickly.",
+                "First sentence stays brief.\n\nSecond sentence follows quickly.",
+            ),
+            (
+                "struct:merge-paragraphs",
+                "Lead point opens strong.\n\nFollow point lands cleanly.",
+                "Lead point opens strong. Follow point lands cleanly.",
+            ),
+        )
+        for rule_id, before_tpl, after_tpl in cases:
+            with self.subTest(rule_id=rule_id):
+                with tempfile.TemporaryDirectory() as tmp:
+                    base = Path(tmp)
+                    project = init_project(base / "voice", git=False)
+                    src = base / "src"
+                    src.mkdir()
+                    for idx in range(3):
+                        before_path = src / f"b-{idx}.md"
+                        after_path = src / f"a-{idx}.md"
+                        before_path.write_text(f"{before_tpl} Case {idx}.\n", encoding="utf-8")
+                        after_path.write_text(f"{after_tpl} Case {idx}.\n", encoding="utf-8")
+                        learn_edit(
+                            project,
+                            before=before_path,
+                            after=after_path,
+                            section="notes",
+                            origin="writer-first",
+                            date="2026-01-02",
+                        )
+                    edits = refresh_edit_summary(project)
+                    found = {str(item["id"]): item for item in mine_candidates(project, edits)}
+                    self.assertIn(rule_id, found)
+                    self.assertEqual(found[rule_id]["kind"], "struct")
+                    self.assertEqual(found[rule_id]["support"], 3)
+
+    def test_split_paragraphs_counterexamples_track_merges(self) -> None:
+        for idx in range(3):
+            self.learn(
+                f"First part {idx}. Second part {idx}.",
+                f"First part {idx}.\n\nSecond part {idx}.",
+            )
+        merged_slug = self.learn(
+            "One block.\n\nTwo block.",
+            "One block. Two block.",
+        )
+        candidate = self.candidates()["struct:split-paragraphs"]
+        self.assertEqual([item["slug"] for item in candidate["counterexamples"]], [merged_slug])
+
 
 class RuleDecisionTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -350,6 +458,97 @@ class RuleDecisionTests(unittest.TestCase):
         self.assertIn(receipt, candidate["receipts"])
         result = confirm_rule(self.project, "cut:delve")
         self.assertIn(receipt, result["receipts"])
+
+    def test_structural_rules_governance_rendering_and_receipt_traceability(self) -> None:
+        for index in range(2):
+            self.learn(
+                f"Point {index} — too wordy. End.",
+                f"Point {index}, concise. End.",
+                section="notes",
+            )
+        draft = self.base / "session-dash.md"
+        draft.write_text("Session piece — trims dash. End.\n", encoding="utf-8")
+        session = start_session(
+            self.project,
+            draft,
+            section="notes",
+            origin="writer-first",
+            sources=[],
+        )
+        snapshot_session(
+            self.project,
+            session=str(session["id"]),
+            after="Session piece, trims dash. End.\n",
+            notes="Cut em dash.",
+        )
+        finish_session(self.project, None, session=str(session["id"]))
+
+        # Counterexample moving the opposite way.
+        self.learn(
+            "Another short line.",
+            "Another — short line.",
+            section="notes",
+        )
+
+        build_voice(self.project)
+        guide_hyp = (self.project / "voice-guide.md").read_text(encoding="utf-8")
+        hyp_section = guide_hyp.split("### Hypotheses", 1)[1].split("## Targets", 1)[0]
+        self.assertIn("Cut em dashes (`struct:cut-em-dash`", hyp_section)
+        self.assertIn("piece(s) moved the other way", hyp_section)
+
+        out_list = io.StringIO()
+        with contextlib.redirect_stdout(out_list):
+            self.assertEqual(main(["rules", "--project", str(self.project)]), 0)
+        self.assertIn("struct:cut-em-dash  Cut em dashes", out_list.getvalue())
+
+        out_confirm = io.StringIO()
+        with contextlib.redirect_stdout(out_confirm):
+            self.assertEqual(
+                main(
+                    [
+                        "rules",
+                        "confirm",
+                        "struct:cut-em-dash",
+                        "--section",
+                        "notes",
+                        "--project",
+                        str(self.project),
+                    ]
+                ),
+                0,
+            )
+        self.assertIn("struct:cut-em-dash: confirmed", out_confirm.getvalue())
+        receipt = f"sessions/{session['id']}/receipt.json"
+        self.assertIn(receipt, out_confirm.getvalue())
+
+        build_voice(self.project)
+        guide_conf = (self.project / "voice-guide.md").read_text(encoding="utf-8")
+        conf_section = guide_conf.split("### Confirmed rules", 1)[1].split("### Hypotheses", 1)[0]
+        self.assertIn("Cut em dashes (`struct:cut-em-dash`", conf_section)
+        self.assertIn("scope: notes", conf_section)
+        self.assertIn(receipt, conf_section)
+
+        retire_rule(self.project, "struct:cut-em-dash")
+        build_voice(self.project)
+        self.assertEqual(active_rules(self.project), [])
+        self.assertIn(
+            "struct:cut-em-dash (retired)",
+            (self.project / "voice-guide.md").read_text(encoding="utf-8"),
+        )
+
+        # Separate structural rule rejected stays suppressed across rebuilds.
+        for index in range(3):
+            self.learn(
+                f"One para {index}. Two sentence {index}.",
+                f"One para {index}.\n\nTwo sentence {index}.",
+            )
+        reject_rule(self.project, "struct:split-paragraphs")
+        rules_text_before = (self.project / "rules.json").read_text(encoding="utf-8")
+        build_voice(self.project)
+        self.assertEqual((self.project / "rules.json").read_text(encoding="utf-8"), rules_text_before)
+        summary = rules_summary(self.project)
+        self.assertEqual([item["id"] for item in summary["rejected"]], ["struct:split-paragraphs"])
+        self.assertEqual(summary["hypotheses"], [])
 
 
 class RuleFileTests(unittest.TestCase):

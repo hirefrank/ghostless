@@ -1,15 +1,12 @@
 """Turn recurring edit patterns into writer-confirmed voice rules.
 
-A word cut (or added) in one edit is a data point, not a rule. `mine_candidates`
-only surfaces a word after it recurs across `rules.minimumSupport` distinct
+A word or structural edit in one piece is a data point, not a rule.
+`mine_candidates` only surfaces a pattern (`cut:<word>`, `add:<word>`, or
+`struct:<pattern>`) after it recurs across `rules.minimumSupport` distinct
 pieces (default 3). Even then it is a *hypothesis* until the writer confirms
 it. `rules.json` in the voice-data repository is the single source of truth for
 those decisions; `build` reads it but never writes it, so a rejected rule
 cannot come back on the next rebuild.
-
-Word-level cut/add patterns are the v0.1 candidate set. Structural patterns
-(repeated paragraph moves, punctuation changes) are a natural extension:
-`mine_candidates` is the only place that decides what counts as a pattern.
 """
 
 from __future__ import annotations
@@ -33,13 +30,28 @@ from ghostless.schema import (
     RuleSummary,
     SuppressedRule,
 )
-from ghostless.text import split_sentences, word_tokens
+from ghostless.text import normalize, split_sentences, word_tokens
 
 DEFAULT_MINIMUM_SUPPORT = 3
 EXAMPLE_LIMIT = 3
 SNIPPET_LIMIT = 180
 
 _WORD_EDGE = r"(?<!\w){}(?!\w)"
+
+_MARK_FEATURES: dict[str, str] = {
+    "—": "em-dash",
+    ";": "semicolon",
+    "!": "exclamation",
+}
+
+_STRUCTURAL_RULES: tuple[tuple[str, str, int, str | None], ...] = (
+    ("cut-em-dash", "em-dash", -1, "—"),
+    ("add-em-dash", "em-dash", 1, "—"),
+    ("cut-semicolon", "semicolon", -1, ";"),
+    ("cut-exclamation", "exclamation", -1, "!"),
+    ("split-paragraphs", "paragraphs", 1, None),
+    ("merge-paragraphs", "paragraphs", -1, None),
+)
 
 
 def minimum_support(root: Path) -> int:
@@ -128,6 +140,49 @@ def mine_candidates(root: Path, edits_summary: Mapping[str, object]) -> list[Rul
                     "counterexamples": counterexamples,
                 }
             )
+
+    deltas_by_slug = {str(learn.get("slug")): _structural_deltas(learn) for learn in learns}
+    for name, feature, sign, mark in _STRUCTURAL_RULES:
+        matched_learns = [
+            learn
+            for learn in learns
+            if deltas_by_slug.get(str(learn.get("slug")), {}).get(feature, 0) * sign > 0
+        ]
+        distinct = _distinct_by_slug(matched_learns)
+        if len(distinct) < threshold:
+            continue
+        supporting = {str(item.get("slug")) for item in distinct}
+        opposite_learns = _distinct_by_slug(
+            [
+                learn
+                for learn in learns
+                if str(learn.get("slug")) not in supporting
+                and deltas_by_slug.get(str(learn.get("slug")), {}).get(feature, 0) * sign < 0
+            ]
+        )
+        examples = [
+            _structural_example(sign, mark, item, receipts, texts)
+            for item in distinct[:EXAMPLE_LIMIT]
+        ]
+        counterexamples = [
+            _structural_counterexample(sign, mark, item, receipts, texts)
+            for item in opposite_learns[:EXAMPLE_LIMIT]
+        ]
+        candidates.append(
+            {
+                "id": f"struct:{name}",
+                "kind": "struct",
+                "word": name,
+                "support": len(distinct),
+                "minimumSupport": threshold,
+                "pieces": sorted(supporting),
+                "receipts": [_receipt_for(str(item.get("slug")), receipts) for item in distinct],
+                "sections": _distinct_values(distinct, "section"),
+                "origins": _distinct_values(distinct, "origin"),
+                "examples": examples,
+                "counterexamples": counterexamples,
+            }
+        )
     candidates.sort(key=lambda item: (-item["support"], item["id"]))
     return candidates
 
@@ -513,6 +568,86 @@ def _counterexample(
         "slug": slug,
         "receipt": _receipt_for(slug, receipts),
         "snippet": text_preview(source, SNIPPET_LIMIT),
+    }
+
+
+def _structural_deltas(learn: Mapping[str, object]) -> dict[str, int]:
+    deltas: dict[str, int] = {}
+    changes = learn.get("structuralChanges")
+    if not isinstance(changes, list):
+        return deltas
+    for item in changes:
+        if not isinstance(item, dict):
+            continue
+        raw_delta = item.get("delta")
+        if isinstance(raw_delta, bool) or not isinstance(raw_delta, int):
+            continue
+        kind = item.get("kind")
+        if kind == "punctuation":
+            mark = item.get("mark")
+            if isinstance(mark, str) and mark in _MARK_FEATURES:
+                feature = _MARK_FEATURES[mark]
+                deltas[feature] = deltas.get(feature, 0) + raw_delta
+        elif kind == "paragraphs":
+            deltas["paragraphs"] = deltas.get("paragraphs", 0) + raw_delta
+    return deltas
+
+
+def _structural_example(
+    sign: int,
+    mark: str | None,
+    learn: dict[str, object],
+    receipts: dict[str, str],
+    texts: dict[str, tuple[str, str]],
+) -> RuleExample:
+    slug = str(learn.get("slug"))
+    before, after = texts.get(slug, ("", ""))
+    if mark is not None:
+        before_sentences = split_sentences(before)
+        after_sentences = split_sentences(after)
+        source, target = (before_sentences, after_sentences) if sign < 0 else (after_sentences, before_sentences)
+        matched = next((sentence for sentence in source if mark in normalize(sentence)), None)
+        counterpart = _closest_sentence(matched, target) if matched is not None else None
+        if matched is not None and counterpart is not None:
+            if sign < 0:
+                before_snippet = text_preview(matched, SNIPPET_LIMIT)
+                after_snippet = text_preview(counterpart, SNIPPET_LIMIT)
+            else:
+                before_snippet = text_preview(counterpart, SNIPPET_LIMIT)
+                after_snippet = text_preview(matched, SNIPPET_LIMIT)
+        else:
+            before_snippet = text_preview(before, SNIPPET_LIMIT)
+            after_snippet = text_preview(after, SNIPPET_LIMIT)
+    else:
+        before_snippet = text_preview(before, SNIPPET_LIMIT)
+        after_snippet = text_preview(after, SNIPPET_LIMIT)
+    return {
+        "slug": slug,
+        "receipt": _receipt_for(slug, receipts),
+        "before_snippet": before_snippet,
+        "after_snippet": after_snippet,
+    }
+
+
+def _structural_counterexample(
+    sign: int,
+    mark: str | None,
+    learn: dict[str, object],
+    receipts: dict[str, str],
+    texts: dict[str, tuple[str, str]],
+) -> RuleCounterexample:
+    slug = str(learn.get("slug"))
+    before, after = texts.get(slug, ("", ""))
+    if mark is not None:
+        source = after if sign < 0 else before
+        matched = next((sentence for sentence in split_sentences(source) if mark in normalize(sentence)), None)
+        snippet_text = matched if matched is not None else source
+    else:
+        snippet_text = after
+    return {
+        "slug": slug,
+        "receipt": _receipt_for(slug, receipts),
+        "snippet": text_preview(snippet_text, SNIPPET_LIMIT),
     }
 
 

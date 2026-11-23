@@ -38,7 +38,7 @@ from ghostless.project import (
     save_note,
 )
 from ghostless.rules import confirm_rule, reject_rule, retire_rule, rules_summary
-from ghostless.schema import CompiledStats
+from ghostless.schema import STRUCTURAL_RULE_LABELS, CompiledStats
 from ghostless.sessions import finish_session, list_sessions, snapshot_session, start_session
 from ghostless.updatecheck import run_once as check_for_update
 
@@ -241,7 +241,11 @@ def main(argv: list[str] | None = None) -> int:
         choices=("list", "confirm", "reject", "retire"),
         help="list candidates (default), or decide one",
     )
-    rules_parser.add_argument("rule_id", nargs="?", help="Rule id, e.g. cut:delve or add:contraction")
+    rules_parser.add_argument(
+        "rule_id",
+        nargs="?",
+        help="Rule id, e.g. cut:delve, add:honestly, or struct:cut-em-dash",
+    )
     rules_parser.add_argument("--section", help="Limit a confirmed rule to this section")
     rules_parser.add_argument("--json", action="store_true")
     _add_project(rules_parser)
@@ -969,8 +973,7 @@ def _format_rules(summary: Mapping[str, object]) -> str:
 
 def _rule_heading(item: dict[str, object], *, confirmed: bool) -> str:
     kind = str(item.get("kind") or "cut")
-    verb = "cut" if kind == "cut" else "add"
-    word = item.get("word") or "?"
+    word = str(item.get("word") or "?")
     detail: list[str] = []
     support = item.get("support")
     if isinstance(support, int) and not isinstance(support, bool):
@@ -985,6 +988,11 @@ def _rule_heading(item: dict[str, object], *, confirmed: bool) -> str:
         if isinstance(at, str) and at:
             detail.append(f"confirmed {at[:10]}")
     suffix = f"  ({'; '.join(detail)})" if detail else ""
+    if kind == "struct":
+        rule_id = str(item.get("id") or f"struct:{word}")
+        label = STRUCTURAL_RULE_LABELS.get(word, word)
+        return f"  {rule_id}  {label}{suffix}"
+    verb = "cut" if kind == "cut" else "add"
     return f"  {verb} {word}{suffix}"
 
 

@@ -263,6 +263,20 @@ class ConfirmedRulesJudgeTests(unittest.TestCase):
         )
         self.assertEqual(no_targets["confirmedRules"], [])
 
+    def test_confirmed_structural_rule_does_not_match_literal_rule_name(self) -> None:
+        for index in range(3):
+            self._learn(
+                f"I keep note {index} — plain here.",
+                f"I keep note {index}, plain here.",
+            )
+        confirm_rule(self.project, "struct:cut-em-dash")
+        stats = build_voice(self.project)
+        self.assertEqual([item["id"] for item in stats["rules"]["confirmed"]], ["struct:cut-em-dash"])
+        draft = self._closer_text() + "\n\nI write about cut-em-dash cleanly."
+        report = judge_text(draft, stats)
+        self.assertEqual(report["confirmedRules"], [])
+        self.assertNotIn("Confirmed rules", format_report(report))
+
 
 if __name__ == "__main__":
     unittest.main()

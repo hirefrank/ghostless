@@ -276,7 +276,7 @@ The pair itself is kept either way. Promotion changes provenance, not evidence: 
 
 ### Voice rules from edits
 
-Edit history can suggest guidance, but one changed word is not a rule. `build` mines recurring cuts and additions (`cut:delve`, `add:honestly`) and treats them as hypotheses until you decide. A word becomes a candidate only after it appears in three distinct finished pieces (`"rules": {"minimumSupport": 3}` in `manifest.json` changes the threshold). Nothing becomes an active rule without your confirmation:
+Edit history can suggest guidance, but one changed word is not a rule. `build` mines recurring cuts, additions, and structural habits (`cut:delve`, `add:honestly`, `struct:cut-em-dash`, `struct:split-paragraphs`) and treats them as hypotheses until you decide. A pattern becomes a candidate only after it appears in three distinct finished pieces (`"rules": {"minimumSupport": 3}` in `manifest.json` changes the threshold). Nothing becomes an active rule without your confirmation:
 
 ```bash
 ghostless rules
