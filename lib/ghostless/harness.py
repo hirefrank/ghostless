@@ -12,9 +12,10 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
+from ghostless.io import atomic_write_json, atomic_write_text
 from ghostless.paths import ProjectError, data_home, find_project_with_source, suite_root, version
 
 SKILLS = ("ghostless-draft", "ghostless-edit", "ghostless-learn")
@@ -186,12 +187,8 @@ def _load_installed() -> dict[str, dict[str, str]]:
 def _save_installed(entries: dict[str, dict[str, str]]) -> None:
     """Persist recorded skill installations as sorted, indented UTF-8 JSON."""
     home = data_home()
-    home.mkdir(parents=True, exist_ok=True)
     payload = {"version": 1, "entries": entries}
-    (home / INSTALLED_MANIFEST).write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    atomic_write_json(home / INSTALLED_MANIFEST, payload, sort_keys=True, ensure_ascii=True)
 
 
 def _recorded_suite_root() -> Path | None:
@@ -322,7 +319,7 @@ def install_skills(*, agent: str, force: bool, copy: bool, no_launcher: bool, ve
                 _remove_owned_or_forced(dest)
             if copy or os.name == "nt" or transient:
                 shutil.copytree(src, dest)
-                (dest / COPY_MARKER).write_text(f"ghostless:{skill}\n", encoding="utf-8")
+                atomic_write_text(dest / COPY_MARKER, f"ghostless:{skill}\n")
                 method = "copied"
             else:
                 dest.symlink_to(src, target_is_directory=True)
@@ -343,13 +340,13 @@ def install_skills(*, agent: str, force: bool, copy: bool, no_launcher: bool, ve
     (home / "logs").mkdir(parents=True, exist_ok=True)
     config = home / "config.json"
     if not config.exists():
-        config.write_text('{"updateCheck": true}\n', encoding="utf-8")
+        atomic_write_text(config, '{"updateCheck": true}\n')
     if not transient:
-        (home / "suite-root").write_text(str(root) + "\n", encoding="utf-8")
-    (home / "version").write_text(version() + "\n", encoding="utf-8")
+        atomic_write_text(home / "suite-root", str(root) + "\n")
+    atomic_write_text(home / "version", version() + "\n")
     _save_installed(installed_entries)
     with (home / "logs" / "setup.log").open("a", encoding="utf-8") as log:
-        log.write(f"{datetime.now(timezone.utc).isoformat()} install-skills suite={root} installed={installed}\n")
+        log.write(f"{datetime.now(UTC).isoformat()} install-skills suite={root} installed={installed}\n")
     print(f"ghostless skills installed: {installed}; existing paths kept: {len(skipped)}")
     _print_path_warning()
     if not no_launcher:

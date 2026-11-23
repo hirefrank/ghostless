@@ -8,16 +8,13 @@ a learned gold pair. The id follows the `learn` slug scheme
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import re
-import tempfile
-from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from ghostless.checks import write_pair_checks
-from ghostless.learn import DIFF_SUMMARY_KEYS, diff_texts, learn_edit
+from ghostless.io import atomic_write_json, atomic_write_text, sha256_text, utc_now_iso, utc_today
+from ghostless.learn import DIFF_SUMMARY_KEYS, diff_texts, find_existing_learn_pair, learn_edit
 from ghostless.paths import ProjectError
 from ghostless.project import (
     new_session_id,
@@ -29,32 +26,6 @@ from ghostless.project import (
 # Session ids are `YYYY-MM-DD[-section][-N]`. The section and counter are
 # lowercase slugs of `[a-z0-9-]`, so this also rejects path traversal.
 SESSION_ID_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:-[a-z0-9]+)*\Z")
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def _hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _atomic_write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as output:
-            output.write(text)
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(name, path)
-    finally:
-        if os.path.exists(name):
-            os.unlink(name)
-
-
-def _write_json(path: Path, value: dict[str, object]) -> None:
-    _atomic_write(path, json.dumps(value, indent=2, ensure_ascii=False) + "\n")
 
 
 def _load_json(path: Path) -> dict[str, object]:
@@ -115,21 +86,21 @@ def start_session(
         raise ProjectError("--source values cannot be empty.")
     if any(_absolute_source(source) for source in sources):
         raise ProjectError("--source must be a portable reference, URL, or project-relative path.")
-    date_text = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    date_text = utc_today()
     session_id = new_session_id(root, date=date_text, section=section)
     folder = root / "sessions" / session_id
     try:
         folder.mkdir(parents=True, exist_ok=False)
     except FileExistsError as exc:
         raise ProjectError(f"Session {session_id} already exists. Start again.") from exc
-    _atomic_write(folder / "before.md", text)
-    _atomic_write(folder / "after.md", text)
+    atomic_write_text(folder / "before.md", text)
+    atomic_write_text(folder / "after.md", text)
     metadata: dict[str, object] = {
         "kind": "ghostless-edit-session",
         "version": 1,
         "id": session_id,
         "date": date_text,
-        "createdAt": _now(),
+        "createdAt": utc_now_iso(),
         "section": section,
         "origin": checked_origin,
         "sources": sources,
@@ -139,9 +110,9 @@ def start_session(
         "afterFile": "after.md",
         "notesFile": "notes.md",
         "receiptFile": "receipt.json",
-        "beforeSha256": _hash(text),
+        "beforeSha256": sha256_text(text),
     }
-    _write_json(folder / "session.json", metadata)
+    atomic_write_json(folder / "session.json", metadata, ensure_ascii=False)
     return {"id": session_id, "path": folder.relative_to(root).as_posix(), **metadata}
 
 
@@ -166,11 +137,11 @@ def snapshot_session(root: Path, *, session: str, after: str, notes: str) -> dic
     if (folder / "receipt.json").exists():
         raise ProjectError("This session is already finished. Start a new session to edit again.")
     metadata = _load_json(folder / "session.json")
-    if _hash((folder / "before.md").read_text(encoding="utf-8")) != metadata.get("beforeSha256"):
+    if sha256_text((folder / "before.md").read_text(encoding="utf-8")) != metadata.get("beforeSha256"):
         raise ProjectError(f"The immutable baseline has changed in {folder}.")
-    _atomic_write(folder / "after.md", after)
-    _atomic_write(folder / "notes.md", notes)
-    return {"id": session, "path": folder.relative_to(root).as_posix(), "savedAt": _now()}
+    atomic_write_text(folder / "after.md", after)
+    atomic_write_text(folder / "notes.md", notes)
+    return {"id": session, "path": folder.relative_to(root).as_posix(), "savedAt": utc_now_iso()}
 
 
 def finish_session(
@@ -186,7 +157,7 @@ def finish_session(
     if metadata.get("kind") != "ghostless-edit-session" or metadata.get("version") != 1:
         raise ProjectError(f"Unsupported session format in {folder}.")
     before = (folder / "before.md").read_text(encoding="utf-8")
-    if _hash(before) != metadata.get("beforeSha256"):
+    if sha256_text(before) != metadata.get("beforeSha256"):
         raise ProjectError(f"The immutable baseline has changed in {folder}.")
     source = final or folder / "after.md"
     if not source.is_file():
@@ -197,30 +168,35 @@ def finish_session(
     receipt_path = folder / "receipt.json"
     if receipt_path.is_file():
         receipt = _load_json(receipt_path)
-        if receipt.get("finalSha256") == _hash(after):
+        if receipt.get("finalSha256") == sha256_text(after):
             if checks:
                 _attach_checks(root, receipt, checks)
-                _write_json(receipt_path, receipt)
+                atomic_write_json(receipt_path, receipt, ensure_ascii=False)
             return receipt
         raise ProjectError("This session is already finished with a different final. Start a new session.")
     if before.rstrip("\n") == after.rstrip("\n"):
         raise ProjectError("The final is identical to the original draft. Make an edit before finishing.")
     if note is not None:
-        _atomic_write(folder / "notes.md", note)
+        atomic_write_text(folder / "notes.md", note)
     notes_path = folder / "notes.md"
     notes = notes_path.read_text(encoding="utf-8") if notes_path.is_file() else ""
     # Keep the session self-contained: after.md is the final, whatever its source.
-    _atomic_write(folder / "after.md", after)
-    existing = _existing_learn(root, before, after)
+    atomic_write_text(folder / "after.md", after)
+    existing_dir = find_existing_learn_pair(root, before, after)
+    existing = existing_dir.relative_to(root).as_posix() if existing_dir is not None else None
     prepared: list[dict[str, object]] | None = None
+    tier: object = None
+    confirmation: object = None
+    changes: dict[str, object]
     if existing:
         learned_path = existing
         tier, confirmation = _existing_placement(root, existing)
-        changes = diff_texts(before, after)
+        changes = dict(diff_texts(before, after))
         if checks:
             prepared = write_pair_checks(root, _slug_from_learned(existing), checks)
     else:
-        section = metadata.get("section") if isinstance(metadata.get("section"), str) else None
+        raw_section = metadata.get("section")
+        section = raw_section if isinstance(raw_section, str) else None
         date_value = metadata.get("date")
         date = date_value if isinstance(date_value, str) else None
         result = learn_edit(
@@ -239,26 +215,26 @@ def finish_session(
         changes = (
             {key: result_meta[key] for key in DIFF_SUMMARY_KEYS}
             if isinstance(result_meta, dict)
-            else diff_texts(before, after)
+            else dict(diff_texts(before, after))
         )
         saved = result.get("checks")
         if isinstance(saved, list):
             prepared = [item for item in saved if isinstance(item, dict)]
-    receipt: dict[str, object] = {
+    receipt = {
         "kind": "ghostless-edit-receipt",
         "version": 1,
         "sessionId": metadata["id"],
-        "finishedAt": _now(),
+        "finishedAt": utc_now_iso(),
         "origin": metadata["origin"],
         "section": metadata.get("section"),
         "sources": metadata.get("sources", []),
         "sourceDraftName": metadata.get("sourceDraftName"),
         "beforeSha256": metadata["beforeSha256"],
-        "finalSha256": _hash(after),
+        "finalSha256": sha256_text(after),
         "beforeFile": "before.md",
         "finalFile": "after.md",
         "notesFile": "notes.md" if notes else None,
-        "notesSha256": _hash(notes) if notes else None,
+        "notesSha256": sha256_text(notes) if notes else None,
         "learnedPath": learned_path,
         "tier": tier,
         "confirmation": confirmation,
@@ -266,9 +242,9 @@ def finish_session(
     }
     if prepared:
         receipt["checks"] = prepared
-    _write_json(receipt_path, receipt)
+    atomic_write_json(receipt_path, receipt, ensure_ascii=False)
     metadata["status"] = "final"
-    _write_json(folder / "session.json", metadata)
+    atomic_write_json(folder / "session.json", metadata, ensure_ascii=False)
     return receipt
 
 
@@ -293,20 +269,6 @@ def _slug_from_learned(learned: str) -> str:
     if not learned.startswith(prefix) or not learned[len(prefix) :]:
         raise ProjectError(f"Learned path {learned} is not a gold pair.")
     return learned[len(prefix) :]
-
-
-def _existing_learn(root: Path, before: str, after: str) -> str | None:
-    for meta_path in sorted((root / "gold").glob("*/meta.json")):
-        folder = meta_path.parent
-        if not (folder / "before.md").is_file() or not (folder / "after.md").is_file():
-            continue
-        if (
-            (folder / "before.md").read_text(encoding="utf-8").rstrip("\n") == before.rstrip("\n")
-            and (folder / "after.md").read_text(encoding="utf-8").rstrip("\n")
-            == after.rstrip("\n")
-        ):
-            return folder.relative_to(root).as_posix()
-    return None
 
 
 def _existing_placement(root: Path, relative: str) -> tuple[str | None, str | None]:

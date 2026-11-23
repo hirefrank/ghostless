@@ -16,28 +16,30 @@ from __future__ import annotations
 
 import difflib
 import json
-import os
 import re
-import tempfile
-from datetime import datetime, timezone
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
 
+from ghostless.io import atomic_write_json, text_preview, utc_now_iso
 from ghostless.learn import load_edit_summary
 from ghostless.paths import ProjectError
+from ghostless.schema import (
+    ConfirmedRule,
+    RuleCandidate,
+    RuleCounterexample,
+    RuleExample,
+    RulesState,
+    RuleStatus,
+    RuleSummary,
+    SuppressedRule,
+)
 from ghostless.text import split_sentences, word_tokens
 
 DEFAULT_MINIMUM_SUPPORT = 3
 EXAMPLE_LIMIT = 3
 SNIPPET_LIMIT = 180
 
-RuleStatus = Literal["confirmed", "rejected", "retired", "hypothesis", "sparse"]
-
 _WORD_EDGE = r"(?<!\w){}(?!\w)"
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def minimum_support(root: Path) -> int:
@@ -69,7 +71,7 @@ def minimum_support(root: Path) -> int:
     return number
 
 
-def mine_candidates(root: Path, edits_summary: dict[str, object]) -> list[dict[str, object]]:
+def mine_candidates(root: Path, edits_summary: Mapping[str, object]) -> list[RuleCandidate]:
     """Find cut/add words that recur across enough distinct edit pieces.
 
     Each candidate carries its support count, the sections and origins it came
@@ -93,7 +95,7 @@ def mine_candidates(root: Path, edits_summary: dict[str, object]) -> list[dict[s
         for word in _words(learn.get("addedWords")):
             supports["add"].setdefault(word, []).append(learn)
 
-    candidates: list[dict[str, object]] = []
+    candidates: list[RuleCandidate] = []
     for kind in ("cut", "add"):
         for word, items in supports[kind].items():
             distinct = _distinct_by_slug(items)
@@ -126,11 +128,11 @@ def mine_candidates(root: Path, edits_summary: dict[str, object]) -> list[dict[s
                     "counterexamples": counterexamples,
                 }
             )
-    candidates.sort(key=lambda item: (-int(item["support"]), str(item["id"])))
+    candidates.sort(key=lambda item: (-item["support"], item["id"]))
     return candidates
 
 
-def default_rules() -> dict[str, object]:
+def default_rules() -> RulesState:
     return {
         "kind": "ghostless-rules",
         "version": 1,
@@ -141,7 +143,14 @@ def default_rules() -> dict[str, object]:
     }
 
 
-def load_rules(root: Path) -> dict[str, object]:
+def _decisions_map(raw: dict[object, object]) -> dict[str, dict[str, object]]:
+    return {
+        str(key): dict(value) if isinstance(value, dict) else {}
+        for key, value in raw.items()
+    }
+
+
+def load_rules(root: Path) -> RulesState:
     """Read `rules.json`. A missing file means no decisions yet.
 
     A malformed file fails loudly: silently defaulting would drop a rejection
@@ -157,17 +166,34 @@ def load_rules(root: Path) -> dict[str, object]:
         raise ProjectError(f"{path}: {exc}") from exc
     if not isinstance(data, dict):
         raise ProjectError(f"{path} must be an object.")
-    for key in ("confirmed", "rejected", "retired", "scope"):
-        value = data.get(key, {})
-        if value is None:
-            continue
-        if not isinstance(value, dict):
-            raise ProjectError(f"{path}: {key} must be an object.")
-        state[key] = value
+    confirmed = data.get("confirmed", {})
+    if confirmed is not None:
+        if not isinstance(confirmed, dict):
+            raise ProjectError(f"{path}: confirmed must be an object.")
+        state["confirmed"] = _decisions_map(confirmed)
+    rejected = data.get("rejected", {})
+    if rejected is not None:
+        if not isinstance(rejected, dict):
+            raise ProjectError(f"{path}: rejected must be an object.")
+        state["rejected"] = _decisions_map(rejected)
+    retired = data.get("retired", {})
+    if retired is not None:
+        if not isinstance(retired, dict):
+            raise ProjectError(f"{path}: retired must be an object.")
+        state["retired"] = _decisions_map(retired)
+    scope = data.get("scope", {})
+    if scope is not None:
+        if not isinstance(scope, dict):
+            raise ProjectError(f"{path}: scope must be an object.")
+        state["scope"] = {
+            key: value
+            for key, value in scope.items()
+            if isinstance(key, str) and isinstance(value, str)
+        }
     return state
 
 
-def save_rules(root: Path, state: dict[str, object]) -> None:
+def save_rules(root: Path, state: RulesState) -> None:
     """Write `rules.json` atomically. Only writer decisions call this."""
     for key in ("confirmed", "rejected", "retired", "scope"):
         if not isinstance(state.get(key), dict):
@@ -181,21 +207,10 @@ def save_rules(root: Path, state: dict[str, object]) -> None:
         "retired": state["retired"],
         "scope": state["scope"],
     }
-    text = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as output:
-            output.write(text)
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(name, path)
-    finally:
-        if os.path.exists(name):
-            os.unlink(name)
+    atomic_write_json(path, payload, sort_keys=True, ensure_ascii=False)
 
 
-def derive_status(candidate: dict[str, object], state: dict[str, object]) -> RuleStatus:
+def derive_status(candidate: Mapping[str, object], state: Mapping[str, object]) -> RuleStatus:
     """Resolve a candidate against the writer's decisions.
 
     Explicit decisions always win, so a rejected or retired rule never returns
@@ -206,8 +221,14 @@ def derive_status(candidate: dict[str, object], state: dict[str, object]) -> Rul
     rule_id = str(candidate.get("id"))
     for key in ("rejected", "retired", "confirmed"):
         decisions = state.get(key)
-        if isinstance(decisions, dict) and rule_id in decisions:
-            return key  # type: ignore[return-value]
+        if isinstance(decisions, Mapping) and rule_id in decisions:
+            match key:
+                case "rejected":
+                    return "rejected"
+                case "retired":
+                    return "retired"
+                case "confirmed":
+                    return "confirmed"
     support = candidate.get("support")
     threshold = candidate.get("minimumSupport", DEFAULT_MINIMUM_SUPPORT)
     if not isinstance(support, int) or isinstance(support, bool):
@@ -231,12 +252,12 @@ def confirm_rule(
             f"No voice-rule candidate {rule_id}. Run `ghostless rules` to list candidates."
         )
     checked_section = _checked_section(section)
-    previous = state["confirmed"].get(rule_id)
-    previous = previous if isinstance(previous, dict) else {}
-    receipts = candidate.get("receipts") if candidate else previous.get("receipts", [])
-    pieces = candidate.get("pieces") if candidate else previous.get("pieces", [])
+    previous_raw = state["confirmed"].get(rule_id)
+    previous = previous_raw if isinstance(previous_raw, dict) else {}
+    receipts = candidate["receipts"] if candidate is not None else previous.get("receipts", [])
+    pieces = candidate["pieces"] if candidate is not None else previous.get("pieces", [])
     state["confirmed"][rule_id] = {
-        "at": _now(),
+        "at": utc_now_iso(),
         "receipts": list(receipts) if isinstance(receipts, list) else [],
         "pieces": list(pieces) if isinstance(pieces, list) else [],
     }
@@ -261,12 +282,13 @@ def reject_rule(root: Path, rule_id: str) -> dict[str, object]:
         raise ProjectError(
             f"No voice-rule candidate {rule_id}. Run `ghostless rules` to list candidates."
         )
-    state["rejected"][rule_id] = {"at": _now()}
+    at = utc_now_iso()
+    state["rejected"][rule_id] = {"at": at}
     state["confirmed"].pop(rule_id, None)
     state["retired"].pop(rule_id, None)
     state["scope"].pop(rule_id, None)
     save_rules(root, state)
-    return {"id": rule_id, "status": "rejected", "at": state["rejected"][rule_id]["at"]}
+    return {"id": rule_id, "status": "rejected", "at": at}
 
 
 def retire_rule(root: Path, rule_id: str) -> dict[str, object]:
@@ -274,12 +296,13 @@ def retire_rule(root: Path, rule_id: str) -> dict[str, object]:
     state = load_rules(root)
     if rule_id not in state["confirmed"]:
         raise ProjectError(f"{rule_id} is not a confirmed rule, so there is nothing to retire.")
-    state["retired"][rule_id] = {"at": _now()}
+    at = utc_now_iso()
+    state["retired"][rule_id] = {"at": at}
     state["confirmed"].pop(rule_id, None)
     state["scope"].pop(rule_id, None)
     state["rejected"].pop(rule_id, None)
     save_rules(root, state)
-    return {"id": rule_id, "status": "retired", "at": state["retired"][rule_id]["at"]}
+    return {"id": rule_id, "status": "retired", "at": at}
 
 
 def scope_rule(root: Path, rule_id: str, section: str) -> dict[str, object]:
@@ -295,30 +318,50 @@ def scope_rule(root: Path, rule_id: str, section: str) -> dict[str, object]:
     return {"id": rule_id, "status": "confirmed", "scope": checked}
 
 
-def active_rules(root: Path, *, edits: dict[str, object] | None = None) -> list[dict[str, object]]:
+def active_rules(root: Path, *, edits: Mapping[str, object] | None = None) -> list[ConfirmedRule]:
     """Confirmed rules with their scope and evidence, for the guide."""
     return rules_summary(root, edits=edits)["confirmed"]
 
 
-def rules_summary(root: Path, *, edits: dict[str, object] | None = None) -> dict[str, object]:
+def rules_summary(root: Path, *, edits: Mapping[str, object] | None = None) -> RuleSummary:
     """Everything the guide and `ghostless rules` need, split by status."""
     threshold = minimum_support(root)
     state = load_rules(root)
-    candidates = mine_candidates(root, edits if edits is not None else load_edit_summary(root))
-    by_id = {str(candidate["id"]): candidate for candidate in candidates}
+    edit_data: Mapping[str, object] = edits if edits is not None else load_edit_summary(root)
+    candidates = mine_candidates(root, edit_data)
+    by_id = {candidate["id"]: candidate for candidate in candidates}
 
-    confirmed: list[dict[str, object]] = []
+    confirmed: list[ConfirmedRule] = []
     for rule_id, decision in _decision_items(state, "confirmed"):
         candidate = by_id.get(rule_id) or _candidate_from_id(rule_id, threshold)
-        receipts = decision.get("receipts")
-        pieces = decision.get("pieces")
+        raw_receipts = decision.get("receipts")
+        raw_pieces = decision.get("pieces")
+        raw_at = decision.get("at")
+        receipts = (
+            [str(item) for item in raw_receipts]
+            if isinstance(raw_receipts, list)
+            else candidate["receipts"]
+        )
+        pieces = (
+            [str(item) for item in raw_pieces]
+            if isinstance(raw_pieces, list)
+            else candidate["pieces"]
+        )
         confirmed.append(
             {
-                **candidate,
+                "id": candidate["id"],
+                "kind": candidate["kind"],
+                "word": candidate["word"],
+                "support": candidate["support"],
+                "minimumSupport": candidate["minimumSupport"],
+                "pieces": pieces,
+                "receipts": receipts,
+                "sections": candidate["sections"],
+                "origins": candidate["origins"],
+                "examples": candidate["examples"],
+                "counterexamples": candidate["counterexamples"],
                 "scope": state["scope"].get(rule_id),
-                "confirmedAt": decision.get("at"),
-                "receipts": receipts if isinstance(receipts, list) else candidate.get("receipts", []),
-                "pieces": pieces if isinstance(pieces, list) else candidate.get("pieces", []),
+                "confirmedAt": raw_at if isinstance(raw_at, str) else None,
             }
         )
 
@@ -327,29 +370,42 @@ def rules_summary(root: Path, *, edits: dict[str, object] | None = None) -> dict
         for candidate in candidates
         if derive_status(candidate, state) == "hypothesis"
     ]
-    suppressed: list[dict[str, object]] = []
-    for key in ("rejected", "retired"):
-        for rule_id, decision in _decision_items(state, key):
-            candidate = by_id.get(rule_id) or _candidate_from_id(rule_id, threshold)
-            suppressed.append(
-                {
-                    "id": rule_id,
-                    "kind": candidate.get("kind"),
-                    "word": candidate.get("word"),
-                    "status": key,
-                    "at": decision.get("at"),
-                }
-            )
+    rejected_list: list[SuppressedRule] = []
+    retired_list: list[SuppressedRule] = []
+    for rule_id, decision in _decision_items(state, "rejected"):
+        candidate = by_id.get(rule_id) or _candidate_from_id(rule_id, threshold)
+        raw_at = decision.get("at")
+        rejected_list.append(
+            {
+                "id": rule_id,
+                "kind": candidate["kind"],
+                "word": candidate["word"],
+                "status": "rejected",
+                "at": raw_at if isinstance(raw_at, str) else None,
+            }
+        )
+    for rule_id, decision in _decision_items(state, "retired"):
+        candidate = by_id.get(rule_id) or _candidate_from_id(rule_id, threshold)
+        raw_at = decision.get("at")
+        retired_list.append(
+            {
+                "id": rule_id,
+                "kind": candidate["kind"],
+                "word": candidate["word"],
+                "status": "retired",
+                "at": raw_at if isinstance(raw_at, str) else None,
+            }
+        )
     return {
         "minimumSupport": threshold,
         "confirmed": confirmed,
         "hypotheses": hypotheses,
-        "rejected": [item for item in suppressed if item["status"] == "rejected"],
-        "retired": [item for item in suppressed if item["status"] == "retired"],
+        "rejected": rejected_list,
+        "retired": retired_list,
     }
 
 
-def _learns(edits_summary: dict[str, object]) -> list[dict[str, object]]:
+def _learns(edits_summary: Mapping[str, object]) -> list[dict[str, object]]:
     raw = edits_summary.get("learns")
     if not isinstance(raw, list):
         return []
@@ -431,7 +487,7 @@ def _example(
     learn: dict[str, object],
     receipts: dict[str, str],
     texts: dict[str, tuple[str, str]],
-) -> dict[str, object]:
+) -> RuleExample:
     slug = str(learn.get("slug"))
     before, after = texts.get(slug, ("", ""))
     before_snippet, after_snippet = _snippets(before, after, word, kind)
@@ -449,14 +505,14 @@ def _counterexample(
     learn: dict[str, object],
     receipts: dict[str, str],
     texts: dict[str, tuple[str, str]],
-) -> dict[str, object]:
+) -> RuleCounterexample:
     slug = str(learn.get("slug"))
     before, after = texts.get(slug, ("", ""))
     source = before if kind == "cut" else after
     return {
         "slug": slug,
         "receipt": _receipt_for(slug, receipts),
-        "snippet": _preview(source),
+        "snippet": text_preview(source, SNIPPET_LIMIT),
     }
 
 
@@ -473,13 +529,13 @@ def _snippets(before: str, after: str, word: str, kind: str) -> tuple[str, str]:
         None,
     )
     if matched is None:
-        return _preview(before), _preview(after)
+        return text_preview(before, SNIPPET_LIMIT), text_preview(after, SNIPPET_LIMIT)
     counterpart = _closest_sentence(matched, target)
     if counterpart is None:
-        return _preview(before), _preview(after)
+        return text_preview(before, SNIPPET_LIMIT), text_preview(after, SNIPPET_LIMIT)
     if kind == "cut":
-        return _preview(matched), _preview(counterpart)
-    return _preview(counterpart), _preview(matched)
+        return text_preview(matched, SNIPPET_LIMIT), text_preview(counterpart, SNIPPET_LIMIT)
+    return text_preview(counterpart, SNIPPET_LIMIT), text_preview(matched, SNIPPET_LIMIT)
 
 
 def _contains_word(text: str, word: str) -> bool:
@@ -496,13 +552,6 @@ def _closest_sentence(source: str, sentences: list[str]) -> str | None:
     return best[1] if best else None
 
 
-def _preview(text: str, limit: int = SNIPPET_LIMIT) -> str:
-    collapsed = " ".join(text.split())
-    if len(collapsed) <= limit:
-        return collapsed
-    return collapsed[: limit - 1].rstrip() + "…"
-
-
 def _checked_section(section: str | None) -> str | None:
     if section is None:
         return None
@@ -512,32 +561,35 @@ def _checked_section(section: str | None) -> str | None:
     return text
 
 
-def _find_candidate(root: Path, rule_id: str) -> dict[str, object] | None:
+def _find_candidate(root: Path, rule_id: str) -> RuleCandidate | None:
     for candidate in mine_candidates(root, load_edit_summary(root)):
-        if candidate.get("id") == rule_id:
+        if candidate["id"] == rule_id:
             return candidate
     return None
 
 
-def _decided(state: dict[str, object], rule_id: str) -> bool:
-    return any(
-        isinstance(state.get(key), dict) and rule_id in state[key]  # type: ignore[operator]
-        for key in ("confirmed", "rejected", "retired")
+def _decided(state: RulesState, rule_id: str) -> bool:
+    return (
+        rule_id in state["confirmed"]
+        or rule_id in state["rejected"]
+        or rule_id in state["retired"]
     )
 
 
-def _decision_items(state: dict[str, object], key: str) -> list[tuple[str, dict[str, object]]]:
-    block = state.get(key)
-    if not isinstance(block, dict):
-        return []
-    items: list[tuple[str, dict[str, object]]] = []
-    for rule_id, decision in block.items():
-        if isinstance(rule_id, str):
-            items.append((rule_id, decision if isinstance(decision, dict) else {}))
-    return items
+def _decision_items(state: RulesState, key: str) -> list[tuple[str, dict[str, object]]]:
+    match key:
+        case "confirmed":
+            block = state["confirmed"]
+        case "rejected":
+            block = state["rejected"]
+        case "retired":
+            block = state["retired"]
+        case _:
+            return []
+    return list(block.items())
 
 
-def _candidate_from_id(rule_id: str, threshold: int) -> dict[str, object]:
+def _candidate_from_id(rule_id: str, threshold: int) -> RuleCandidate:
     kind, separator, word = rule_id.partition(":")
     if not separator:
         kind, word = "cut", rule_id

@@ -31,10 +31,29 @@ def main() -> int:
         base = Path(tmp)
         pack = json.loads(run([npm, "pack", "--json", "--pack-destination", str(base)], cwd=ROOT))
         files = {row["path"] for row in pack[0]["files"]}
-        required = {"bin/ghostless.cjs", "lib/ghostless/harness.py", "lib/ghostless/cli.py",
-                    "lib/ghostless/sessions.py", "skills/ghostless-draft/SKILL.md"}
+        required = {
+            "bin/ghostless.cjs",
+            "lib/ghostless/build.py",
+            "lib/ghostless/cli.py",
+            "lib/ghostless/harness.py",
+            "lib/ghostless/io.py",
+            "lib/ghostless/schema.py",
+            "lib/ghostless/sessions.py",
+            "skills/ghostless-draft/SKILL.md",
+        }
         if not required.issubset(files):
             raise RuntimeError(f"Missing packaged files: {sorted(required - files)}")
+        forbidden = sorted(
+            path
+            for path in files
+            if ".egg-info" in path
+            or "__pycache__" in path
+            or ".ruff_cache" in path
+            or ".mypy_cache" in path
+            or path.endswith((".pyc", ".pyo"))
+        )
+        if forbidden:
+            raise RuntimeError(f"Packed forbidden build/cache files: {forbidden}")
         archive = base / pack[0]["filename"]
         prefix = base / "npm-prefix"
         run([npm, "install", "--global", "--prefix", str(prefix), str(archive)], cwd=base)
@@ -49,7 +68,8 @@ def main() -> int:
             "GHOSTLESS_HOME": str(base / "home"),
             "GHOSTLESS_SKILLS_DIR": str(base / "skills"),
         })
-        cli = lambda *args: run([str(executable), *args], cwd=base, env=env)
+        def cli(*args: str) -> str:
+            return run([str(executable), *args], cwd=base, env=env)
         assert "ghostless 0.1.0" in cli("--version")
         cli("install-skills")
         skill = base / "skills" / "ghostless-draft"

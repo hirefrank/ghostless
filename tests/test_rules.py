@@ -316,7 +316,8 @@ class RuleDecisionTests(unittest.TestCase):
         with self.assertRaisesRegex(ProjectError, "No voice-rule candidate"):
             reject_rule(self.project, "cut:unknown")
         self.assertFalse((self.project / "rules.json").exists())
-        self.assertEqual(main(["rules", "confirm", "--project", str(self.project)]), 2)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main(["rules", "confirm", "--project", str(self.project)]), 2)
 
     def test_session_receipt_is_the_traceability_source(self) -> None:
         for index in range(2):

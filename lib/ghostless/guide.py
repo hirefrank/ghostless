@@ -3,29 +3,31 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 
-from ghostless.judge import METRIC_LABELS, apply_overrides, corpus_confidence
+from ghostless.schema import METRIC_LABELS
+from ghostless.stats import apply_overrides, as_mapping, corpus_confidence, metrics_of
 
 
-def render_guide(stats: dict[str, object]) -> str:
+def render_guide(stats: Mapping[str, object]) -> str:
     return _render(stats, paste=False, excerpts=None)
 
 
-def render_paste(stats: dict[str, object], excerpts: list[dict[str, str]] | None) -> str:
+def render_paste(stats: Mapping[str, object], excerpts: list[dict[str, str]] | None) -> str:
     return _render(stats, paste=True, excerpts=excerpts)
 
 
 def _render(
-    stats: dict[str, object],
+    stats: Mapping[str, object],
     *,
     paste: bool,
     excerpts: list[dict[str, str]] | None,
 ) -> str:
-    weighted = _block(stats.get("weighted"))
-    unweighted = _block(stats.get("unweighted"))
-    measured_metrics = _metrics(weighted)
+    weighted = as_mapping(stats.get("weighted"))
+    unweighted = as_mapping(stats.get("unweighted"))
+    measured_metrics = metrics_of(weighted)
     display_metrics = apply_overrides(measured_metrics, _overrides_dict(stats))
-    bare = _metrics(unweighted)
+    bare = metrics_of(unweighted)
     lines: list[str] = []
     if paste:
         lines.append("# Voice guide (paste into a project)")
@@ -106,7 +108,7 @@ def _render(
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _rules(stats: dict[str, object], *, paste: bool) -> list[str]:
+def _rules(stats: Mapping[str, object], *, paste: bool) -> list[str]:
     lines = ["## Rules", ""]
     lines.append("- Use the targets below as diagnostics. They are counts from the writer's own text, not a measure of writing quality.")
     lines.append("- Review words and phrases on the absent-tell list in context, especially with a small corpus.")
@@ -137,8 +139,8 @@ def _rules(stats: dict[str, object], *, paste: bool) -> list[str]:
     return lines
 
 
-def _voice_rules(stats: dict[str, object]) -> list[str]:
-    block = _block(stats.get("rules"))
+def _voice_rules(stats: Mapping[str, object]) -> list[str]:
+    block = as_mapping(stats.get("rules"))
     lines = ["## Voice rules", ""]
     if not block:
         lines.append(
@@ -200,12 +202,11 @@ def _voice_rules(stats: dict[str, object]) -> list[str]:
         lines.append("None yet. A pattern needs repeated support before it appears here.")
     lines.append("")
 
-    suppressed = [
-        item
-        for key in ("rejected", "retired")
-        for item in (block.get(key) if isinstance(block.get(key), list) else [])
-        if isinstance(item, dict)
-    ]
+    suppressed: list[dict[str, object]] = []
+    for key in ("rejected", "retired"):
+        raw_group = block.get(key)
+        if isinstance(raw_group, list):
+            suppressed.extend(item for item in raw_group if isinstance(item, dict))
     if suppressed:
         parts = [
             f"{item.get('id')} ({item.get('status')})"
@@ -241,7 +242,7 @@ def _rule_line(item: dict[str, object], *, confirmed: bool) -> str:
     return f"- {verb} `{word}`{suffix}"
 
 
-def _confirmed_checks(stats: dict[str, object]) -> list[str]:
+def _confirmed_checks(stats: Mapping[str, object]) -> list[str]:
     block = stats.get("checks")
     lines = ["## Confirmed checks", ""]
     if not isinstance(block, dict):
@@ -315,7 +316,7 @@ def _check_line(item: dict[str, object], *, active: bool) -> str:
     return f"- {text} ({'; '.join(detail)})"
 
 
-def _style(stats: dict[str, object]) -> list[str]:
+def _style(stats: Mapping[str, object]) -> list[str]:
     text = stats.get("style")
     lines = ["## Style", ""]
     if not isinstance(text, str) or not text:
@@ -335,7 +336,7 @@ def _style(stats: dict[str, object]) -> list[str]:
     return lines
 
 
-def _audience(stats: dict[str, object]) -> list[str]:
+def _audience(stats: Mapping[str, object]) -> list[str]:
     text = stats.get("audience")
     lines = ["## Audience", ""]
     if not isinstance(text, str) or not text:
@@ -369,9 +370,9 @@ def _note_body(text: str) -> str:
 
 
 def _overrides(
-    stats: dict[str, object],
-    weighted: dict[str, object],
-    unweighted: dict[str, object],
+    stats: Mapping[str, object],
+    weighted: Mapping[str, object],
+    unweighted: Mapping[str, object],
 ) -> list[str]:
     """Manifest overrides, stated plainly so the pinned target is not mistaken for measured."""
     raw = _overrides_dict(stats)
@@ -399,11 +400,11 @@ def _overrides(
     return lines
 
 
-def _sample_size(stats: dict[str, object]) -> list[str]:
+def _sample_size(stats: Mapping[str, object]) -> list[str]:
     confidence = corpus_confidence(stats)
-    counts = _block(stats.get("counts"))
-    written_pieces = _sum_counts(_block(counts.get("prose")))
-    spoken_pieces = _sum_counts(_block(counts.get("spoken")))
+    counts = as_mapping(stats.get("counts"))
+    written_pieces = _sum_counts(as_mapping(counts.get("prose")))
+    spoken_pieces = _sum_counts(as_mapping(counts.get("spoken")))
     lines = ["## Sample size", ""]
     lines.append(
         f"- Pieces: {_num(confidence.get('pieces'))} measured "
@@ -424,7 +425,7 @@ def _sample_size(stats: dict[str, object]) -> list[str]:
     return lines
 
 
-def _sum_counts(block: dict[str, object]) -> int:
+def _sum_counts(block: Mapping[str, object]) -> int:
     return sum(
         int(value)
         for value in block.values()
@@ -432,7 +433,7 @@ def _sum_counts(block: dict[str, object]) -> int:
     )
 
 
-def _phrases(block: dict[str, object]) -> list[str]:
+def _phrases(block: Mapping[str, object]) -> list[str]:
     raw = block.get("signaturePhrases")
     lines = ["## Signature phrases", ""]
     if not isinstance(raw, list) or not raw:
@@ -452,7 +453,7 @@ def _phrases(block: dict[str, object]) -> list[str]:
     return lines
 
 
-def _bans(block: dict[str, object], stats: dict[str, object]) -> list[str]:
+def _bans(block: Mapping[str, object], stats: Mapping[str, object]) -> list[str]:
     lines = ["## Ban list", ""]
     if block.get("dictionEmpty"):
         lines.append("Not inferred. There is no written prose in the voice pool yet, and spoken lines cannot fill a ban list.")
@@ -486,7 +487,7 @@ def _bans(block: dict[str, object], stats: dict[str, object]) -> list[str]:
     return lines
 
 
-def _sections(stats: dict[str, object]) -> list[str]:
+def _sections(stats: Mapping[str, object]) -> list[str]:
     raw = stats.get("sections")
     lines = ["## Sections", ""]
     if not isinstance(raw, dict) or not raw:
@@ -500,7 +501,7 @@ def _sections(stats: dict[str, object]) -> list[str]:
         block = raw[name]
         if not isinstance(block, dict):
             continue
-        weighted = apply_overrides(_metrics(_block(block.get("weighted"))), overrides)
+        weighted = apply_overrides(metrics_of(as_mapping(block.get("weighted"))), overrides)
         lines.append(f"### {name}")
         lines.append("")
         lines.append(f"- Pieces: {block.get('pieces')}")
@@ -563,7 +564,7 @@ def _edits(edits: object) -> list[str]:
     return lines
 
 
-def _weights(stats: dict[str, object]) -> list[str]:
+def _weights(stats: Mapping[str, object]) -> list[str]:
     weights = stats.get("weights")
     lines = ["## Weights", ""]
     if isinstance(weights, dict):
@@ -598,18 +599,8 @@ def json_compact(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(", ", ": "))
 
 
-def _block(value: object) -> dict[str, object]:
-    return value if isinstance(value, dict) else {}
-
-
-def _metrics(block: dict[str, object]) -> dict[str, object]:
-    metrics = block.get("metrics")
-    return metrics if isinstance(metrics, dict) else {}
-
-
-def _overrides_dict(stats: dict[str, object]) -> dict[str, object]:
-    raw = stats.get("overrides")
-    return raw if isinstance(raw, dict) else {}
+def _overrides_dict(stats: Mapping[str, object]) -> Mapping[str, object]:
+    return as_mapping(stats.get("overrides"))
 
 
 def _num(value: object) -> str:

@@ -24,11 +24,13 @@ from __future__ import annotations
 import json
 import math
 import random
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeVar
 
 from ghostless.checks import empty_confirmed_checks, grade_confirmed
-from ghostless.judge import corpus_confidence, judge_text
+from ghostless.judge import judge_text
 from ghostless.learn import diff_texts
 from ghostless.paths import ProjectError
 from ghostless.project import (
@@ -38,10 +40,12 @@ from ghostless.project import (
     load_manifest,
     pair_file_path,
     require_contained_path,
-    split_frontmatter,
 )
-from ghostless.stats import Piece, compile_stats
-from ghostless.text import words
+from ghostless.schema import CorpusConfidence, HoldoutEval, Manifest
+from ghostless.stats import Piece, compile_stats, corpus_confidence
+from ghostless.text import split_frontmatter, words
+
+_T = TypeVar("_T")
 
 # A pair at or below this edit rate counts as accepted. The rate is bounded
 # 0..1; 0.15 means the writer changed about one position in seven.
@@ -128,7 +132,7 @@ def load_edit_pairs(root: Path) -> tuple[list[EditPair], list[str]]:
     return pairs, notes
 
 
-def split_items(items: list[object], holdout: int | None, seed: int) -> tuple[list[object], list[object]]:
+def split_items(items: Sequence[_T], holdout: int | None, seed: int) -> tuple[list[_T], list[_T]]:
     """Seeded, deterministic train/holdout split.
 
     At least one item is held out. The split can hold everything out when the
@@ -146,7 +150,7 @@ def split_items(items: list[object], holdout: int | None, seed: int) -> tuple[li
     return train, held
 
 
-def load_holdouts(root: Path, manifest: dict[str, object]) -> tuple[list[Piece], list[str]]:
+def load_holdouts(root: Path, manifest: Manifest) -> tuple[list[Piece], list[str]]:
     """Read prose files under `holdouts/` without letting them enter the build corpus.
 
     Unreadable files are skipped with a note. They do not abort the evaluation.
@@ -154,10 +158,7 @@ def load_holdouts(root: Path, manifest: dict[str, object]) -> tuple[list[Piece],
     folder = root / "holdouts"
     if not folder.is_dir():
         return [], []
-    weights = manifest.get("weights")
-    if not isinstance(weights, dict) or "gold" not in weights:
-        raise ProjectError("manifest weights are missing.")
-    gold_weight = float(weights["gold"])
+    gold_weight = manifest["weights"]["gold"]
     root_resolved = root.resolve()
     notes: list[str] = []
     paths: list[Path] = []
@@ -223,14 +224,13 @@ def evaluate(
         raise ProjectError("Pass either --cv or --holdout, not both.")
     manifest = load_manifest(root)
     pieces = discover(root, manifest)
-    weights = manifest["weights"]
-    if not isinstance(weights, dict):
-        raise ProjectError("manifest weights are missing.")
-    weights_map = {str(key): float(value) for key, value in weights.items()}
-    minimum = int(manifest["goldVoiceMinimum"])
-    fail_under = int(manifest["failUnder"])
-    overrides = manifest.get("overrides") if isinstance(manifest.get("overrides"), dict) else None
-    placeholder = manifest.get("placeholder") if isinstance(manifest.get("placeholder"), str) else None
+    weights_map: dict[str, float] = {
+        str(key): float(value) for key, value in manifest["weights"].items()
+    }
+    minimum = manifest["goldVoiceMinimum"]
+    fail_under = manifest["failUnder"]
+    overrides: Mapping[str, object] = manifest["overrides"]
+    placeholder = manifest["placeholder"]
 
     holdouts, holdout_notes = load_holdouts(root, manifest)
     holdout_eval = _evaluate_holdouts(
@@ -277,10 +277,9 @@ def evaluate(
                 seed=seed,
                 notes=notes,
             )
-            _, held = split_items(list(pairs), holdout, seed)
-            held_pairs = [pair for pair in held if isinstance(pair, EditPair)]
+            _, held_pairs = split_items(pairs, holdout, seed)
         report["holdouts"] = holdout_eval
-        held_payload = [
+        held_payload: list[dict[str, object]] = [
             {"slug": pair.slug, "section": pair.section, "before": pair.before}
             for pair in held_pairs
         ]
@@ -335,12 +334,12 @@ def _evaluate_holdouts(
     *,
     pieces: list[Piece],
     holdouts: list[Piece],
-    weights: dict[str, float],
+    weights: Mapping[str, float],
     minimum: int,
     fail_under: int,
-    overrides: dict[str, object] | None,
+    overrides: Mapping[str, object] | None,
     placeholder: str | None,
-) -> dict[str, object] | None:
+) -> HoldoutEval | None:
     """Evaluate `holdouts/` prose against targets compiled from `pieces`."""
     if not holdouts or not pieces:
         return None
@@ -368,17 +367,16 @@ def _evaluate_edits(
     *,
     pieces: list[Piece],
     pairs: list[EditPair],
-    weights: dict[str, float],
+    weights: Mapping[str, float],
     minimum: int,
     fail_under: int,
-    overrides: dict[str, object] | None,
+    overrides: Mapping[str, object] | None,
     placeholder: str | None,
     holdout: int | None,
     seed: int,
     notes: list[str],
 ) -> dict[str, object]:
-    _, held = split_items(list(pairs), holdout, seed)
-    held = [pair for pair in held if isinstance(pair, EditPair)]
+    _, held = split_items(pairs, holdout, seed)
     held_paths = {pair.after_path for pair in held}
     train_pieces = [piece for piece in pieces if piece.path not in held_paths]
     if not train_pieces:
@@ -420,17 +418,17 @@ def _evaluate_edits_cv(
     *,
     pieces: list[Piece],
     pairs: list[EditPair],
-    weights: dict[str, float],
+    weights: Mapping[str, float],
     minimum: int,
     fail_under: int,
-    overrides: dict[str, object] | None,
+    overrides: Mapping[str, object] | None,
     placeholder: str | None,
     seed: int,
     notes: list[str],
 ) -> dict[str, object]:
     """Leave-one-out cross-validation across all edit pairs."""
     items: list[dict[str, object]] = []
-    fold_trains: list[tuple[list[Piece], dict[str, object]]] = []
+    fold_trains: list[tuple[list[Piece], CorpusConfidence]] = []
     for pair in pairs:
         train_pieces = [piece for piece in pieces if piece.path != pair.after_path]
         if not train_pieces:
@@ -464,7 +462,7 @@ def _evaluate_edits_cv(
         )
     smallest_train, smallest_confidence = min(
         fold_trains,
-        key=lambda fold: (len(fold[0]), int(fold[1].get("words") or 0)),
+        key=lambda fold: (len(fold[0]), fold[1]["words"]),
     )
     if smallest_confidence["level"] == "low":
         notes.append(
@@ -506,10 +504,10 @@ def _edit_item(
 
 def _judge_edit_pair(
     pair: EditPair,
-    stats: dict[str, object],
+    stats: Mapping[str, object],
     *,
     fail_under: int,
-    overrides: dict[str, object] | None,
+    overrides: Mapping[str, object] | None,
     placeholder: str | None,
 ) -> dict[str, object]:
     section = pair.section if _section_exists(stats, pair.section) else None
@@ -533,7 +531,7 @@ def _finalize_edits_report(
     *,
     pairs: list[EditPair],
     train_pieces: list[Piece],
-    confidence: dict[str, object],
+    confidence: Mapping[str, object],
     items: list[dict[str, object]],
     seed: int,
     notes: list[str],
@@ -545,12 +543,17 @@ def _finalize_edits_report(
         if isinstance(item.get("score"), int) and not isinstance(item.get("score"), bool)
     ]
     n = len(scored)
-    pairs_for_stats = [
-        (float(item["score"]), float(item["editRate"]))
-        for item in scored
-        if isinstance(item.get("editRate"), (int, float))
-        and not isinstance(item.get("editRate"), bool)
-    ]
+    pairs_for_stats: list[tuple[float, float]] = []
+    for item in scored:
+        score_value = item.get("score")
+        rate_value = item.get("editRate")
+        if (
+            isinstance(score_value, int)
+            and not isinstance(score_value, bool)
+            and isinstance(rate_value, (int, float))
+            and not isinstance(rate_value, bool)
+        ):
+            pairs_for_stats.append((float(score_value), float(rate_value)))
     pearson = _pearson(pairs_for_stats)
     spearman = _spearman(pairs_for_stats)
     direction = _direction(pearson, spearman)
@@ -592,10 +595,10 @@ def _finalize_edits_report(
 def _evaluate_prose(
     *,
     pieces: list[Piece],
-    weights: dict[str, float],
+    weights: Mapping[str, float],
     minimum: int,
     fail_under: int,
-    overrides: dict[str, object] | None,
+    overrides: Mapping[str, object] | None,
     placeholder: str | None,
     holdout: int | None,
     seed: int,
@@ -610,8 +613,7 @@ def _evaluate_prose(
             notes,
             seed,
         )
-    _, held = split_items(list(gold), holdout, seed)
-    held = [piece for piece in held if isinstance(piece, Piece)]
+    _, held = split_items(gold, holdout, seed)
     held_paths = {piece.path for piece in held}
     train_pieces = [piece for piece in pieces if piece.path not in held_paths]
     if not train_pieces:
@@ -665,10 +667,10 @@ def _evaluate_prose(
 
 def _judge_prose_piece(
     piece: Piece,
-    stats: dict[str, object],
+    stats: Mapping[str, object],
     *,
     fail_under: int,
-    overrides: dict[str, object] | None,
+    overrides: Mapping[str, object] | None,
     placeholder: str | None,
 ) -> dict[str, object]:
     section = piece.section if _section_exists(stats, piece.section) else None
@@ -721,14 +723,14 @@ def _failure(
     }
 
 
-def _section_exists(stats: dict[str, object], section: str | None) -> bool:
+def _section_exists(stats: Mapping[str, object], section: str | None) -> bool:
     if not section:
         return False
     sections = stats.get("sections")
-    return isinstance(sections, dict) and section in sections
+    return isinstance(sections, Mapping) and section in sections
 
 
-def _score(report: dict[str, object]) -> int | None:
+def _score(report: Mapping[str, object]) -> int | None:
     score = report.get("score")
     if isinstance(score, bool) or not isinstance(score, int):
         return None
@@ -737,7 +739,7 @@ def _score(report: dict[str, object]) -> int | None:
     return score
 
 
-def _train_block(pieces: list[Piece], confidence: dict[str, object]) -> dict[str, object]:
+def _train_block(pieces: list[Piece], confidence: Mapping[str, object]) -> dict[str, object]:
     return {
         "pieces": len(pieces),
         "words": confidence.get("words"),
@@ -749,12 +751,11 @@ def _train_block(pieces: list[Piece], confidence: dict[str, object]) -> dict[str
 
 def _holdout_block(items: list[dict[str, object]]) -> dict[str, object]:
     scores = _scores(items)
-    rates = [
-        float(item["editRate"])
-        for item in items
-        if isinstance(item.get("editRate"), (int, float))
-        and not isinstance(item.get("editRate"), bool)
-    ]
+    rates: list[float] = []
+    for item in items:
+        rate_value = item.get("editRate")
+        if isinstance(rate_value, (int, float)) and not isinstance(rate_value, bool):
+            rates.append(float(rate_value))
     judged = len(scores)
     passed = sum(
         1
@@ -813,7 +814,13 @@ def _pearson(pairs: list[tuple[float, float]]) -> float | None:
 def _spearman(pairs: list[tuple[float, float]]) -> float | None:
     if len(pairs) < MIN_CORRELATION_POINTS:
         return None
-    ranked = list(zip(_ranks([pair[0] for pair in pairs]), _ranks([pair[1] for pair in pairs])))
+    ranked = list(
+        zip(
+            _ranks([pair[0] for pair in pairs]),
+            _ranks([pair[1] for pair in pairs]),
+            strict=True,
+        )
+    )
     return _pearson(ranked)
 
 

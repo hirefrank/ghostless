@@ -6,14 +6,27 @@ import json
 import math
 import re
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from typing import Literal, Never
+from typing import Never
 
+from ghostless.io import atomic_write_json, atomic_write_text, utc_today
 from ghostless.paths import ProjectError
-from ghostless.judge import OVERRIDABLE_METRICS
-from ghostless.stats import DEFAULT_WEIGHTS, Kind, Piece, Tier
+from ghostless.schema import (
+    OVERRIDABLE_METRICS,
+    Confirmation,
+    Kind,
+    Manifest,
+    MigrationResult,
+    NoteSaveResult,
+    Origin,
+    ProvenanceJson,
+    ProvenanceOrigin,
+    Tier,
+)
+from ghostless.stats import DEFAULT_WEIGHTS, Piece
 from ghostless.text import split_frontmatter
 
 TEXT_SUFFIXES = {".md", ".markdown", ".txt"}
@@ -114,15 +127,12 @@ NOTE_FILES = (
     ("audience", "AUDIENCE.md"),
 )
 
-Origin = Literal["ai-first", "writer-first"]
 # Provenance answers "where did the first draft come from?". It is recorded,
 # never measured. Corpus files default to `unaided`; a learned pair carries
 # whatever its meta.json says.
-ProvenanceOrigin = Literal["unaided", "writer-first", "ai-first"]
 # Confirmation is the writer's claim about the final. `origin` means the
 # provenance itself settles it (an unaided or writer-first draft is theirs).
 # `promoted` means they deliberately lifted an AI-first final into gold.
-Confirmation = Literal["none", "origin", "promoted"]
 
 
 @dataclass(frozen=True)
@@ -220,7 +230,7 @@ def provenance_json(
     confirmation: str,
     model: str | None = None,
     tool: str | None = None,
-) -> dict[str, object]:
+) -> ProvenanceJson:
     return {
         "origin": origin,
         "confirmation": confirmation,
@@ -257,7 +267,7 @@ def default_manifest() -> dict[str, object]:
     }
 
 
-def load_manifest(root: Path) -> dict[str, object]:
+def load_manifest(root: Path) -> Manifest:
     path = root / "manifest.json"
     if not path.is_file():
         raise ProjectError(f"Missing manifest.json in {root}. Run `ghostless init`.")
@@ -271,13 +281,15 @@ def load_manifest(root: Path) -> dict[str, object]:
     custom = raw.get("weights") or {}
     if not isinstance(custom, dict):
         raise ProjectError(f"{path}: weights must be an object.")
-    for key in ("gold", "silver", "bronze", "edited"):
+    tiers: tuple[Tier, ...] = ("gold", "silver", "bronze", "edited")
+    for key in tiers:
         if key not in custom:
             continue
-        if isinstance(custom[key], bool):
+        raw_weight = custom[key]
+        if isinstance(raw_weight, bool) or not isinstance(raw_weight, (int, float, str)):
             raise ProjectError(f"{path}: weights.{key} must be a number.")
         try:
-            number = float(custom[key])
+            number = float(raw_weight)
         except (TypeError, ValueError) as exc:
             raise ProjectError(f"{path}: weights.{key} must be a number.") from exc
         if not math.isfinite(number):
@@ -291,8 +303,10 @@ def load_manifest(root: Path) -> dict[str, object]:
                 _never(unexpected)
     minimum = _positive_int(raw.get("goldVoiceMinimum", 10), path=path, field="goldVoiceMinimum")
     fail_under = raw.get("failUnder", 70)
-    if isinstance(fail_under, bool) or (
-        isinstance(fail_under, float) and not fail_under.is_integer()
+    if (
+        isinstance(fail_under, bool)
+        or not isinstance(fail_under, (int, float, str))
+        or (isinstance(fail_under, float) and not fail_under.is_integer())
     ):
         raise ProjectError(f"{path}: failUnder must be an integer.")
     try:
@@ -386,7 +400,7 @@ def load_notes(root: Path) -> dict[str, str | None]:
     return notes
 
 
-def save_note(root: Path, *, kind: str, text: str) -> dict[str, object]:
+def save_note(root: Path, *, kind: str, text: str) -> NoteSaveResult:
     """Append one confirmed editorial rule to STYLE.md or AUDIENCE.md.
 
     `kind` is ``"style"`` or ``"audience"``. The line is dated, so a rule the
@@ -400,19 +414,19 @@ def save_note(root: Path, *, kind: str, text: str) -> dict[str, object]:
     if not rule:
         raise ProjectError("The rule text must not be empty.")
     path = root / name
-    line = f"- {datetime.now(timezone.utc).strftime('%Y-%m-%d')} {rule}"
+    line = f"- {utc_today()} {rule}"
     heading = f"# {kind.title()}\n"
     if not path.is_file():
-        path.write_text(heading + "\n" + line + "\n", encoding="utf-8")
+        atomic_write_text(path, heading + "\n" + line + "\n")
         return {"path": path, "created": True, "appended": True}
     existing = path.read_text(encoding="utf-8")
     if line in existing.splitlines():
         return {"path": path, "created": False, "appended": False}
     if not existing.strip():
-        path.write_text(heading + "\n" + line + "\n", encoding="utf-8")
+        atomic_write_text(path, heading + "\n" + line + "\n")
         return {"path": path, "created": True, "appended": True}
     body = existing.rstrip("\n") + "\n\n" + line + "\n"
-    path.write_text(body, encoding="utf-8")
+    atomic_write_text(path, body)
     return {"path": path, "created": False, "appended": True}
 
 
@@ -449,10 +463,7 @@ def init_project(directory: Path, *, force: bool = False, git: bool = True) -> P
             "before anything is committed."
         )
     ensure_layout(directory)
-    manifest_path.write_text(
-        json.dumps(default_manifest(), indent=2) + "\n",
-        encoding="utf-8",
-    )
+    atomic_write_json(manifest_path, default_manifest())
     _ensure_gitignore(gitignore_path)
     if git:
         ensure_local_git(directory)
@@ -483,10 +494,10 @@ def _ensure_gitignore(path: Path) -> None:
         prefix += "\n"
     if prefix and not prefix.endswith("\n\n"):
         prefix += "\n"
-    path.write_text(prefix + GITIGNORE_BLOCK, encoding="utf-8")
+    atomic_write_text(path, prefix + GITIGNORE_BLOCK)
 
 
-def migrate_project(directory: Path) -> dict[str, object]:
+def migrate_project(directory: Path) -> MigrationResult:
     """Move a v0.1 voice directory to the data-repo layout.
 
     Changes only `.gitignore` and missing directories. It never stages,
@@ -508,7 +519,7 @@ def migrate_project(directory: Path) -> dict[str, object]:
     updated = _data_repo_gitignore(existing, drop_legacy=legacy_removed)
     changed = updated != existing
     if changed:
-        gitignore_path.write_text(updated, encoding="utf-8")
+        atomic_write_text(gitignore_path, updated)
     created = ensure_layout(directory)
     return {
         "root": directory,
@@ -652,10 +663,8 @@ def new_session_id(root: Path, *, date: str, section: str | None = None) -> str:
     return fresh_directory(root / "sessions", slug_for(date, section)).name
 
 
-def discover(root: Path, manifest: dict[str, object]) -> list[Piece]:
+def discover(root: Path, manifest: Manifest) -> list[Piece]:
     weights = manifest["weights"]
-    if not isinstance(weights, dict):
-        raise ProjectError("manifest weights are missing.")
     pieces: list[Piece] = []
     specs: list[tuple[Path, Tier, Kind]] = [
         (root / "corpus" / "gold", "gold", "prose"),
@@ -706,7 +715,7 @@ def _piece_from_file(
     *,
     default_tier: Tier,
     default_kind: Kind,
-    weights: dict[str, float],
+    weights: Mapping[Tier, float],
     learned: bool = False,
     origin: str | None = None,
     confirmation: str | None = None,
@@ -786,7 +795,7 @@ def _section_from_path(
     return None
 
 
-def _learned_pieces(root: Path, weights: dict[str, float]) -> list[Piece]:
+def _learned_pieces(root: Path, weights: Mapping[Tier, float]) -> list[Piece]:
     folder = root / "gold"
     if not folder.is_dir():
         return []
@@ -831,7 +840,7 @@ def _apply_overrides(
     root: Path,
     pieces: list[Piece],
     entries: object,
-    weights: dict[str, float],
+    weights: Mapping[Tier, float],
 ) -> list[Piece]:
     if not isinstance(entries, list) or not entries:
         return pieces

@@ -1,4 +1,4 @@
-"""Weighted voice statistics.
+"""Weighted voice statistics and corpus confidence thresholds.
 
 Three pools, because not every source is allowed to move every number:
 
@@ -17,15 +17,33 @@ kept as edit evidence in `gold/<slug>/meta.json`; see `learn.py`.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import Literal, Never
+from typing import Never
 
-from ghostless.text import STOPWORDS, Measured, is_contraction, measure, strip_non_prose
+from ghostless.schema import (
+    OVERRIDABLE_METRICS,
+    CompiledStats,
+    ConfidenceLevel,
+    CorpusConfidence,
+    Distribution,
+    EditedPoolInfo,
+    EditSummary,
+    FileRow,
+    Kind,
+    MetricBlock,
+    Metrics,
+    OpenerRates,
+    PieceCounts,
+    Pool,
+    ProvenanceCounts,
+    SectionBlock,
+    SignaturePhrase,
+    Tier,
+    TierCounts,
+)
 from ghostless.tells import split_catalog
-
-Tier = Literal["gold", "silver", "bronze", "edited"]
-Kind = Literal["prose", "spoken"]
-Pool = Literal["rhythm", "diction", "format"]
+from ghostless.text import STOPWORDS, Measured, is_contraction, measure, strip_non_prose
 
 SHORT_MAX = 10
 MEDIUM_MAX = 20
@@ -42,6 +60,14 @@ DEFAULT_WEIGHTS: dict[Tier, float] = {
 # prose weight. A pile of lightly edited AI drafts then cannot outvote the
 # writer's own corpus on paragraph length, the only pool it touches.
 EDITED_MAX_SHARE = 0.25
+
+# Sample-size thresholds for the confidence block. 1,500 words matches the
+# provisional-ban-list warning build already writes. Below it, a score is a
+# smoke test; below the high-water marks it is usable but noisy.
+CONFIDENCE_MIN_WORDS = 1500
+CONFIDENCE_MIN_PIECES = 3
+CONFIDENCE_HIGH_WORDS = 5000
+CONFIDENCE_HIGH_PIECES = 10
 
 
 @dataclass(frozen=True)
@@ -60,6 +86,35 @@ class Piece:
     confirmation: str | None = None
     model: str | None = None
     tool: str | None = None
+
+
+def as_mapping(value: object) -> Mapping[str, object]:
+    """Return `value` when it is a string-keyed mapping, else an empty dict."""
+    return value if isinstance(value, Mapping) else {}
+
+
+def metrics_of(block: object) -> Mapping[str, object]:
+    """Return the `metrics` sub-mapping from a metric block, else an empty dict."""
+    return as_mapping(as_mapping(block).get("metrics"))
+
+
+def apply_overrides(
+    targets: Mapping[str, object],
+    overrides: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Return `targets` with manifest override values pinned on top.
+
+    An override replaces the measured target (e.g. `emDashesPer1k: 0` bans
+    em dashes outright). Unknown keys and non-numbers are ignored here;
+    `load_manifest` is the place that rejects them.
+    """
+    if not overrides:
+        return dict(targets)
+    pinned = dict(targets)
+    for key, value in overrides.items():
+        if key in OVERRIDABLE_METRICS and isinstance(value, (int, float)) and not isinstance(value, bool):
+            pinned[key] = value
+    return pinned
 
 
 def pools_for(piece: Piece, *, bronze_format_only: bool) -> frozenset[Pool]:
@@ -116,26 +171,32 @@ def _per_1k(count: float, words: float) -> float | None:
     return round(1000.0 * count / words, 4)
 
 
-def _distribution(observations: list[tuple[float, float]]) -> dict[str, float | None]:
+def _distribution(observations: list[tuple[float, float]]) -> Distribution:
     total = sum(weight for _, weight in observations if weight > 0)
     if total <= 0:
         return {"short": None, "medium": None, "long": None}
-    buckets = {"short": 0.0, "medium": 0.0, "long": 0.0}
+    short = 0.0
+    medium = 0.0
+    long = 0.0
     for length, weight in observations:
         if weight <= 0:
             continue
         if length <= SHORT_MAX:
-            buckets["short"] += weight
+            short += weight
         elif length <= MEDIUM_MAX:
-            buckets["medium"] += weight
+            medium += weight
         else:
-            buckets["long"] += weight
-    return {name: round(value / total, 4) for name, value in buckets.items()}
+            long += weight
+    return {
+        "short": round(short / total, 4),
+        "medium": round(medium / total, 4),
+        "long": round(long / total, 4),
+    }
 
 
 def _signature_phrases(
     sentences: list[tuple[int, float, tuple[str, ...]]],
-) -> list[dict[str, float | int | str]]:
+) -> list[SignaturePhrase]:
     weighted: dict[str, float] = {}
     raw: dict[str, int] = {}
     pieces_seen: dict[str, set[int]] = {}
@@ -176,7 +237,7 @@ def _keep_gram(gram: tuple[str, ...]) -> bool:
     )
 
 
-def _round_median(value: float | None) -> float | None:
+def _round_median(value: float | None) -> float | int | None:
     if value is None:
         return None
     if float(value).is_integer():
@@ -184,7 +245,7 @@ def _round_median(value: float | None) -> float | None:
     return round(value, 4)
 
 
-def summarize(pieces: list[Piece], *, bronze_format_only: bool, use_weights: bool) -> dict[str, object]:
+def summarize(pieces: list[Piece], *, bronze_format_only: bool, use_weights: bool) -> MetricBlock:
     rhythm_words = 0.0
     contractions = 0.0
     i_count = 0.0
@@ -233,11 +294,12 @@ def summarize(pieces: list[Piece], *, bronze_format_only: bool, use_weights: boo
 
     opener_total = openers["and"] + openers["but"] + openers["so"]
     opener_share = round(opener_total / rhythm_sentences, 4) if rhythm_sentences else None
-    opener_rates = {
-        name: (round(count / rhythm_sentences, 4) if rhythm_sentences else None)
-        for name, count in openers.items()
+    opener_rates: OpenerRates = {
+        "and": round(openers["and"] / rhythm_sentences, 4) if rhythm_sentences else None,
+        "but": round(openers["but"] / rhythm_sentences, 4) if rhythm_sentences else None,
+        "so": round(openers["so"] / rhythm_sentences, 4) if rhythm_sentences else None,
     }
-    metrics = {
+    metrics: Metrics = {
         "rhythmWords": round(rhythm_words, 4),
         "rhythmSentences": round(rhythm_sentences, 4),
         "dictionWords": round(diction_words, 4),
@@ -261,18 +323,8 @@ def summarize(pieces: list[Piece], *, bronze_format_only: bool, use_weights: boo
     }
 
 
-def _diction_words(summary: dict[str, object]) -> float:
-    metrics = summary.get("metrics")
-    if not isinstance(metrics, dict):
-        return 0.0
-    value = metrics.get("dictionWords", 0)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return 0.0
-    return float(value)
-
-
-def file_rows(pieces: list[Piece]) -> list[dict[str, object]]:
-    rows: list[dict[str, object]] = []
+def file_rows(pieces: list[Piece]) -> list[FileRow]:
+    rows: list[FileRow] = []
     for piece in pieces:
         measured = measure(piece.text)
         rows.append(
@@ -293,9 +345,9 @@ def file_rows(pieces: list[Piece]) -> list[dict[str, object]]:
     return rows
 
 
-def count_pieces(pieces: list[Piece]) -> dict[str, object]:
-    prose = {"gold": 0, "silver": 0, "bronze": 0, "edited": 0}
-    spoken = {"gold": 0, "silver": 0, "bronze": 0, "edited": 0}
+def count_pieces(pieces: list[Piece]) -> PieceCounts:
+    prose: dict[Tier, int] = {"gold": 0, "silver": 0, "bronze": 0, "edited": 0}
+    spoken: dict[Tier, int] = {"gold": 0, "silver": 0, "bronze": 0, "edited": 0}
     learned = 0
     for piece in pieces:
         if piece.learned:
@@ -307,7 +359,19 @@ def count_pieces(pieces: list[Piece]) -> dict[str, object]:
                 prose[piece.tier] += 1
             case _ as unexpected:
                 _never(unexpected)
-    return {"prose": prose, "spoken": spoken, "learned": learned, "total": len(pieces)}
+    prose_counts: TierCounts = {
+        "gold": prose["gold"],
+        "silver": prose["silver"],
+        "bronze": prose["bronze"],
+        "edited": prose["edited"],
+    }
+    spoken_counts: TierCounts = {
+        "gold": spoken["gold"],
+        "silver": spoken["silver"],
+        "bronze": spoken["bronze"],
+        "edited": spoken["edited"],
+    }
+    return {"prose": prose_counts, "spoken": spoken_counts, "learned": learned, "total": len(pieces)}
 
 
 def _edited_weights(pieces: list[Piece]) -> tuple[float, float, float]:
@@ -334,24 +398,33 @@ def _edited_weights(pieces: list[Piece]) -> tuple[float, float, float]:
     return allowed / edited, edited, allowed
 
 
-def _provenance_counts(pieces: list[Piece]) -> dict[str, int]:
+def _provenance_counts(pieces: list[Piece]) -> ProvenanceCounts:
     counts = {"unaided": 0, "writer-first": 0, "ai-first": 0, "unknown": 0}
     for piece in pieces:
         match piece.origin:
-            case "unaided" | "writer-first" | "ai-first":
-                counts[piece.origin] += 1
+            case "unaided":
+                counts["unaided"] += 1
+            case "writer-first":
+                counts["writer-first"] += 1
+            case "ai-first":
+                counts["ai-first"] += 1
             case _:
                 counts["unknown"] += 1
-    return counts
+    return {
+        "unaided": counts["unaided"],
+        "writer-first": counts["writer-first"],
+        "ai-first": counts["ai-first"],
+        "unknown": counts["unknown"],
+    }
 
 
 def compile_stats(
     pieces: list[Piece],
     *,
-    weights: dict[str, float],
+    weights: Mapping[Tier, float] | Mapping[str, float],
     gold_voice_minimum: int,
-    edits: dict[str, object] | None = None,
-) -> dict[str, object]:
+    edits: EditSummary | None = None,
+) -> CompiledStats:
     # Bronze drops out of voice once enough *written* gold exists. Spoken
     # gold (dictations) contributes no diction or format, so it must not
     # count toward the threshold: ten gold transcripts would otherwise push
@@ -375,14 +448,15 @@ def compile_stats(
     weighted = summarize(counted, bronze_format_only=format_only, use_weights=True)
     unweighted = summarize(counted, bronze_format_only=format_only, use_weights=False)
 
-    by_tier: dict[str, object] = {}
-    for tier in ("gold", "silver", "bronze", "edited"):
+    by_tier: dict[str, MetricBlock] = {}
+    tiers: tuple[Tier, ...] = ("gold", "silver", "bronze", "edited")
+    for tier in tiers:
         subset = [piece for piece in counted if piece.tier == tier and piece.kind == "prose"]
         by_tier[tier] = summarize(subset, bronze_format_only=False, use_weights=False)
     spoken = [piece for piece in counted if piece.kind == "spoken"]
     by_tier["spoken"] = summarize(spoken, bronze_format_only=False, use_weights=False)
 
-    sections: dict[str, object] = {}
+    sections: dict[str, SectionBlock] = {}
     names = sorted({piece.section for piece in pieces if piece.section})
     for name in names:
         subset = [piece for piece in counted if piece.section == name]
@@ -407,7 +481,7 @@ def compile_stats(
             "No written prose in the voice pool, so the ban list was left empty. "
             "Spoken lines do not decide bans."
         )
-    diction_words = _diction_words(weighted)
+    diction_words = weighted["metrics"]["dictionWords"]
     if 0 < diction_words < 1500:
         warnings.append(
             "The written sample is under 1,500 words. The absent-tell list is provisional; "
@@ -425,7 +499,8 @@ def compile_stats(
             f"writer-authored prose ({round(edited_configured, 4)} configured, "
             f"{round(edited_counted, 4)} counted)."
         )
-    unknown_origin = _provenance_counts(pieces)["unknown"]
+    provenance = _provenance_counts(pieces)
+    unknown_origin = provenance["unknown"]
     if unknown_origin:
         warnings.append(
             f"{unknown_origin} piece(s) have no recorded origin. A learned pair without one "
@@ -433,25 +508,118 @@ def compile_stats(
             "record where the first draft came from."
         )
 
+    edited_info: EditedPoolInfo = {
+        "pieces": edited_pieces,
+        "configuredWeight": round(edited_configured, 4),
+        "countedWeight": round(edited_counted, 4),
+        "maxShare": EDITED_MAX_SHARE,
+    }
+    empty_edits: EditSummary = {"learns": [], "repeatedRemovals": {}, "repeatedAdditions": {}}
     return {
         "schemaVersion": 1,
-        "weights": weights,
+        "weights": {str(key): float(value) for key, value in weights.items()},
         "goldVoiceMinimum": gold_voice_minimum,
         "goldPieces": gold_pieces,
         "bronzeFormatOnly": format_only,
-        "edited": {
-            "pieces": edited_pieces,
-            "configuredWeight": round(edited_configured, 4),
-            "countedWeight": round(edited_counted, 4),
-            "maxShare": EDITED_MAX_SHARE,
-        },
+        "edited": edited_info,
         "counts": count_pieces(counted),
-        "provenance": _provenance_counts(pieces),
+        "provenance": provenance,
         "files": file_rows(counted),
         "weighted": weighted,
         "unweighted": unweighted,
         "byTier": by_tier,
         "sections": sections,
         "warnings": warnings,
-        "edits": edits or {"learns": [], "repeatedRemovals": {}, "repeatedAdditions": {}},
+        "edits": edits if edits is not None else empty_edits,
     }
+
+
+def corpus_confidence(stats: Mapping[str, object], section: str | None = None) -> CorpusConfidence:
+    """How much corpus is behind a score, and whether it is enough to trust.
+
+    Counts are unweighted so they describe the real sample rather than the
+    weighted target. `words` is everything measured for rhythm (written prose
+    plus spoken lines); `writtenWords` is the prose pool that sets the ban list
+    and diction targets. A section reports that section's pieces and metrics.
+    """
+    block = _unweighted_block(stats, section)
+    metrics = metrics_of(block)
+    words = _count(metrics.get("rhythmWords"))
+    written = _count(metrics.get("dictionWords"))
+    sentences = _count(metrics.get("rhythmSentences"))
+    pieces = _piece_count(stats, section)
+    level: ConfidenceLevel
+    if written <= 0:
+        level = "low"
+        note = (
+            "No written prose in the sample. Only rhythm targets can be compared; "
+            "add prose to corpus/ for a full score."
+        )
+    elif words < CONFIDENCE_MIN_WORDS or pieces < CONFIDENCE_MIN_PIECES:
+        level = "low"
+        note = (
+            f"Small sample: {words} measured words in {pieces} piece(s). "
+            f"Below {CONFIDENCE_MIN_WORDS} words or {CONFIDENCE_MIN_PIECES} pieces, "
+            "treat the score as a smoke test, not a verdict."
+        )
+    elif words < CONFIDENCE_HIGH_WORDS or pieces < CONFIDENCE_HIGH_PIECES:
+        level = "medium"
+        note = (
+            f"Moderate sample: {words} measured words in {pieces} pieces. "
+            "More gold writing would make the score steadier."
+        )
+    else:
+        level = "high"
+        note = ""
+    return {
+        "level": level,
+        "trustworthy": level != "low",
+        "pieces": pieces,
+        "words": words,
+        "writtenWords": written,
+        "sentences": sentences,
+        "minimums": {"words": CONFIDENCE_MIN_WORDS, "pieces": CONFIDENCE_MIN_PIECES},
+        "note": note,
+    }
+
+
+def _unweighted_block(stats: Mapping[str, object], section: str | None) -> Mapping[str, object]:
+    if section:
+        sections = as_mapping(stats.get("sections"))
+        entry = as_mapping(sections.get(section))
+        if entry:
+            block = as_mapping(entry.get("unweighted"))
+            if block and metrics_of(block):
+                return block
+            weighted = as_mapping(entry.get("weighted"))
+            if weighted and metrics_of(weighted):
+                return weighted
+    block = as_mapping(stats.get("unweighted"))
+    if block and metrics_of(block):
+        return block
+    return as_mapping(stats.get("weighted"))
+
+
+def _piece_count(stats: Mapping[str, object], section: str | None) -> int:
+    if section:
+        sections = as_mapping(stats.get("sections"))
+        entry = as_mapping(sections.get(section))
+        if entry:
+            value = entry.get("pieces")
+            if not isinstance(value, bool) and isinstance(value, (int, float)):
+                return int(value)
+    counts = as_mapping(stats.get("counts"))
+    if counts:
+        total = counts.get("total")
+        if not isinstance(total, bool) and isinstance(total, (int, float)):
+            return int(total)
+    files = stats.get("files")
+    if isinstance(files, list):
+        return len(files)
+    return 0
+
+
+def _count(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return int(round(float(value)))
