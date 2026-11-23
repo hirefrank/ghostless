@@ -86,6 +86,12 @@ class NativeHarnessTests(unittest.TestCase):
         self.assertEqual(package["bin"]["ghostless"], "bin/ghostless.cjs")
         self.assertTrue((ROOT / "bin" / "ghostless.cjs").is_file())
 
+    def test_maintenance_command_help_and_bad_flag_return_clean_codes(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["install-skills", "--help"]), 0)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main(["install-skills", "--unknown-flag"]), 2)
+
 
 class PathWarningTests(unittest.TestCase):
     def _bin_dir(self, prefix: Path) -> Path:
@@ -141,14 +147,14 @@ class PathWarningTests(unittest.TestCase):
         import ghostless.harness as harness
 
         npm = r"C:\Program Files\nodejs\npm.cmd"
-        with patch.object(harness.os, "name", "nt"):
+        with patch.object(harness, "_is_windows", return_value=True):
             self.assertEqual(
                 harness._npm_prefix_command(npm),
                 ["cmd", "/c", npm, "config", "get", "prefix"],
             )
-        # The POSIX expectation must also pin os.name: on Windows it is
-        # genuinely "nt", so without the patch this asserts the cmd form.
-        with patch.object(harness.os, "name", "posix"):
+        # Pin the platform helper, not os.name. Path() follows os.name, so a
+        # process-wide "posix" patch cannot build paths on Windows.
+        with patch.object(harness, "_is_windows", return_value=False):
             self.assertEqual(
                 harness._npm_prefix_command("/usr/local/bin/npm"),
                 ["/usr/local/bin/npm", "config", "get", "prefix"],
@@ -168,6 +174,208 @@ class PathWarningTests(unittest.TestCase):
             self.assertIn(str(expected), out.getvalue())
             if os.name != "nt":
                 self.assertIn("export PATH=", out.getvalue())
+
+
+class UpdateTests(unittest.TestCase):
+    def _make_suite(self, path: Path, *, git_dir: bool = False) -> Path:
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "package.json").write_text('{"name": "ghostless", "version": "0.1.0"}\n', encoding="utf-8")
+        (path / "bin").mkdir(exist_ok=True)
+        (path / "bin" / "ghostless").write_text("#!/bin/sh\n", encoding="utf-8")
+        (path / "skills" / "ghostless-draft").mkdir(parents=True, exist_ok=True)
+        (path / "skills" / "ghostless-draft" / "SKILL.md").write_text("# draft\n", encoding="utf-8")
+        if git_dir:
+            (path / ".git").mkdir(exist_ok=True)
+        return path
+
+    def test_update_npm_global_spawns_newly_installed_cli(self) -> None:
+        import ghostless.harness as harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            suite = self._make_suite(Path(tmp) / "lib" / "node_modules" / "ghostless")
+            env = {"GHOSTLESS_SUITE": str(suite), "GHOSTLESS_LAUNCHER": "npm"}
+            which_map = {"npm": "/usr/local/bin/npm", "ghostless": "/usr/local/bin/ghostless"}
+            with (
+                patch.dict(os.environ, env),
+                patch.object(harness, "_is_windows", return_value=False),
+                patch("ghostless.harness.shutil.which", side_effect=lambda name: which_map.get(name)),
+                patch("ghostless.harness.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as mock_run,
+            ):
+                self.assertEqual(harness.update(agent="cursor"), 0)
+
+            self.assertEqual(mock_run.call_count, 2)
+            self.assertEqual(
+                mock_run.call_args_list[0].args[0],
+                ["/usr/local/bin/npm", "install", "-g", "ghostless@latest"],
+            )
+            self.assertEqual(
+                mock_run.call_args_list[1].args[0],
+                ["/usr/local/bin/ghostless", "install-skills", "--force", "--agent", "cursor"],
+            )
+            self.assertEqual(mock_run.call_args_list[1].kwargs["env"]["GHOSTLESS_JUST_UPDATED"], "1")
+
+    def test_update_npm_global_windows_runs_cmd_shim(self) -> None:
+        import ghostless.harness as harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            suite = self._make_suite(Path(tmp) / "node_modules" / "ghostless")
+            env = {"GHOSTLESS_LAUNCHER": "npm"}
+            which_map = {"npm.cmd": r"C:\npm\npm.cmd", "ghostless.cmd": r"C:\npm\ghostless.cmd"}
+            with (
+                patch.dict(os.environ, env),
+                patch("ghostless.harness._root", return_value=suite),
+                patch.object(harness, "_is_windows", return_value=True),
+                patch("ghostless.harness.shutil.which", side_effect=lambda name: which_map.get(name)),
+                patch("ghostless.harness.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as mock_run,
+            ):
+                self.assertEqual(harness.update(agent="claude-code"), 0)
+
+            self.assertEqual(mock_run.call_count, 2)
+            self.assertEqual(
+                mock_run.call_args_list[0].args[0],
+                ["cmd", "/c", r"C:\npm\npm.cmd", "install", "-g", "ghostless@latest"],
+            )
+            self.assertEqual(
+                mock_run.call_args_list[1].args[0],
+                ["cmd", "/c", r"C:\npm\ghostless.cmd", "install-skills", "--force", "--agent", "claude-code"],
+            )
+            self.assertEqual(mock_run.call_args_list[1].kwargs["env"]["GHOSTLESS_JUST_UPDATED"], "1")
+
+    def test_update_npm_global_falls_back_when_installed_cli_missing_from_path(self) -> None:
+        import ghostless.harness as harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            suite = self._make_suite(Path(tmp) / "lib" / "node_modules" / "ghostless")
+            env = {"GHOSTLESS_SUITE": str(suite), "GHOSTLESS_LAUNCHER": "npm"}
+            which_map = {"npm": "/usr/local/bin/npm", "npm.cmd": r"C:\npm\npm.cmd"}
+            with (
+                patch.dict(os.environ, env),
+                patch("ghostless.harness.shutil.which", side_effect=lambda name: which_map.get(name)),
+                patch("ghostless.harness.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as mock_run,
+                patch("ghostless.harness.install_skills", return_value=0) as mock_install,
+            ):
+                self.assertEqual(harness.update(agent="cursor"), 0)
+
+            self.assertEqual(mock_run.call_count, 1)
+            mock_install.assert_called_once_with(
+                agent="cursor", force=True, copy=False, no_launcher=False, verbose=False
+            )
+
+    def test_update_npm_global_stops_when_npm_install_fails(self) -> None:
+        import ghostless.harness as harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            suite = self._make_suite(Path(tmp) / "lib" / "node_modules" / "ghostless")
+            env = {"GHOSTLESS_SUITE": str(suite), "GHOSTLESS_LAUNCHER": "npm"}
+            which_map = {
+                "npm": "/usr/local/bin/npm",
+                "npm.cmd": r"C:\npm\npm.cmd",
+                "ghostless": "/usr/local/bin/ghostless",
+                "ghostless.cmd": r"C:\npm\ghostless.cmd",
+            }
+            with (
+                patch.dict(os.environ, env),
+                patch("ghostless.harness.shutil.which", side_effect=lambda name: which_map.get(name)),
+                patch("ghostless.harness.subprocess.run", return_value=subprocess.CompletedProcess([], 1)) as mock_run,
+                patch("ghostless.harness.install_skills") as mock_install,
+            ):
+                self.assertEqual(harness.update(agent="auto"), 1)
+
+            self.assertEqual(mock_run.call_count, 1)
+            mock_install.assert_not_called()
+
+    def test_update_git_checkout_clean_pulls_and_refreshes_skills(self) -> None:
+        import ghostless.harness as harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            suite = self._make_suite(Path(tmp) / "checkout", git_dir=True)
+            env = {"GHOSTLESS_SUITE": str(suite)}
+            with (
+                patch.dict(os.environ, env),
+                patch("ghostless.harness.shutil.which", return_value="/usr/bin/git"),
+                patch("ghostless.harness.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as mock_run,
+                patch("ghostless.harness.install_skills", return_value=0) as mock_install,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(harness.update(agent="cursor"), 0)
+
+            self.assertEqual(
+                [call.args[0] for call in mock_run.call_args_list],
+                [
+                    ["/usr/bin/git", "-C", str(suite.resolve()), "diff", "--quiet"],
+                    ["/usr/bin/git", "-C", str(suite.resolve()), "diff", "--cached", "--quiet"],
+                    ["/usr/bin/git", "-C", str(suite.resolve()), "pull", "--ff-only"],
+                ],
+            )
+            mock_install.assert_called_once_with(
+                agent="cursor", force=True, copy=False, no_launcher=False, verbose=False
+            )
+
+    def test_update_git_checkout_dirty_skips_pull_and_warns(self) -> None:
+        import ghostless.harness as harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            suite = self._make_suite(Path(tmp) / "checkout", git_dir=True)
+            env = {"GHOSTLESS_SUITE": str(suite)}
+            for diff_codes in ([1], [0, 1]):
+                codes = iter(diff_codes)
+                stderr = io.StringIO()
+                with (
+                    patch.dict(os.environ, env),
+                    patch("ghostless.harness.shutil.which", return_value="/usr/bin/git"),
+                    patch(
+                        "ghostless.harness.subprocess.run",
+                        side_effect=lambda *_a, **_kw: subprocess.CompletedProcess([], next(codes)),
+                    ) as mock_run,
+                    patch("ghostless.harness.install_skills", return_value=0) as mock_install,
+                    contextlib.redirect_stdout(io.StringIO()),
+                    contextlib.redirect_stderr(stderr),
+                ):
+                    self.assertEqual(harness.update(agent="auto"), 0)
+
+                commands = [call.args[0] for call in mock_run.call_args_list]
+                self.assertFalse(any("pull" in cmd for cmd in commands), commands)
+                self.assertIn("uncommitted changes", stderr.getvalue())
+                mock_install.assert_called_once_with(
+                    agent="auto", force=True, copy=False, no_launcher=False, verbose=False
+                )
+
+    def test_update_git_checkout_pull_failure_warns_and_still_relinks(self) -> None:
+        import ghostless.harness as harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            suite = self._make_suite(Path(tmp) / "checkout", git_dir=True)
+            env = {"GHOSTLESS_SUITE": str(suite)}
+            codes = iter([0, 0, 1])
+            stderr = io.StringIO()
+            with (
+                patch.dict(os.environ, env),
+                patch("ghostless.harness.shutil.which", return_value="/usr/bin/git"),
+                patch(
+                    "ghostless.harness.subprocess.run",
+                    side_effect=lambda *_a, **_kw: subprocess.CompletedProcess([], next(codes)),
+                ),
+                patch("ghostless.harness.install_skills", return_value=0) as mock_install,
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(stderr),
+            ):
+                self.assertEqual(harness.update(agent="auto"), 0)
+
+            self.assertIn("git pull failed", stderr.getvalue())
+            mock_install.assert_called_once()
+
+    def test_update_non_npm_non_git_returns_1(self) -> None:
+        import ghostless.harness as harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            suite = self._make_suite(Path(tmp) / "plain", git_dir=False)
+            env = {"GHOSTLESS_SUITE": str(suite)}
+            out = io.StringIO()
+            with patch.dict(os.environ, env):
+                os.environ.pop("GHOSTLESS_LAUNCHER", None)
+                with contextlib.redirect_stdout(out):
+                    self.assertEqual(harness.update(agent="auto"), 1)
+            self.assertIn("not launched from npm", out.getvalue())
 
 
 if __name__ == "__main__":

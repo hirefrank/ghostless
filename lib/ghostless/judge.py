@@ -7,6 +7,7 @@ import re
 from ghostless.paths import ProjectError
 from ghostless.stats import Piece, summarize
 from ghostless.tells import ban_hits, structural_tells
+from ghostless.text import strip_code_and_comments, strip_non_prose
 
 # (relative slack, absolute slack). A miss is outside target ± max(abs, |target| * rel).
 TOLERANCES: dict[str, tuple[float, float]] = {
@@ -64,10 +65,11 @@ def placeholder_pattern(token: str) -> "re.Pattern[str]":
 
 
 def find_placeholders(text: str, placeholder: str | None = None) -> list[str]:
-    found = [match.group(0) for match in PLACEHOLDER_RE.finditer(text)]
+    cleaned = strip_code_and_comments(text)
+    found = [match.group(0) for match in PLACEHOLDER_RE.finditer(cleaned)]
     if placeholder:
         seen = set(found)
-        for match in placeholder_pattern(placeholder).finditer(text):
+        for match in placeholder_pattern(placeholder).finditer(cleaned):
             if match.group(0) not in seen:
                 seen.add(match.group(0))
                 found.append(match.group(0))
@@ -114,7 +116,11 @@ def judge_text(
     placeholder: str | None = None,
 ) -> dict[str, object]:
     targets, target_label = _targets(stats, section)
-    target_metrics = apply_overrides(_metrics(targets), overrides)
+    effective_overrides = overrides
+    if effective_overrides is None:
+        raw_overrides = stats.get("overrides")
+        effective_overrides = raw_overrides if isinstance(raw_overrides, dict) else None
+    target_metrics = apply_overrides(_metrics(targets), effective_overrides)
     confidence = corpus_confidence(stats, section)
     if not text.strip():
         return {
@@ -124,6 +130,7 @@ def judge_text(
             "section": target_label,
             "checks": [],
             "banned": [],
+            "confirmedRules": [],
             "structure": [],
             "placeholders": [],
             "draft": {},
@@ -140,6 +147,7 @@ def judge_text(
             "section": target_label,
             "checks": [],
             "banned": [],
+            "confirmedRules": [],
             "structure": [],
             "placeholders": [],
             "draft": {},
@@ -154,8 +162,22 @@ def judge_text(
     draft = draft_summary(text)
     draft_metrics = _metrics(draft)
     ban_list = _string_list(_block(stats.get("weighted")).get("banList"))
-    banned = [{"tell": tell, "count": count} for tell, count in ban_hits(text, ban_list)]
-    structure = [{"kind": hit.kind, "excerpt": hit.excerpt} for hit in structural_tells(text)]
+    cleaned = strip_non_prose(text)
+    banned = [{"tell": tell, "count": count} for tell, count in ban_hits(cleaned, ban_list)]
+    banned_words = {str(item["tell"]).casefold() for item in banned}
+    active_cuts = _active_cut_rules(stats, section)
+    scope_by_word = {word.casefold(): rule_scope for word, rule_scope in active_cuts}
+    remaining_words = [word for word, _ in active_cuts if word.casefold() not in banned_words]
+    confirmed_hits = [
+        {
+            "id": f"cut:{word}",
+            "word": word,
+            "scope": scope_by_word[word.casefold()],
+            "count": count,
+        }
+        for word, count in ban_hits(cleaned, remaining_words)
+    ]
+    structure = [{"kind": hit.kind, "excerpt": hit.excerpt} for hit in structural_tells(cleaned)]
     placeholders = find_placeholders(text, placeholder)
 
     checks: list[dict[str, object]] = []
@@ -188,19 +210,21 @@ def judge_text(
             penalty += int(em_check["penalty"])
 
     ban_penalty = min(40, 10 * sum(int(item["count"]) for item in banned))
+    rule_penalty = min(24, 8 * sum(int(item["count"]) for item in confirmed_hits))
     structure_penalty = min(24, 8 * sum(1 for item in structure if item["kind"] != "em-dash"))
-    penalty += ban_penalty + structure_penalty
+    penalty += ban_penalty + rule_penalty + structure_penalty
     score = max(0, 100 - penalty)
     failed = score < fail_under
     return {
         "ok": not failed,
         "score": score,
         "failUnder": fail_under,
-        "reviewRequired": bool(banned or structure or placeholders),
+        "reviewRequired": bool(banned or confirmed_hits or structure or placeholders),
         "assessment": "mechanical-only",
         "section": target_label,
         "checks": checks,
         "banned": banned,
+        "confirmedRules": confirmed_hits,
         "structure": structure,
         "placeholders": placeholders,
         "draft": draft_metrics,
@@ -260,6 +284,14 @@ def format_report(report: dict[str, object]) -> str:
                 lines.append(f"  {item.get('tell')} ({item.get('count')})")
     else:
         lines.append("  none")
+    confirmed_rules = report.get("confirmedRules")
+    if isinstance(confirmed_rules, list) and confirmed_rules:
+        lines.append("")
+        lines.append("Confirmed rules")
+        for item in confirmed_rules:
+            if isinstance(item, dict):
+                scope_note = f" [{item['scope']}]" if item.get("scope") else ""
+                lines.append(f"  {item.get('id')} ({item.get('count')}){scope_note}")
     lines.append("")
     lines.append("Structure")
     structure = report.get("structure")
@@ -524,3 +556,32 @@ def _string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str)]
+
+
+def _active_cut_rules(
+    stats: dict[str, object], section: str | None
+) -> list[tuple[str, str | None]]:
+    """Return deduplicated (word, scope) cut rules confirmed for `section`."""
+    rules = _block(stats.get("rules"))
+    confirmed = rules.get("confirmed")
+    if not isinstance(confirmed, list):
+        return []
+    by_word: dict[str, tuple[str, str | None]] = {}
+    for item in confirmed:
+        if not isinstance(item, dict) or item.get("kind") != "cut":
+            continue
+        raw_word = item.get("word")
+        if not isinstance(raw_word, str):
+            continue
+        word = raw_word.strip()
+        if not word:
+            continue
+        raw_scope = item.get("scope")
+        rule_scope = raw_scope.strip() if isinstance(raw_scope, str) and raw_scope.strip() else None
+        if rule_scope is not None and (section is None or rule_scope != section):
+            continue
+        key = word.casefold()
+        existing = by_word.get(key)
+        if existing is None or (existing[1] is not None and rule_scope is None):
+            by_word[key] = (word, rule_scope)
+    return list(by_word.values())

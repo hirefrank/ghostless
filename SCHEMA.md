@@ -481,7 +481,7 @@ That writes `defaultProject` into `~/.ghostless/config.json`, keeping every othe
 
 `ghostless locate` and `ghostless doctor` print which source won, e.g. `Project: /Users/frank/voice (via defaultProject)`. A `defaultProject` that no longer points at a ghostless project fails loudly and names the fix (`ghostless use` at the right directory) instead of silently falling through.
 
-Skill links, from `lib/agents.sh`:
+Skill links, from `lib/ghostless/harness.py`:
 
 | Harness | Skills directory |
 | --- | --- |

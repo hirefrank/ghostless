@@ -75,7 +75,7 @@ def plan(
     return "current"
 
 
-def updates_disabled() -> bool:
+def updates_disabled(project: Path | None = None) -> bool:
     if os.environ.get("GHOSTLESS_NO_UPDATE") == "1":
         return True
     if os.environ.get("GHOSTLESS_UPDATE_CHECK", "1") == "0":
@@ -86,7 +86,7 @@ def updates_disabled() -> bool:
     if isinstance(config, dict) and config.get("updateCheck") is False:
         return True
     try:
-        root = find_project()
+        root = find_project(project)
     except ProjectError:
         return False
     try:
@@ -96,9 +96,9 @@ def updates_disabled() -> bool:
     return manifest.get("updateCheck") is False
 
 
-def run_once(*, fetcher: object = None) -> str:
+def run_once(*, fetcher: object = None, project: Path | None = None) -> str:
     """Check at most once per interval. Returns a plan line and updates the stamp."""
-    if updates_disabled():
+    if updates_disabled(project=project):
         return "disabled"
     home = data_home()
     stamp_path = home / "last-update-check"

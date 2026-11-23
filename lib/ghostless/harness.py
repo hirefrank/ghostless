@@ -31,11 +31,24 @@ AGENTS = {
 COPY_MARKER = ".ghostless-installed"
 
 
+def _is_windows() -> bool:
+    """Platform check tests can replace without changing process-wide os.name.
+
+    pathlib.Path() follows os.name, so patching that to "posix" on Windows
+    makes every Path() try to build a PosixPath and raise UnsupportedOperation.
+    """
+    return os.name == "nt"
+
+
+def _shim_command(executable: str, *args: str) -> list[str]:
+    """Wrap Windows .cmd shims through cmd /c so CreateProcess can run them."""
+    if _is_windows():
+        return ["cmd", "/c", executable, *args]
+    return [executable, *args]
+
+
 def _npm_prefix_command(npm: str) -> list[str]:
-    # Windows .cmd shims must run through the command interpreter.
-    if os.name == "nt":
-        return ["cmd", "/c", npm, "config", "get", "prefix"]
-    return [npm, "config", "get", "prefix"]
+    return _shim_command(npm, "config", "get", "prefix")
 
 
 def npm_global_bin_dir() -> Path | None:
@@ -271,27 +284,68 @@ def reset(*, agent: str, data: bool, yes: bool) -> int:
     return 0
 
 
+def _update_git_checkout(root: Path, *, agent: str) -> int:
+    """Pull fast-forward updates on a clean Git checkout, then relink skills."""
+    git = shutil.which("git")
+    if git is not None:
+        print(f"Updating local checkout at {root} …")
+        diff = subprocess.run([git, "-C", str(root), "diff", "--quiet"], check=False)
+        cached = (
+            subprocess.run([git, "-C", str(root), "diff", "--cached", "--quiet"], check=False)
+            if diff.returncode == 0
+            else None
+        )
+        if diff.returncode == 0 and cached is not None and cached.returncode == 0:
+            pull = subprocess.run([git, "-C", str(root), "pull", "--ff-only"], check=False)
+            if pull.returncode != 0:
+                print("warning: git pull failed — continuing with this tree", file=sys.stderr)
+        else:
+            print("warning: uncommitted changes — skipping git pull", file=sys.stderr)
+    else:
+        print(f"Relinking skills from {root} …")
+    return install_skills(agent=agent, force=True, copy=False, no_launcher=False, verbose=False)
+
+
 def update(*, agent: str) -> int:
+    """Update an npm global install or Git checkout, then refresh installed skills."""
+    root = _root()
+    if _ephemeral_package(root):
+        print(
+            "This is a one-off npm/pnpm copy. Run `npx --yes ghostless@latest "
+            "install-skills --force` to refresh the installed skills."
+        )
+        return 1
+    in_node_modules = "/node_modules/ghostless" in root.as_posix().lower()
+    if (root / ".git").is_dir() and not in_node_modules:
+        return _update_git_checkout(root, agent=agent)
     if os.environ.get("GHOSTLESS_LAUNCHER") != "npm":
-        print("This CLI was not launched from npm. Upgrade it with its package manager, then run `ghostless install-skills --force`.")
+        print(
+            "This CLI was not launched from npm. Upgrade it with its package manager, "
+            "then run `ghostless install-skills --force`."
+        )
         return 1
-    if _ephemeral_package(_root()):
-        print("This is a one-off npm/pnpm copy. Run `npx --yes ghostless@latest install-skills --force` to refresh the installed skills.")
+    if not in_node_modules:
+        print(
+            "This is a checkout. Update its Git branch, then run "
+            "`ghostless install-skills --force`."
+        )
         return 1
-    if "/node_modules/ghostless" not in _root().as_posix().lower():
-        print("This is a checkout. Update its Git branch, then run `ghostless install-skills --force`.")
-        return 1
-    npm = shutil.which("npm.cmd" if os.name == "nt" else "npm")
+    npm = shutil.which("npm.cmd" if _is_windows() else "npm")
     if npm is None:
         raise ProjectError("npm is needed to update this installation.")
-    # Windows .cmd shims must run through the command interpreter.
-    if os.name == "nt":
-        command = ["cmd", "/c", npm, "install", "-g", "ghostless@latest"]
-    else:
-        command = [npm, "install", "-g", "ghostless@latest"]
-    result = subprocess.run(command, check=False)
+    result = subprocess.run(_shim_command(npm, "install", "-g", "ghostless@latest"), check=False)
     if result.returncode:
         return int(result.returncode)
+    installed = shutil.which("ghostless.cmd" if _is_windows() else "ghostless")
+    if installed is not None:
+        env = os.environ.copy()
+        env["GHOSTLESS_JUST_UPDATED"] = "1"
+        relink = subprocess.run(
+            _shim_command(installed, "install-skills", "--force", "--agent", agent),
+            env=env,
+            check=False,
+        )
+        return int(relink.returncode)
     return install_skills(agent=agent, force=True, copy=False, no_launcher=False, verbose=False)
 
 

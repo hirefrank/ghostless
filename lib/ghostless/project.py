@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import subprocess
 from dataclasses import dataclass
@@ -273,10 +274,14 @@ def load_manifest(root: Path) -> dict[str, object]:
     for key in ("gold", "silver", "bronze", "edited"):
         if key not in custom:
             continue
+        if isinstance(custom[key], bool):
+            raise ProjectError(f"{path}: weights.{key} must be a number.")
         try:
             number = float(custom[key])
         except (TypeError, ValueError) as exc:
             raise ProjectError(f"{path}: weights.{key} must be a number.") from exc
+        if not math.isfinite(number):
+            raise ProjectError(f"{path}: weights.{key} must be a number.")
         if number <= 0:
             raise ProjectError(f"{path}: weights.{key} must be positive.")
         match key:
@@ -286,9 +291,13 @@ def load_manifest(root: Path) -> dict[str, object]:
                 _never(unexpected)
     minimum = _positive_int(raw.get("goldVoiceMinimum", 10), path=path, field="goldVoiceMinimum")
     fail_under = raw.get("failUnder", 70)
+    if isinstance(fail_under, bool) or (
+        isinstance(fail_under, float) and not fail_under.is_integer()
+    ):
+        raise ProjectError(f"{path}: failUnder must be an integer.")
     try:
         fail_under_int = int(fail_under)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ProjectError(f"{path}: failUnder must be an integer.") from exc
     if not 0 <= fail_under_int <= 100:
         raise ProjectError(f"{path}: failUnder must be between 0 and 100.")
@@ -572,6 +581,46 @@ def _git(arguments: list[str], cwd: Path) -> subprocess.CompletedProcess[str] | 
         return None
 
 
+def require_contained_path(base: Path, candidate: Path, *, label: str) -> Path:
+    """Resolve `candidate` and reject paths that escape `base`."""
+    base_resolved = base.resolve()
+    try:
+        candidate_resolved = candidate.resolve()
+    except (OSError, ValueError) as exc:
+        raise ProjectError(f"{label} is not a valid path: {candidate}") from exc
+    if not candidate_resolved.is_relative_to(base_resolved):
+        raise ProjectError(f"{label} escapes {base_resolved}: {candidate}")
+    return candidate_resolved
+
+
+def pair_file_path(
+    meta: dict[str, object],
+    meta_path: Path,
+    field: str,
+    default: str,
+    *,
+    base: Path | None = None,
+) -> Path:
+    """Resolve `beforeFile`/`afterFile` inside a learned pair directory."""
+    raw = meta.get(field)
+    if raw is not None and not isinstance(raw, str):
+        raise ProjectError(f"{meta_path}: {field} must be a string.")
+    name = raw or default
+    parent = base if base is not None else meta_path.parent
+    return require_contained_path(parent, parent / name, label=f"{meta_path} {field}")
+
+
+def validate_date(value: str, *, label: str) -> str:
+    """Verify `value` is a real calendar date in YYYY-MM-DD format."""
+    if not isinstance(value, str) or not value.isascii() or not DATE_RE.fullmatch(value):
+        raise ProjectError(f"{label} must be a valid YYYY-MM-DD date.")
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ProjectError(f"{label} must be a valid YYYY-MM-DD date.") from exc
+    return value
+
+
 def slug_for(date_text: str, section: str | None) -> str:
     """`YYYY-MM-DD` plus a section slug, matching learn and session ids."""
     slug = date_text
@@ -599,8 +648,7 @@ def new_session_id(root: Path, *, date: str, section: str | None = None) -> str:
     Sessions live in `sessions/<id>/` with `session.json`, `before.md`, and
     `after.md`. Callers create the directory; the id is not reserved until then.
     """
-    if not DATE_RE.fullmatch(date):
-        raise ProjectError("Session date must be YYYY-MM-DD.")
+    validate_date(date, label="Session date")
     return fresh_directory(root / "sessions", slug_for(date, section)).name
 
 
@@ -627,6 +675,7 @@ def discover(root: Path, manifest: dict[str, object]) -> list[Piece]:
                     weights=weights,
                     origin="unaided",
                     confirmation="origin",
+                    source_folder=folder,
                 )
             )
     pieces.extend(_learned_pieces(root, weights))
@@ -664,15 +713,31 @@ def _piece_from_file(
     model: str | None = None,
     tool: str | None = None,
     section_hint: str | None = None,
+    source_folder: Path | None = None,
+    allow_tier_override: bool = True,
 ) -> Piece:
     try:
         raw = path.read_text(encoding="utf-8")
     except UnicodeError as exc:
         raise ProjectError(f"{path} is not valid UTF-8.") from exc
     meta, body = split_frontmatter(raw)
-    tier = _override_tier(meta.get("tier"), default_tier, path=str(path))
+    tier = (
+        _override_tier(meta.get("tier"), default_tier, path=str(path))
+        if allow_tier_override
+        else default_tier
+    )
     kind = _override_kind(meta.get("kind"), default_kind, path=str(path))
-    section = meta.get("section") or section_hint or _section_from_path(path, root, tier, kind)
+    section = (
+        meta.get("section")
+        or section_hint
+        or _section_from_path(
+            path,
+            root,
+            default_tier,
+            default_kind,
+            source_folder=source_folder,
+        )
+    )
     if section == "":
         section = None
     return Piece(
@@ -690,7 +755,20 @@ def _piece_from_file(
     )
 
 
-def _section_from_path(path: Path, root: Path, tier: Tier, kind: Kind) -> str | None:
+def _section_from_path(
+    path: Path,
+    root: Path,
+    tier: Tier,
+    kind: Kind,
+    *,
+    source_folder: Path | None = None,
+) -> str | None:
+    if source_folder is not None:
+        try:
+            relative = path.relative_to(source_folder)
+        except ValueError:
+            return None
+        return relative.parts[0] if len(relative.parts) > 1 else None
     if kind == "spoken":
         base = root / "corpus" / "spoken"
         alt = root / "transcripts"
@@ -714,13 +792,14 @@ def _learned_pieces(root: Path, weights: dict[str, float]) -> list[Piece]:
         return []
     pieces: list[Piece] = []
     for meta_path in sorted(folder.glob("*/meta.json")):
+        pair_dir = require_contained_path(folder, meta_path.parent, label=str(meta_path))
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             raise ProjectError(f"{meta_path}: {exc}") from exc
         if not isinstance(meta, dict):
             raise ProjectError(f"{meta_path} must be an object.")
-        after = meta_path.parent / str(meta.get("afterFile") or "after.md")
+        after = pair_file_path(meta, meta_path, "afterFile", "after.md", base=pair_dir)
         if not after.is_file():
             raise ProjectError(f"{meta_path} points at a missing after file.")
         provenance = read_provenance(meta, path=str(meta_path))
@@ -742,6 +821,7 @@ def _learned_pieces(root: Path, weights: dict[str, float]) -> list[Piece]:
             model=provenance.model,
             tool=provenance.tool,
             section_hint=section_hint,
+            allow_tier_override=False,
         )
         pieces.append(piece)
     return pieces
@@ -757,13 +837,18 @@ def _apply_overrides(
         return pieces
     by_path = {piece.path: piece for piece in pieces}
     for entry in entries:
-        if not isinstance(entry, dict) or "path" not in entry:
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("path"), str)
+            or not entry["path"].strip()
+        ):
             raise ProjectError("manifest pieces entries need a path.")
-        rel = str(entry["path"])
-        path = root / rel
+        rel = entry["path"]
+        path = require_contained_path(root, root / rel, label="manifest piece")
         if not path.is_file():
             raise ProjectError(f"manifest piece not found: {rel}")
-        existing = by_path.get(rel.replace("\\", "/"))
+        norm_rel = _rel(root, path)
+        existing = by_path.get(norm_rel) or by_path.get(rel.replace("\\", "/"))
         default_tier: Tier = existing.tier if existing else "silver"
         default_kind: Kind = existing.kind if existing else "prose"
         tier = _override_tier(
@@ -783,8 +868,8 @@ def _apply_overrides(
         except UnicodeError as exc:
             raise ProjectError(f"{path} is not valid UTF-8.") from exc
         _, body = split_frontmatter(raw)
-        by_path[rel.replace("\\", "/")] = Piece(
-            path=rel.replace("\\", "/"),
+        by_path[norm_rel] = Piece(
+            path=norm_rel,
             tier=tier,
             kind=kind,
             section=section,

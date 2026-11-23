@@ -31,7 +31,7 @@ from ghostless.checks import empty_confirmed_checks, grade_confirmed
 from ghostless.judge import corpus_confidence, judge_text
 from ghostless.learn import diff_texts
 from ghostless.paths import ProjectError
-from ghostless.project import discover, load_manifest
+from ghostless.project import discover, load_manifest, pair_file_path, require_contained_path
 from ghostless.stats import Piece, compile_stats
 from ghostless.text import words
 
@@ -68,6 +68,11 @@ def load_edit_pairs(root: Path) -> tuple[list[EditPair], list[str]]:
         return pairs, notes
     for meta_path in sorted(folder.glob("*/meta.json")):
         try:
+            pair_dir = require_contained_path(folder, meta_path.parent, label=str(meta_path))
+        except ProjectError:
+            notes.append(f"Skipped {meta_path.parent.name}: before/after file escapes pair directory.")
+            continue
+        try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError):
             notes.append(f"Skipped {meta_path.parent.name}: unreadable meta.json.")
@@ -75,10 +80,17 @@ def load_edit_pairs(root: Path) -> tuple[list[EditPair], list[str]]:
         if not isinstance(meta, dict):
             notes.append(f"Skipped {meta_path.parent.name}: meta.json is not an object.")
             continue
-        before_name = meta.get("beforeFile") if isinstance(meta.get("beforeFile"), str) else "before.md"
-        after_name = meta.get("afterFile") if isinstance(meta.get("afterFile"), str) else "after.md"
-        before_path = meta_path.parent / before_name
-        after_path = meta_path.parent / after_name
+        try:
+            before_path = pair_file_path(meta, meta_path, "beforeFile", "before.md", base=pair_dir)
+            after_path = pair_file_path(meta, meta_path, "afterFile", "after.md", base=pair_dir)
+        except ProjectError as exc:
+            if "escapes" in str(exc) or "not a valid path" in str(exc):
+                notes.append(
+                    f"Skipped {meta_path.parent.name}: before/after file escapes pair directory."
+                )
+            else:
+                notes.append(f"Skipped {meta_path.parent.name}: {exc}")
+            continue
         if not before_path.is_file() or not after_path.is_file():
             notes.append(f"Skipped {meta_path.parent.name}: before/after file is missing.")
             continue

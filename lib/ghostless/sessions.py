@@ -14,10 +14,10 @@ import os
 import re
 import tempfile
 from datetime import datetime, timezone
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from ghostless.checks import write_pair_checks
-from ghostless.learn import diff_texts, learn_edit
+from ghostless.learn import DIFF_SUMMARY_KEYS, diff_texts, learn_edit
 from ghostless.paths import ProjectError
 from ghostless.project import (
     new_session_id,
@@ -88,6 +88,15 @@ def _session_dir(root: Path, session: str | None) -> Path:
     return active[0]
 
 
+def _absolute_source(source: str) -> bool:
+    """True for a POSIX or Windows absolute path, on either host.
+
+    Path() only knows the current flavour, so a Windows check misses
+    ``/home/user/ref`` and a POSIX check misses ``C:\\Users\\me\\ref``.
+    """
+    return PurePosixPath(source).is_absolute() or PureWindowsPath(source).is_absolute()
+
+
 def start_session(
     root: Path,
     draft: Path,
@@ -104,9 +113,7 @@ def start_session(
     checked_origin = parse_origin(origin, path="--origin")
     if any(not source.strip() for source in sources):
         raise ProjectError("--source values cannot be empty.")
-    if any(
-        Path(source).is_absolute() or PureWindowsPath(source).is_absolute() for source in sources
-    ):
+    if any(_absolute_source(source) for source in sources):
         raise ProjectError("--source must be a portable reference, URL, or project-relative path.")
     date_text = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     session_id = new_session_id(root, date=date_text, section=section)
@@ -209,6 +216,7 @@ def finish_session(
     if existing:
         learned_path = existing
         tier, confirmation = _existing_placement(root, existing)
+        changes = diff_texts(before, after)
         if checks:
             prepared = write_pair_checks(root, _slug_from_learned(existing), checks)
     else:
@@ -227,6 +235,12 @@ def finish_session(
         learned_path = str(result["path"])
         tier = result.get("tier")
         confirmation = result.get("confirmation")
+        result_meta = result["meta"]
+        changes = (
+            {key: result_meta[key] for key in DIFF_SUMMARY_KEYS}
+            if isinstance(result_meta, dict)
+            else diff_texts(before, after)
+        )
         saved = result.get("checks")
         if isinstance(saved, list):
             prepared = [item for item in saved if isinstance(item, dict)]
@@ -248,7 +262,7 @@ def finish_session(
         "learnedPath": learned_path,
         "tier": tier,
         "confirmation": confirmation,
-        "changes": diff_texts(before, after),
+        "changes": changes,
     }
     if prepared:
         receipt["checks"] = prepared

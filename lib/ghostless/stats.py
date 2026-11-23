@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Literal, Never
 
-from ghostless.text import STOPWORDS, Measured, measure
+from ghostless.text import STOPWORDS, Measured, is_contraction, measure, strip_non_prose
 from ghostless.tells import split_catalog
 
 Tier = Literal["gold", "silver", "bronze", "edited"]
@@ -134,11 +134,13 @@ def _distribution(observations: list[tuple[float, float]]) -> dict[str, float | 
 
 
 def _signature_phrases(
-    sentences: list[tuple[float, tuple[str, ...]]],
+    sentences: list[tuple[int, float, tuple[str, ...]]],
 ) -> list[dict[str, float | int | str]]:
     weighted: dict[str, float] = {}
     raw: dict[str, int] = {}
-    for weight, tokens in sentences:
+    pieces_seen: dict[str, set[int]] = {}
+    total_pieces = len({piece_index for piece_index, weight, _ in sentences if weight > 0})
+    for piece_index, weight, tokens in sentences:
         if weight <= 0:
             continue
         for size in (2, 3):
@@ -151,7 +153,11 @@ def _signature_phrases(
                 phrase = " ".join(gram)
                 weighted[phrase] = weighted.get(phrase, 0.0) + weight
                 raw[phrase] = raw.get(phrase, 0) + 1
-    ranked = [phrase for phrase, count in raw.items() if count >= 2]
+                pieces_seen.setdefault(phrase, set()).add(piece_index)
+    if total_pieces >= 2:
+        ranked = [phrase for phrase, seen in pieces_seen.items() if len(seen) >= 2]
+    else:
+        ranked = [phrase for phrase, count in raw.items() if count >= 2]
     ranked.sort(key=lambda phrase: (-weighted[phrase], -raw[phrase], phrase))
     return [
         {"phrase": phrase, "count": raw[phrase], "weight": round(weighted[phrase], 4)}
@@ -164,7 +170,10 @@ def _keep_gram(gram: tuple[str, ...]) -> bool:
         return False
     if all(token in STOPWORDS for token in gram):
         return False
-    return all(token.isalpha() and len(token) >= 3 for token in gram)
+    return all(
+        (token.isalpha() and len(token) >= 3) or token == "i" or is_contraction(token)
+        for token in gram
+    )
 
 
 def _round_median(value: float | None) -> float | None:
@@ -185,10 +194,10 @@ def summarize(pieces: list[Piece], *, bronze_format_only: bool, use_weights: boo
     em_dashes = 0.0
     questions = 0.0
     diction_parts: list[str] = []
-    phrase_sentences: list[tuple[float, tuple[str, ...]]] = []
+    phrase_sentences: list[tuple[int, float, tuple[str, ...]]] = []
     paragraph_obs: list[tuple[float, float]] = []
 
-    for piece in pieces:
+    for piece_index, piece in enumerate(pieces):
         weight = piece.weight if use_weights else 1.0
         if weight <= 0:
             continue
@@ -206,9 +215,11 @@ def summarize(pieces: list[Piece], *, bronze_format_only: bool, use_weights: boo
             diction_words += measured.words * weight
             em_dashes += measured.em_dashes * weight
             questions += measured.questions * weight
-            diction_parts.append(piece.text)
+            cleaned_piece = strip_non_prose(piece.text)
+            if cleaned_piece.strip():
+                diction_parts.append(cleaned_piece)
             for tokens in measured.sentence_tokens:
-                phrase_sentences.append((weight, tokens))
+                phrase_sentences.append((piece_index, weight, tokens))
         if "format" in allowed:
             for length in measured.paragraph_lengths:
                 paragraph_obs.append((length, weight))
