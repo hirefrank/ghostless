@@ -24,7 +24,17 @@
     "README.md",
     "LICENSE",
     "CHANGELOG.md",
-    "pyproject.toml"
+    "pyproject.toml",
+    "!**/*.egg-info",
+    "!**/*.egg-info/**",
+    "!**/__pycache__",
+    "!**/__pycache__/**",
+    "!**/*.pyc",
+    "!**/*.pyo",
+    "!**/.ruff_cache",
+    "!**/.ruff_cache/**",
+    "!**/.mypy_cache",
+    "!**/.mypy_cache/**"
   ],
   "engines": {
     "node": ">=18"

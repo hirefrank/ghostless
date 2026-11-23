@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from collections.abc import Iterator
@@ -15,8 +16,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-
-import sys
 sys.path.insert(0, str(ROOT / "lib"))
 
 from ghostless.cli import main  # noqa: E402
@@ -29,7 +28,7 @@ class NativeHarnessTests(unittest.TestCase):
             skills = base / "skills"
             data = base / "data"
             env = {"GHOSTLESS_SKILLS_DIR": str(skills), "GHOSTLESS_HOME": str(data)}
-            with patch.dict(os.environ, env):
+            with patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(main(["install-skills", "--copy", "--no-launcher"]), 0)
                 self.assertEqual((skills / "ghostless-draft" / ".ghostless-installed").read_text().strip(),
                                  "ghostless:ghostless-draft")
@@ -46,7 +45,7 @@ class NativeHarnessTests(unittest.TestCase):
             foreign.mkdir(parents=True)
             (foreign / "SKILL.md").write_text("foreign", encoding="utf-8")
             env = {"GHOSTLESS_SKILLS_DIR": str(skills), "GHOSTLESS_HOME": str(base / "data")}
-            with patch.dict(os.environ, env):
+            with patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(main(["install-skills", "--copy"]), 0)
             self.assertEqual((foreign / "SKILL.md").read_text(encoding="utf-8"), "foreign")
 
@@ -67,7 +66,8 @@ class NativeHarnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             project = base / "voice"
-            self.assertEqual(main(["init", str(project)]), 0)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["init", str(project)]), 0)
             before = base / "before.md"
             after = base / "after.md"
             before.write_text("I write.\n", encoding="utf-8")
@@ -326,7 +326,7 @@ class UpdateTests(unittest.TestCase):
                     patch("ghostless.harness.shutil.which", return_value="/usr/bin/git"),
                     patch(
                         "ghostless.harness.subprocess.run",
-                        side_effect=lambda *_a, **_kw: subprocess.CompletedProcess([], next(codes)),
+                        side_effect=lambda *_a, codes=codes, **_kw: subprocess.CompletedProcess([], next(codes)),
                     ) as mock_run,
                     patch("ghostless.harness.install_skills", return_value=0) as mock_install,
                     contextlib.redirect_stdout(io.StringIO()),

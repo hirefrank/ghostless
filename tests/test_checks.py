@@ -27,7 +27,7 @@ from ghostless.harness import install_skills  # noqa: E402
 from ghostless.learn import learn_edit  # noqa: E402
 from ghostless.paths import ProjectError  # noqa: E402
 from ghostless.project import TRACKED_PATHS, init_project  # noqa: E402
-from ghostless.sessions import finish_session, start_session  # noqa: E402
+from ghostless.sessions import start_session  # noqa: E402
 
 WRITER = (
     "I keep the note short. I don't polish the first line.\n\n"

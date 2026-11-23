@@ -2,7 +2,7 @@
 
 use std::env;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -190,7 +190,7 @@ fn cli_command() -> Command {
     // fall through to an installed `ghostless` on PATH there.
     #[cfg(not(windows))]
     {
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../bin/ghostless");
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../bin/ghostless");
         if source.is_file() {
             return Command::new(source);
         }

@@ -623,7 +623,6 @@ class EvalTests(unittest.TestCase):
             _make_pair(root, "2026-01-03", AI_DRAFT)
 
             # Confirm a check so we also verify #37 confirmedChecks stay populated under CV.
-            meta_path = root / "gold" / "2026-01-03-notes" / "meta.json"
             (root / "gold" / "2026-01-03-notes" / "before.md").write_text(
                 "Furthermore, we must delve into a seamless tapestry.\n",
                 encoding="utf-8",
@@ -684,7 +683,7 @@ class EvalTests(unittest.TestCase):
         self.assertLess(report["correlation"]["spearman"], 0)
         self.assertGreater(report["acceptance"]["scoreGap"], 0)
         self.assertEqual(len(seen_train_paths), 3)
-        for pair, fold_paths in zip(pairs, seen_train_paths):
+        for pair, fold_paths in zip(pairs, seen_train_paths, strict=True):
             self.assertNotIn(pair.after_path, fold_paths)
             other_afters = {other.after_path for other in pairs if other.slug != pair.slug}
             self.assertTrue(other_afters.issubset(fold_paths))
