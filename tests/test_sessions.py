@@ -136,12 +136,7 @@ class SessionTests(unittest.TestCase):
 
     def test_edit_starts_a_session_and_invokes_the_editor(self) -> None:
         log = self.base / "editor-args"
-        script = self.base / "fake-editor"
-        script.write_text(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GHOSTLESS_EDITOR_LOG\"\n",
-            encoding="utf-8",
-        )
-        script.chmod(0o755)
+        script = _write_fake_editor(self.base / "fake-editor.py")
         env = {
             "GHOSTLESS_EDITOR": str(script),
             "GHOSTLESS_EDITOR_LOG": str(log),
@@ -187,12 +182,7 @@ class SessionTests(unittest.TestCase):
 
     def test_sessions_open_invokes_the_editor_for_that_id(self) -> None:
         log = self.base / "open-args"
-        script = self.base / "open-editor"
-        script.write_text(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GHOSTLESS_EDITOR_LOG\"\n",
-            encoding="utf-8",
-        )
-        script.chmod(0o755)
+        script = _write_fake_editor(self.base / "open-editor.py")
         session = self.start()
         env = {
             "GHOSTLESS_EDITOR": str(script),
@@ -210,6 +200,21 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(code, 0)
         recorded = log.read_text(encoding="utf-8").splitlines()
         self.assertEqual(recorded[2:], ["--session", str(session["id"])])
+
+
+def _write_fake_editor(path: Path) -> Path:
+    """A Python editor double. Windows starts ``.py`` files through the interpreter."""
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['GHOSTLESS_EDITOR_LOG']).write_text(\n"
+        "    '\\n'.join(sys.argv[1:]) + '\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+    return path
 
 
 if __name__ == "__main__":

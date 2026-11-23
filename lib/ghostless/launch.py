@@ -249,7 +249,21 @@ def launch_editor(project: Path, *, draft: Path | None = None, session: str | No
         command.extend(["--draft", str(draft)])
     else:
         raise ProjectError("Open the editor with a draft or a session id.")
-    if _is_windows() and binary.suffix.lower() == ".cmd":
-        command = ["cmd", "/c", *command]
-    completed = subprocess.run(command, check=False)
+    completed = subprocess.run(_spawn_command(binary, command), check=False)
     return int(completed.returncode or 0)
+
+
+def _spawn_command(binary: Path, command: list[str]) -> list[str]:
+    """Turn a script path into a command Windows can start.
+
+    CreateProcess does not honor shebangs or file associations, so a ``.py``
+    editor double is started with this interpreter and a batch file with cmd.
+    """
+    if not _is_windows():
+        return command
+    suffix = binary.suffix.lower()
+    if suffix == ".py":
+        return [sys.executable, *command]
+    if suffix in {".cmd", ".bat"}:
+        return ["cmd", "/c", *command]
+    return command

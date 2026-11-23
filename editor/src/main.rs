@@ -533,16 +533,38 @@ fn cli_command() -> Command {
     if let Some(path) = env::var_os("GHOSTLESS_CLI") {
         return Command::new(path);
     }
-    // The checkout launcher is a Unix script; on Windows it cannot run, so
-    // fall through to an installed `ghostless` on PATH there.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    // The checkout launcher is a Unix script. On Windows, run the Python
+    // package beside this crate while the source tree is still present
+    // (a release binary's compile path is gone, so it uses PATH).
     #[cfg(not(windows))]
     {
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../bin/ghostless");
+        let source = root.join("bin/ghostless");
         if source.is_file() {
             return Command::new(source);
         }
     }
+    #[cfg(windows)]
+    if root.join("lib/ghostless/__main__.py").is_file() {
+        return python_module_command(&root);
+    }
     Command::new("ghostless")
+}
+
+#[cfg(windows)]
+fn python_module_command(root: &std::path::Path) -> Command {
+    let python = env::var_os("GHOSTLESS_PYTHON").unwrap_or_else(|| "python".into());
+    let mut command = Command::new(python);
+    command.arg("-m").arg("ghostless");
+    let mut paths = vec![root.join("lib")];
+    if let Some(existing) = env::var_os("PYTHONPATH") {
+        paths.extend(env::split_paths(&existing));
+    }
+    if let Ok(joined) = env::join_paths(paths) {
+        command.env("PYTHONPATH", joined);
+    }
+    command.env("GHOSTLESS_SUITE", root);
+    command
 }
 
 fn run_cli(args: &[&str], input: Option<&str>) -> Result<String, String> {
