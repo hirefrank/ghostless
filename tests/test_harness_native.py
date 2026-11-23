@@ -176,6 +176,23 @@ class PathWarningTests(unittest.TestCase):
             if os.name != "nt":
                 self.assertIn("export PATH=", out.getvalue())
 
+    def test_doctor_exits_zero_for_python_wheel_without_suite_root(self) -> None:
+        import ghostless.harness as harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            with (
+                patch.dict(os.environ, {"PATH": str(base), "GHOSTLESS_HOME": str(base / "data")}),
+                patch.object(harness, "suite_root", return_value=None),
+            ):
+                os.environ.pop("NPM_CONFIG_PREFIX", None)
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    self.assertEqual(main(["doctor"]), 0)
+        text = out.getvalue()
+        self.assertIn("Suite: none", text)
+        self.assertIn("Install: python-wheel", text)
+
 
 class UpdateTests(unittest.TestCase):
     def _make_suite(self, path: Path, *, git_dir: bool = False) -> Path:

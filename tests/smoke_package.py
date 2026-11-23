@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -33,6 +34,8 @@ def main() -> int:
         files = {row["path"] for row in pack[0]["files"]}
         required = {
             "bin/ghostless.cjs",
+            "fixtures/sample-voice/manifest.json",
+            "fixtures/sample-voice/README.md",
             "lib/ghostless/build.py",
             "lib/ghostless/cli.py",
             "lib/ghostless/harness.py",
@@ -46,15 +49,39 @@ def main() -> int:
         forbidden = sorted(
             path
             for path in files
-            if ".egg-info" in path
+            if path.startswith("tests/")
+            or ".egg-info" in path
             or "__pycache__" in path
             or ".ruff_cache" in path
             or ".mypy_cache" in path
             or path.endswith((".pyc", ".pyo"))
         )
         if forbidden:
-            raise RuntimeError(f"Packed forbidden build/cache files: {forbidden}")
+            raise RuntimeError(f"Packed forbidden build/cache/test files: {forbidden}")
         archive = base / pack[0]["filename"]
+        with tarfile.open(archive, "r:gz") as tar:
+            for member in tar.getmembers():
+                if not member.isfile() or not member.name.startswith("package/docs/") or not member.name.endswith(".md"):
+                    continue
+                extracted = tar.extractfile(member)
+                if extracted is None:
+                    continue
+                doc_text = extracted.read().decode("utf-8")
+                if "editor/" in doc_text or "editor/Cargo.toml" in doc_text:
+                    lower = doc_text.lower()
+                    excludes_tarball = any(
+                        phrase in lower
+                        for phrase in (
+                            "not part of the npm package",
+                            "not in the tarball",
+                            "not included in the npm",
+                        )
+                    )
+                    mentions_checkout = any(word in lower for word in ("checkout", "clone"))
+                    if not (excludes_tarball and mentions_checkout):
+                        raise RuntimeError(
+                            f"Packed doc {member.name} references editor/ without stating it requires a Git checkout outside the npm tarball"
+                        )
         prefix = base / "npm-prefix"
         run([npm, "install", "--global", "--prefix", str(prefix), str(archive)], cwd=base)
         executable = prefix / ("ghostless.cmd" if os.name == "nt" else "bin/ghostless")

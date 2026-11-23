@@ -365,6 +365,8 @@ def doctor() -> int:
     root = suite_root()
     print(f"Python: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
     print(f"Suite: {root or 'none'}")
+    if root is None:
+        print("Install: python-wheel (skills require the npm package or a Git checkout)")
     print(f"Data: {data_home()}")
     try:
         project, source = find_project_with_source()
@@ -373,7 +375,7 @@ def doctor() -> int:
         print(f"Project: none ({exc})")
     _print_path_warning()
     if root is None:
-        return 1
+        return 0
     for name in AGENTS:
         parent = agent_dir(name)
         if not parent.parent.is_dir():

@@ -31,7 +31,7 @@ The first publish of a new package cannot use a stage-only token.
 
 ## PyPI
 
-`pyproject.toml` builds a wheel of the Python package (`pip install build && python -m build`). The wheel's console script runs the voice commands (`init`, `build`, `judge`, `learn`, `export`). The npm package includes skills and the supported installer. There is no PyPI publish workflow, so a tag cannot upload a package that was never claimed on PyPI.
+`pyproject.toml` builds a wheel of the Python package (`pip install build && python -m build`). The wheel's console script runs the voice commands (`init`, `build`, `judge`, `learn`, `export`). `ghostless doctor` exits 0 on a wheel install and reports `Install: python-wheel`, while skill commands (`install-skills`, `routing`, `reset`) require the npm package or a Git checkout. The npm package includes skills and the supported installer. There is no PyPI publish workflow, so a tag cannot upload a package that was never claimed on PyPI.
 
 ## What the release check looks at
 
