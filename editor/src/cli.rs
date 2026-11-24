@@ -109,8 +109,7 @@ pub(crate) fn manifest_is_ghostless(dir: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::ENV_LOCK;
 
     struct CwdGuard(PathBuf);
     impl Drop for CwdGuard {

@@ -1,5 +1,11 @@
 //! Local Rune editor over ghostless edit sessions.
 use rune::{App, AppSpec};
+#[allow(dead_code)]
+mod fs_io;
+#[allow(dead_code)]
+mod prefs;
+#[cfg(test)]
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 mod cli;
 mod session;
 mod state;
