@@ -218,7 +218,7 @@ fn is_writing(path: &Path) -> bool {
     })
 }
 
-fn immutable(path: &Path) -> bool {
+pub(crate) fn immutable(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(OsStr::to_str) else {
         return false;
     };
@@ -228,7 +228,7 @@ fn immutable(path: &Path) -> bool {
     if parent.as_os_str().is_empty() {
         matches!(name, "voice-guide.md" | "voice-stats.json") || name.starts_with("edits-summary.")
     } else {
-        matches!(name, "before.md" | "receipt.json" | "session.json")
+        matches!(name, "before.md" | "after.md" | "notes.md" | "receipt.json" | "session.json")
             && parent.parent() == Some(Path::new("sessions"))
     }
 }
@@ -697,6 +697,7 @@ mod tests {
                 "voice/gold/a.md",
                 "voice/sessions/2026-11-23/before.md",
                 "voice/sessions/2026-11-23/after.md",
+                "voice/sessions/2026-11-23/notes.md",
                 "voice/raw/clean.json",
                 "voice/raw/transcription.md",
                 "voice/voice-guide.md",
@@ -787,6 +788,8 @@ mod tests {
         assert!(!tree.contains(".private"));
         for path in [
             "voice/sessions/2026-11-23/before.md",
+            "voice/sessions/2026-11-23/after.md",
+            "voice/sessions/2026-11-23/notes.md",
             "voice/sessions/2026-11-23/session.json",
             "voice/voice-guide.md",
             "voice/voice-stats.json",
@@ -905,6 +908,8 @@ mod tests {
         for path in [
             "voice/voice-guide.md",
             "voice/sessions/2026-11-23/before.md",
+            "voice/sessions/2026-11-23/after.md",
+            "voice/sessions/2026-11-23/notes.md",
             "voice/sessions/2026-11-23",
         ] {
             assert!(delete_entry(root, path).is_err(), "{path}");

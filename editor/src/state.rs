@@ -108,8 +108,7 @@ impl Editor {
                 initial_file,
             } => {
                 let mut editor = Self::empty_with_handlers(store, runner, writer, wake);
-                editor.voice_project = voice_project;
-                editor.open_workspace(folder, initial_file);
+                editor.open_workspace_with_voice(folder, initial_file, voice_project);
                 editor
             }
             LaunchTarget::Welcome { voice_project } => {
@@ -317,6 +316,10 @@ impl Editor {
     }
 
     pub(crate) fn open_workspace(&mut self, folder: PathBuf, initial_file: Option<PathBuf>) {
+        self.open_workspace_with_voice(folder, initial_file, None);
+    }
+
+    fn open_workspace_with_voice(&mut self, folder: PathBuf, initial_file: Option<PathBuf>, voice_project: Option<PathBuf>) {
         if !self.drain_autosave_work() {
             return;
         }
@@ -325,7 +328,7 @@ impl Editor {
             return;
         }
         let folder = folder.canonicalize().unwrap_or(folder);
-        self.voice_project = crate::cli::discover_voice_project(&folder, None);
+        self.voice_project = voice_project.or_else(|| crate::cli::discover_voice_project(&folder, None));
         self.store.record_workspace(&folder);
         self.workspace = Some(folder.clone());
         self.documents.clear();
@@ -1534,9 +1537,7 @@ fn classify_file_flags(
         {
             lockable = true;
         }
-        if name.is_some_and(|n| {
-            matches!(n, "voice-guide.md" | "voice-stats.json") || n.starts_with("edits-summary.")
-        }) {
+        if workspace_tree::immutable(rel) {
             read_only = true;
         }
     }
@@ -1875,6 +1876,16 @@ mod tests {
         assert!(editor.workspace.is_none());
         assert_eq!(editor.active_working_edit().text, "still here");
         assert!(editor.status.contains("Workspace not changed"));
+    }
+
+    #[test]
+    fn session_working_files_are_read_only_even_outside_tree() {
+        let voice = Path::new("/tmp/voice");
+        for name in ["after.md", "notes.md"] {
+            let path = voice.join("sessions/2026-11-23").join(name);
+            assert!(classify_file_flags(None, &path, Some(voice)).0);
+        }
+        assert!(!classify_file_flags(None, &voice.join("drafts/after.md"), Some(voice)).0);
     }
 
     #[test]

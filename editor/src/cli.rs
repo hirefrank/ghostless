@@ -81,7 +81,7 @@ pub(crate) fn discover_voice_project(workspace: &Path, explicit: Option<&Path>) 
             if manifest_is_ghostless(&candidate) { return candidate.canonicalize().ok(); }
         }
     }
-    resolve_project(None).ok()
+    None
 }
 
 pub(crate) fn require_project(path: &std::path::Path) -> Result<PathBuf, String> {

@@ -152,6 +152,16 @@ mod tests {
         assert_eq!(discover_voice_project(&workspace, None), Some(voice.canonicalize().unwrap()));
         assert_eq!(discover_voice_project(&nested, None), Some(voice.canonicalize().unwrap()));
         assert_eq!(discover_voice_project(&home, None), None);
+        fs::write(home.join("config.json"), serde_json::json!({"defaultProject": voice}).to_string()).unwrap();
+        assert_eq!(discover_voice_project(&home, None), None);
+        unsafe { std::env::set_var("GHOSTLESS_PROJECT", &voice); }
+        assert_eq!(discover_voice_project(&home, None), None);
+        assert_eq!(discover_voice_project(&home, Some(&voice)), Some(voice.canonicalize().unwrap()));
+        match parse_launch(vec!["--folder".into(), home.display().to_string(), "--project".into(), voice.display().to_string()]).unwrap() {
+            LaunchTarget::Workspace { voice_project, .. } => assert_eq!(voice_project, Some(voice.canonicalize().unwrap())),
+            _ => panic!("expected workspace launch"),
+        }
+        unsafe { std::env::remove_var("GHOSTLESS_PROJECT"); }
         assert!(matches!(parse_launch(vec!["--folder".into(), workspace.display().to_string()]).unwrap(), LaunchTarget::Workspace { .. }));
         let mut store = prefs::EditorStateStore::default(); store.record_workspace(&workspace); prefs::save_store(&store).unwrap();
         assert!(matches!(parse_launch(vec![]).unwrap(), LaunchTarget::Workspace { .. }));
