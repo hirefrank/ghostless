@@ -10,6 +10,7 @@ mod cli;
 mod session;
 mod state;
 mod ui;
+mod ui_welcome;
 mod worker;
 use session::*;
 use state::*;

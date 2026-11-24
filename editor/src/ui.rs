@@ -10,6 +10,7 @@ pub(crate) fn working_textarea_metrics(pane_height: Option<f32>) -> (f32, usize)
 }
 
 pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
+    if !editor.session_active { return crate::ui_welcome::view(editor, cx); }
     let kit = Kit::neutral(cx.system_dark());
     let locked = editor.is_locked();
     let modes = SegmentedControl::new(&["Edit", "Diff"], Some(usize::from(editor.show_diff)))

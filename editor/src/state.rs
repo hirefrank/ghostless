@@ -1,11 +1,16 @@
-use std::time::Duration;
+use std::{time::Duration, path::PathBuf};
 use rune::{KeyEvent, TextEdit, Tx};
 use rune_kit::diff::{DiffMode, DiffState, FileDiff};
-use crate::{cli::run_cli, session::Session, worker::{CliRunner, WakeFn, Worker, WorkerRequest, WorkerReply, InFlight}};
+use crate::{cli::run_cli, session::{Session, LaunchTarget}, worker::{CliRunner, WakeFn, Worker, WorkerRequest, WorkerReply, InFlight}};
 
 pub(crate) const SAVE_DELAY: Duration = Duration::from_millis(800);
 pub(crate) struct Editor {
     pub(crate) session: Session,
+    pub(crate) session_active: bool,
+    pub(crate) workspace: Option<PathBuf>,
+    pub(crate) voice_project: Option<PathBuf>,
+    pub(crate) initial_file: Option<PathBuf>,
+    pub(crate) store: crate::prefs::EditorStateStore,
     pub(crate) after: TextEdit,
     pub(crate) notes: TextEdit,
     pub(crate) diff: DiffState,
@@ -22,8 +27,34 @@ pub(crate) struct Editor {
 }
 
 impl Editor {
-    pub(crate) fn new(session: Session, wake: WakeFn) -> Self {
-        Self::with_worker(session, Box::new(run_cli), wake)
+    pub(crate) fn new(target: LaunchTarget, wake: WakeFn) -> Self {
+        let (session, active, workspace, voice_project, initial_file) = match target {
+            LaunchTarget::Session(session) => (session, true, None, None, None),
+            LaunchTarget::Workspace { folder, voice_project, initial_file } => (Self::empty_session(), false, Some(folder), voice_project, initial_file),
+            LaunchTarget::Welcome { voice_project } => (Self::empty_session(), false, None, voice_project, None),
+        };
+        let mut editor = Self::with_worker(session, Box::new(run_cli), wake);
+        editor.store = crate::prefs::load_store();
+        editor.session_active = active;
+        editor.workspace = workspace;
+        editor.voice_project = voice_project;
+        editor.initial_file = initial_file;
+        if let Some(folder) = &editor.workspace { editor.store.record_workspace(folder); let _ = crate::prefs::save_store(&editor.store); }
+        editor
+    }
+
+    fn empty_session() -> Session {
+        Session { project: PathBuf::new(), id: String::new(), source_name: String::new(), original: String::new(), after: String::new(), notes: String::new(), finished: false }
+    }
+
+    pub(crate) fn open_workspace(&mut self, folder: PathBuf, initial_file: Option<PathBuf>) {
+        self.flush_on_exit();
+        self.session_active = false;
+        self.voice_project = crate::cli::discover_voice_project(&folder, None);
+        self.store.record_workspace(&folder);
+        if let Err(error) = crate::prefs::save_store(&self.store) { self.status = error; }
+        self.workspace = Some(folder);
+        self.initial_file = initial_file;
     }
 
     pub(crate) fn with_worker(session: Session, runner: CliRunner, wake: WakeFn) -> Self {
@@ -52,6 +83,11 @@ impl Editor {
                 "Ready".into()
             },
             session,
+            session_active: true,
+            workspace: None,
+            voice_project: None,
+            initial_file: None,
+            store: crate::prefs::EditorStateStore::default(),
             worker,
         }
     }
@@ -284,7 +320,12 @@ pub(crate) fn poll(editor: &mut Editor, clock: f64, tx: &mut Tx) -> bool {
     changed
 }
 
-pub(crate) fn on_key(editor: &mut Editor, key: &KeyEvent, _: &mut Tx) -> bool {
+pub(crate) fn on_key(editor: &mut Editor, key: &KeyEvent, tx: &mut Tx) -> bool {
+    if key.is_command('o') {
+        if key.mods.shift { crate::ui_welcome::open_file(tx); } else { crate::ui_welcome::open_folder(tx); }
+        return true;
+    }
+    if !editor.session_active { return false; }
     if key.is_command('s') {
         editor.save_clicked();
         return true;

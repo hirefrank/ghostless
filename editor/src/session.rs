@@ -1,6 +1,6 @@
 use std::{env, path::PathBuf};
 use serde_json::Value;
-use crate::cli::{resolve_project, require_draft, run_cli};
+use crate::{cli::{resolve_project, require_project, require_draft, run_cli, discover_voice_project}, prefs};
 
 #[derive(Clone)]
 pub(crate) struct Session {
@@ -33,30 +33,50 @@ pub(crate) fn valid_session_id(id: &str) -> bool {
     true
 }
 
-pub(crate) fn prepare() -> Result<Session, String> {
+pub(crate) enum LaunchTarget {
+    Session(Session),
+    Workspace { folder: PathBuf, voice_project: Option<PathBuf>, initial_file: Option<PathBuf> },
+    Welcome { voice_project: Option<PathBuf> },
+}
+
+pub(crate) fn prepare() -> Result<LaunchTarget, String> {
+    parse_launch(env::args().skip(1).collect())
+}
+
+pub(crate) fn parse_launch(args: Vec<String>) -> Result<LaunchTarget, String> {
     let mut project = None;
     let mut draft = None;
     let mut session = None;
-    let mut args = env::args().skip(1);
+    let mut folder = None;
+    let mut positional = None;
+    let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--project" => project = args.next().map(PathBuf::from),
-            "--draft" => draft = args.next().map(PathBuf::from),
-            "--session" => session = args.next(),
-            "--snap" | "--tree" | "--size" | "--theme" | "--scene" | "--at" | "--script" => {
-                args.next().ok_or(format!("Missing value after {arg}"))?;
-            }
-            "-h" | "--help" => {
-                println!("ghostless-editor [--project DIR] (--draft FILE | --session ID)\n--project is optional when the current directory, GHOSTLESS_PROJECT, or defaultProject already names a voice project.\nStart from a draft or reopen a local edit session.\nSet GHOSTLESS_CLI to an installed CLI path if needed.");
-                std::process::exit(0);
-            }
+            "--project" => project = Some(PathBuf::from(args.next().ok_or("Missing value after --project")?)),
+            "--draft" => draft = Some(PathBuf::from(args.next().ok_or("Missing value after --draft")?)),
+            "--session" => session = Some(args.next().ok_or("Missing value after --session")?),
+            "--folder" => folder = Some(PathBuf::from(args.next().ok_or("Missing value after --folder")?)),
+            "--snap" | "--tree" | "--size" | "--theme" | "--scene" | "--at" | "--script" => { args.next().ok_or(format!("Missing value after {arg}"))?; }
+            "-h" | "--help" => { println!("ghostless-editor [--folder DIR | FILE] [--project DIR] [--draft FILE | --session ID]"); std::process::exit(0); }
+            _ if !arg.starts_with('-') && positional.is_none() => positional = Some(PathBuf::from(arg)),
             _ => return Err(format!("Unknown argument: {arg}")),
         }
     }
-    let project = resolve_project(project)?;
-    if draft.is_some() == session.is_some() {
-        return Err("Pass exactly one of --draft FILE or --session ID".into());
+    if draft.is_some() && session.is_some() { return Err("Pass exactly one of --draft FILE or --session ID".into()); }
+    if (draft.is_some() || session.is_some()) && (folder.is_some() || positional.is_some()) { return Err("Cannot combine workspace and session targets".into()); }
+    if folder.is_some() && positional.is_some() { return Err("Pass one workspace target".into()); }
+    if draft.is_none() && session.is_none() {
+        let explicit = project.as_deref().map(require_project).transpose()?;
+        let target = folder.or(positional).or_else(|| prefs::load_store().last_workspace.filter(|p| p.is_dir()));
+        if let Some(path) = target {
+            let path = path.canonicalize().map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
+            let (folder, initial_file) = if path.is_file() { (path.parent().ok_or("File has no parent")?.to_path_buf(), Some(path)) } else if path.is_dir() { (path, None) } else { return Err("Workspace must be a folder or file".into()); };
+            let voice_project = discover_voice_project(&folder, explicit.as_deref());
+            return Ok(LaunchTarget::Workspace { folder, voice_project, initial_file });
+        }
+        return Ok(LaunchTarget::Welcome { voice_project: explicit.or_else(|| resolve_project(None).ok()) });
     }
+    let project = resolve_project(project)?;
     let id = if let Some(draft) = draft {
         let draft = require_draft(&draft)?;
         let output = run_cli(&["start", draft.to_str().ok_or("Draft path is not UTF-8")?,
@@ -83,7 +103,7 @@ pub(crate) fn prepare() -> Result<Session, String> {
         let path = folder.join(file);
         std::fs::read_to_string(&path).map_err(|error| format!("Cannot read {}: {error}", path.display()))
     };
-    Ok(Session {
+    Ok(LaunchTarget::Session(Session {
         project,
         id,
         source_name: metadata.get("sourceDraftName").and_then(Value::as_str).unwrap_or("draft.md").into(),
@@ -91,6 +111,42 @@ pub(crate) fn prepare() -> Result<Session, String> {
         after: read("after.md")?,
         notes: if folder.join("notes.md").exists() { read("notes.md")? } else { String::new() },
         finished: folder.join("receipt.json").is_file(),
-    })
+    }))
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    #[test]
+    fn launch_targets_and_voice_discovery() {
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let base = std::env::temp_dir().join(format!("ghostless-launch-{}", std::process::id()));
+        let home = base.join("home");
+        let workspace = base.join("writing");
+        let voice = workspace.join("voice");
+        let nested = workspace.join("seeds/demo");
+        fs::create_dir_all(&home).unwrap(); fs::create_dir_all(&voice).unwrap(); fs::create_dir_all(&nested).unwrap();
+        fs::write(voice.join("manifest.json"), "{\"kind\":\"ghostless\"}").unwrap();
+        let old_home = std::env::var_os("GHOSTLESS_HOME"); let old_project = std::env::var_os("GHOSTLESS_PROJECT");
+        let old_cwd = std::env::current_dir().unwrap();
+        unsafe { std::env::set_var("GHOSTLESS_HOME", &home); std::env::remove_var("GHOSTLESS_PROJECT"); }
+        std::env::set_current_dir(&home).unwrap();
+        assert!(matches!(parse_launch(vec![]).unwrap(), LaunchTarget::Welcome { .. }));
+        assert_eq!(discover_voice_project(&voice, None), Some(voice.canonicalize().unwrap()));
+        assert_eq!(discover_voice_project(&workspace, None), Some(voice.canonicalize().unwrap()));
+        assert_eq!(discover_voice_project(&nested, None), Some(voice.canonicalize().unwrap()));
+        assert_eq!(discover_voice_project(&home, None), None);
+        assert!(matches!(parse_launch(vec!["--folder".into(), workspace.display().to_string()]).unwrap(), LaunchTarget::Workspace { .. }));
+        let mut store = prefs::EditorStateStore::default(); store.record_workspace(&workspace); prefs::save_store(&store).unwrap();
+        assert!(matches!(parse_launch(vec![]).unwrap(), LaunchTarget::Workspace { .. }));
+        assert!(parse_launch(vec!["--project".into(), home.display().to_string()]).is_err());
+        assert!(parse_launch(vec!["--draft".into(), "a".into(), "--session".into(), "b".into()]).is_err());
+        assert!(parse_launch(vec!["--project".into(), voice.display().to_string(), "--draft".into(), "missing".into()]).is_err());
+        assert!(parse_launch(vec!["--project".into(), voice.display().to_string(), "--session".into(), "bad".into()]).is_err());
+        std::env::set_current_dir(old_cwd).unwrap();
+        unsafe { if let Some(v) = old_home { std::env::set_var("GHOSTLESS_HOME", v); } else { std::env::remove_var("GHOSTLESS_HOME"); } if let Some(v) = old_project { std::env::set_var("GHOSTLESS_PROJECT", v); } else { std::env::remove_var("GHOSTLESS_PROJECT"); } }
+        fs::remove_dir_all(base).unwrap();
+    }
+}

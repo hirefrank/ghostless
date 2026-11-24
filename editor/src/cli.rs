@@ -74,6 +74,16 @@ pub(crate) fn resolve_project(explicit: Option<PathBuf>) -> Result<PathBuf, Stri
     }
 }
 
+pub(crate) fn discover_voice_project(workspace: &Path, explicit: Option<&Path>) -> Option<PathBuf> {
+    if let Some(path) = explicit { return require_project(path).ok(); }
+    for ancestor in workspace.ancestors() {
+        for candidate in [ancestor.to_path_buf(), ancestor.join("voice")] {
+            if manifest_is_ghostless(&candidate) { return candidate.canonicalize().ok(); }
+        }
+    }
+    resolve_project(None).ok()
+}
+
 pub(crate) fn require_project(path: &std::path::Path) -> Result<PathBuf, String> {
     if !path.exists() {
         return Err(format!(
