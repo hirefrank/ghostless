@@ -15,6 +15,7 @@ use std::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum FileKind {
     Writing,
     EditorialNote,
@@ -38,6 +39,7 @@ pub(crate) enum SessionStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) struct SessionSummary {
     pub id: String,
     pub source_name: String,

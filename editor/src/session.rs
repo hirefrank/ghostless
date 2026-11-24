@@ -10,7 +10,6 @@ pub(crate) struct Session {
     pub(crate) original: String,
     pub(crate) after: String,
     pub(crate) notes: String,
-    #[allow(dead_code)]
     pub(crate) before_sha256: String,
     pub(crate) finished: bool,
 }

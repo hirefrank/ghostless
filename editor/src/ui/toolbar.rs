@@ -20,8 +20,8 @@ pub(crate) fn build(editor: &Editor, kit: &Kit) -> Toolbar {
         })
         .unwrap_or("ghostless");
 
-    let breadcrumb = match editor.active_tab_ref() {
-        Some(tab) => format!("{ws_name} / {}", tab.title),
+    let breadcrumb = match editor.active_doc_ref() {
+        Some(doc) => format!("{ws_name} / {}", doc.title),
         None => ws_name.to_owned(),
     };
 
@@ -57,7 +57,7 @@ pub(crate) fn build(editor: &Editor, kit: &Kit) -> Toolbar {
         .center(modes.build(kit));
 
     if editor.active_is_session() {
-        let locked = editor.is_locked();
+        let locked = editor.active_is_locked();
         tb = tb
             .trailing(
                 Button::new("Save")

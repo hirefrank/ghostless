@@ -6,23 +6,23 @@ use rune_kit::{
 use crate::state::Editor;
 
 pub(crate) fn build(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
-    let active_id = editor.active_tab_ref().map(|t| t.id.clone());
+    let active_id = editor.active_doc_ref().map(|d| d.id.tab_key());
     let items: Vec<TabItem<'_, Editor>> = editor
-        .tabs
+        .documents
         .iter()
-        .map(|tab| {
-            let label = if tab.pinned {
-                tab.title.clone()
+        .map(|doc| {
+            let label = if doc.pinned {
+                doc.title.clone()
             } else {
-                format!("~ {}", tab.title)
+                format!("~ {}", doc.title)
             };
-            let status = if editor.tab_is_dirty(tab) {
+            let status = if doc.is_dirty() {
                 Some(TabItemStatus::Unread)
             } else {
                 None
             };
-            TabItem::new(tab.id.clone(), label)
-                .icon(file_icon(&tab.title))
+            TabItem::new(doc.id.tab_key(), label)
+                .icon(file_icon(&doc.title))
                 .status(status)
         })
         .collect();
@@ -33,8 +33,8 @@ pub(crate) fn build(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
         .viewport_width(cx.layout_size("doc-tabs").map(|s| s[0]))
         .fill(kit.c.bg_base)
         .on_select(|e: &mut Editor, id: &str, tx: &mut Tx| e.activate_tab(id, tx))
-        .on_close(|e: &mut Editor, id: &str, _| {
-            e.close_tab_by_id(id);
+        .on_close(|e: &mut Editor, id: &str, tx: &mut Tx| {
+            e.close_tab_by_id(id, tx);
         })
         .on_double_click(|e: &mut Editor, id: &str, _| e.pin_tab_by_id(id))
         .build(kit);

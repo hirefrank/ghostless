@@ -1,6 +1,7 @@
 //! Local Rune editor over ghostless edit sessions.
 use rune::{App, AppSpec};
 mod cli;
+mod documents;
 mod fs_io;
 mod prefs;
 mod session;
@@ -8,7 +9,6 @@ mod state;
 mod ui;
 mod ui_welcome;
 mod worker;
-#[allow(dead_code)]
 mod workspace_tree;
 
 #[cfg(test)]
@@ -45,6 +45,11 @@ fn main() {
     let handle = app.handle();
     let app = app
         .init(move || Editor::new(session, Box::new(move || handle.wake())))
+        .on_focus(|editor, focused, _| {
+            if !focused {
+                editor.flush_autosave_buffers();
+            }
+        })
         .on_close(|editor, _| editor.flush_on_exit())
         .on_quit(|editor, _| editor.flush_on_exit());
     app.run();

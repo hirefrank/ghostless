@@ -1,8 +1,12 @@
-use rune::{Cx, El, Tx, col, row, text};
-use rune_kit::{Button, ButtonVariant, Dialog, Divider, Kit, TextArea, TextInput, diff::DiffView, shell::SplitView};
+use rune::{Cx, El, Tx, col, icon, row, text};
+use rune_kit::{
+    Button, ButtonVariant, ControlSize, Dialog, Divider, Kit, TextArea, TextInput,
+    diff::DiffView, glyphs, shell::SplitView,
+};
 use crate::state::{DialogKind, Editor, ViewMode};
 
 mod sidebar;
+mod status_bar;
 mod tabs;
 mod toolbar;
 
@@ -15,7 +19,7 @@ pub(crate) fn working_textarea_metrics(pane_height: Option<f32>) -> (f32, usize)
 }
 
 pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
-    if !editor.session_active && editor.workspace.is_none() {
+    if editor.is_landing_view() {
         return crate::ui_welcome::view(editor, cx);
     }
 
@@ -33,10 +37,10 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
         .h_full()
         .min_h(0.0)
         .fill(kit.c.bg_base);
-    if !editor.tabs.is_empty() {
+    if !editor.documents.is_empty() {
         main = main.child(tabs::build(editor, cx, &kit));
     }
-    main = main.child(stage);
+    main = main.child(stage).child(status_bar::build(editor, &kit));
 
     let shell = SplitView::new(main)
         .sidebar(&editor.sidebar_pane, |e: &mut Editor| &mut e.sidebar_pane, sb)
@@ -51,7 +55,7 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
 }
 
 fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
-    let Some(_active) = editor.active_tab_ref() else {
+    let Some(doc) = editor.active_doc_ref() else {
         return col()
             .key("empty-stage")
             .grow(1.0)
@@ -93,10 +97,10 @@ fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
                     .build(editor, kit),
             ),
         ViewMode::Compare | ViewMode::Write => {
-            let locked = editor.active_is_read_only();
+            let locked = editor.active_is_locked();
             let (working_height, working_rows) =
                 working_textarea_metrics(cx.layout_size("working-body").map(|size| size[1]));
-            let mut body = col()
+            let body = col()
                 .key("working-body")
                 .grow(1.0)
                 .w_full()
@@ -112,29 +116,53 @@ fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
                         .on_change(|e: &mut Editor, tx: &mut Tx| e.changed_active(tx))
                         .build(kit),
                 );
-            if locked {
-                body = col()
-                    .key("locked-wrap")
-                    .grow(1.0)
-                    .w_full()
-                    .min_h(0.0)
-                    .gap(8.0)
-                    .child(
-                        text("Read-only view")
-                            .font(kit.ty.small_medium)
-                            .color(kit.c.text_muted),
-                    )
-                    .child(body);
-            }
-            col()
+            let mut pane = col()
                 .key("working-pane")
                 .grow(1.0)
                 .w_full()
                 .h_full()
                 .min_h(0.0)
                 .padding(18.0)
-                .gap(8.0)
-                .child(body)
+                .gap(8.0);
+            if doc.read_only || doc.finished || doc.lockable {
+                let banner_text = if doc.finished {
+                    "Finished session — read-only archival copy"
+                } else if doc.read_only {
+                    "Read-only artifact — editing is disabled"
+                } else if doc.user_locked {
+                    "Reference file locked — unlock to edit"
+                } else {
+                    "Reference file — click Lock to protect from accidental edits"
+                };
+                let mut banner = row()
+                    .key("doc-guard-banner")
+                    .w_full()
+                    .px(10.0)
+                    .py(5.0)
+                    .gap(8.0)
+                    .center_y()
+                    .radius(6.0)
+                    .fill(kit.c.layer_01)
+                    .child(icon(&glyphs::LOCK, 14.0).color(kit.c.icon_muted))
+                    .child(
+                        text(banner_text)
+                            .font(kit.ty.small_medium)
+                            .color(kit.c.text_muted)
+                            .grow(1.0)
+                            .shrink(),
+                    );
+                if doc.lockable && !doc.read_only && !doc.finished {
+                    banner = banner.child(
+                        Button::new(if doc.user_locked { "Unlock" } else { "Lock" })
+                            .control_size(ControlSize::Small)
+                            .variant(ButtonVariant::Outline)
+                            .on_press(|e: &mut Editor| e.toggle_active_user_lock())
+                            .build(kit),
+                    );
+                }
+                pane = pane.child(banner);
+            }
+            pane.child(body)
         }
     }
 }
@@ -155,7 +183,7 @@ fn build_inspector(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
                     .wrap(),
             );
     }
-    let locked = editor.is_locked();
+    let locked = editor.active_is_locked();
     let max_h = cx
         .layout_size("inspector-notes")
         .map(|s| (s[1] - 64.0).max(120.0))
@@ -173,15 +201,15 @@ fn build_inspector(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
                 .color(kit.c.text_muted),
         )
         .child(
-            TextArea::new(&editor.notes)
+            TextArea::new(editor.active_notes_edit())
                 .label("Edit notes")
                 .placeholder("Optional context for your future self")
                 .width(None)
                 .rows(6)
                 .max_height(max_h)
                 .disabled(locked)
-                .on_edit(|e: &mut Editor| &mut e.notes)
-                .on_change(|e: &mut Editor, tx: &mut Tx| e.changed(tx))
+                .on_edit(|e: &mut Editor| e.active_notes_edit_mut())
+                .on_change(|e: &mut Editor, tx: &mut Tx| e.changed_active(tx))
                 .build(kit),
         )
         .child(row().grow(1.0))
@@ -336,6 +364,47 @@ fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
                 .open(true)
                 .fit()
                 .width(400.0)
+                .child(body)
+                .on_close(|e: &mut Editor| e.close_dialog())
+                .build(kit, overlays);
+        }
+        DialogKind::ConfirmClose { title, .. } => {
+            let mut body = col().w_full().px(16.0).pb(16.0).gap(12.0);
+            body = body.child(
+                text(format!("Save changes to \"{title}\" before closing?"))
+                    .font(kit.ty.ui)
+                    .color(kit.c.text_base)
+                    .wrap(),
+            );
+            body = body.child(Divider::horizontal().build(kit));
+            body = body.child(
+                row()
+                    .w_full()
+                    .gap(8.0)
+                    .child(
+                        Button::new("Discard")
+                            .variant(ButtonVariant::Danger)
+                            .on_press_tx(|e: &mut Editor, tx| e.confirm_close_discard(tx))
+                            .build(kit),
+                    )
+                    .child(row().grow(1.0))
+                    .child(
+                        Button::new("Cancel")
+                            .variant(ButtonVariant::Outline)
+                            .on_press(|e: &mut Editor| e.close_dialog())
+                            .build(kit),
+                    )
+                    .child(
+                        Button::new("Save")
+                            .variant(ButtonVariant::Submit)
+                            .on_press(|e: &mut Editor| e.confirm_close_save())
+                            .build(kit),
+                    ),
+            );
+            Dialog::new("confirm-close", "Unsaved Changes")
+                .open(true)
+                .fit()
+                .width(420.0)
                 .child(body)
                 .on_close(|e: &mut Editor| e.close_dialog())
                 .build(kit, overlays);

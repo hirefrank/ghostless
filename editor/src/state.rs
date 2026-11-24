@@ -1,4 +1,9 @@
-use std::{collections::HashSet, path::{Path, PathBuf}, time::Duration};
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use rune::{Key, KeyEvent, TextEdit, Tx};
 use rune_kit::{
     FileNode, TreeModel,
@@ -7,14 +12,19 @@ use rune_kit::{
 };
 use crate::{
     cli::run_cli,
+    documents::{DocId, DocumentBuffer},
     fs_io,
     prefs,
     session::{LaunchTarget, Session, load_session},
-    worker::{CliRunner, InFlight, WakeFn, Worker, WorkerReply, WorkerRequest},
-    workspace_tree::{self, SessionSummary, WorkspaceEntry},
+    worker::{
+        CliRunner, InFlight, WakeFn, Worker, WorkerReply, WorkerRequest, WriteRunner,
+        execute_write_op,
+    },
+    workspace_tree::{self, FileKind, SessionSummary, WorkspaceEntry},
 };
 
-pub(crate) const SAVE_DELAY: Duration = Duration::from_millis(800);
+pub(crate) const SESSION_AUTOSAVE_DELAY: Duration = Duration::from_millis(800);
+pub(crate) const FILE_AUTOSAVE_DELAY: Duration = Duration::from_millis(1500);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ViewMode {
@@ -47,35 +57,15 @@ pub(crate) enum DialogKind {
     NewFolder { parent_rel: String },
     Rename { rel_path: String },
     Delete { rel_path: String, display_name: String, is_dir: bool },
-}
-
-pub(crate) enum TabKind {
-    File {
-        edit: Box<TextEdit>,
-        dirty: bool,
-        read_only: bool,
-    },
-    Session {
-        project: PathBuf,
-        session_id: String,
-    },
-}
-
-pub(crate) struct OpenTab {
-    pub(crate) id: String,
-    pub(crate) title: String,
-    pub(crate) path: PathBuf,
-    pub(crate) pinned: bool,
-    pub(crate) kind: TabKind,
+    ConfirmClose { doc_id: DocId, title: String },
 }
 
 pub(crate) struct Editor {
-    pub(crate) session: Session,
-    pub(crate) session_active: bool,
+    pub(crate) documents: Vec<DocumentBuffer>,
+    pub(crate) active_doc: Option<usize>,
+    pub(crate) fallback_edit: TextEdit,
     pub(crate) workspace: Option<PathBuf>,
     pub(crate) voice_project: Option<PathBuf>,
-    #[allow(dead_code)]
-    pub(crate) initial_file: Option<PathBuf>,
     pub(crate) store: prefs::EditorStateStore,
     pub(crate) sidebar_pane: PaneState,
     pub(crate) inspector_pane: PaneState,
@@ -89,18 +79,10 @@ pub(crate) struct Editor {
     pub(crate) active_dialog: Option<DialogKind>,
     pub(crate) dialog_input: TextEdit,
     pub(crate) dialog_error: Option<String>,
-    pub(crate) tabs: Vec<OpenTab>,
-    pub(crate) active_tab: Option<usize>,
-    pub(crate) fallback_edit: TextEdit,
-    pub(crate) after: TextEdit,
-    pub(crate) notes: TextEdit,
     pub(crate) diff: DiffState,
-    pub(crate) generation: u64,
-    pub(crate) saved_generation: u64,
-    pub(crate) autosave_due: Option<f64>,
-    pub(crate) pending_save: bool,
-    pub(crate) finish_requested: bool,
-    pub(crate) in_flight: Option<InFlight>,
+    pub(crate) worker_busy: Option<(DocId, InFlight)>,
+    pub(crate) pending_close: Option<DocId>,
+    pub(crate) last_window_title: Option<String>,
     pub(crate) flushed: bool,
     pub(crate) status: String,
     pub(crate) worker: Worker,
@@ -109,66 +91,75 @@ pub(crate) struct Editor {
 impl Editor {
     pub(crate) fn new(target: LaunchTarget, wake: WakeFn) -> Self {
         let store = prefs::load_store();
-        let (session, active, workspace, voice_project, initial_file) = match target {
+        let runner: CliRunner = Box::new(run_cli);
+        let writer: WriteRunner = Box::new(execute_write_op);
+        match target {
             LaunchTarget::Session(session) => {
-                let voice = Some(session.project.clone());
-                (session, true, None, voice, None)
+                let mut editor = Self::with_handlers(session, store, runner, writer, wake);
+                if let Some(voice) = &editor.voice_project {
+                    editor.sessions =
+                        workspace_tree::scan_sessions(voice, &editor.store.session_links);
+                }
+                editor
             }
             LaunchTarget::Workspace {
                 folder,
                 voice_project,
                 initial_file,
-            } => (Self::empty_session(), false, Some(folder), voice_project, initial_file),
+            } => {
+                let mut editor = Self::empty_with_handlers(store, runner, writer, wake);
+                editor.voice_project = voice_project;
+                editor.open_workspace(folder, initial_file);
+                editor
+            }
             LaunchTarget::Welcome { voice_project } => {
-                (Self::empty_session(), false, None, voice_project, None)
+                let mut editor = Self::empty_with_handlers(store, runner, writer, wake);
+                editor.voice_project = voice_project;
+                editor
             }
-        };
-        let mut editor = Self::with_worker(session, Box::new(run_cli), wake);
-        editor.store = store;
-        editor.session_active = active;
-        editor.voice_project = voice_project;
-        editor.apply_pane_defaults();
-        if active {
-            editor.open_session_tab_entry();
-            if let Some(voice) = &editor.voice_project {
-                editor.sessions = workspace_tree::scan_sessions(voice, &editor.store.session_links);
-            }
-        } else if let Some(folder) = workspace {
-            editor.open_workspace(folder, initial_file);
-        }
-        editor
-    }
-
-    fn empty_session() -> Session {
-        Session {
-            project: PathBuf::new(),
-            id: String::new(),
-            source_name: String::new(),
-            original: String::new(),
-            after: String::new(),
-            notes: String::new(),
-            before_sha256: String::new(),
-            finished: false,
         }
     }
 
-    pub(crate) fn with_worker(session: Session, runner: CliRunner, wake: WakeFn) -> Self {
+    pub(crate) fn with_handlers(
+        session: Session,
+        store: prefs::EditorStateStore,
+        runner: CliRunner,
+        writer: WriteRunner,
+        wake: WakeFn,
+    ) -> Self {
+        let mirror_path = store
+            .session_links
+            .get(&prefs::EditorStateStore::session_link_key(
+                &session.project,
+                &session.id,
+            ))
+            .map(|link| link.workspace_file.clone());
         let mut diff = DiffState::new(vec![FileDiff::from_texts(
             &session.source_name,
             &session.original,
             &session.after,
         )]);
         diff.set_mode(DiffMode::Split);
-        let worker = Worker::spawn(runner, wake);
+        let worker = Worker::spawn_with_handlers(runner, writer, wake);
+        let voice = Some(session.project.clone());
+        let status = if session.finished {
+            "Finished".into()
+        } else {
+            "Ready".into()
+        };
+        let buf = DocumentBuffer::from_session(session, true, mirror_path);
         let sidebar_pane = PaneState::new(250.0).range(180.0, 420.0).collapsed();
         let inspector_pane = PaneState::new(310.0).range(240.0, 480.0);
         Self {
-            after: TextEdit::new(session.after.clone()),
-            notes: TextEdit::new(session.notes.clone()),
-            diff,
-            view_mode: ViewMode::Write,
+            documents: vec![buf],
+            active_doc: Some(0),
+            fallback_edit: TextEdit::new(""),
+            workspace: None,
+            voice_project: voice,
+            store,
             sidebar_pane,
             inspector_pane,
+            view_mode: ViewMode::Write,
             file_tree: TreeModel::new().key("workspace-files"),
             sessions: Vec::new(),
             sessions_collapsed: false,
@@ -178,90 +169,164 @@ impl Editor {
             active_dialog: None,
             dialog_input: TextEdit::new(""),
             dialog_error: None,
-            tabs: Vec::new(),
-            active_tab: None,
-            fallback_edit: TextEdit::new(""),
-            generation: 0,
-            saved_generation: 0,
-            autosave_due: None,
-            pending_save: false,
-            finish_requested: false,
-            in_flight: None,
+            diff,
+            worker_busy: None,
+            pending_close: None,
+            last_window_title: None,
             flushed: false,
-            status: if session.finished {
-                "Finished".into()
-            } else {
-                "Ready".into()
-            },
-            session,
-            session_active: true,
-            workspace: None,
-            voice_project: None,
-            initial_file: None,
-            store: prefs::EditorStateStore::default(),
+            status,
             worker,
         }
     }
 
-    fn apply_pane_defaults(&mut self) {
-        if self.workspace.is_some() || !self.session_active {
-            let mut sb = PaneState::new(250.0)
-                .range(180.0, 420.0)
-                .with_width(self.store.ui.sidebar_width);
-            if !self.store.ui.sidebar_open {
-                sb = sb.collapsed();
-            }
-            let mut insp = PaneState::new(310.0)
-                .range(240.0, 480.0)
-                .with_width(self.store.ui.inspector_width);
-            if !self.store.ui.inspector_open {
-                insp = insp.collapsed();
-            }
-            self.sidebar_pane = sb;
-            self.inspector_pane = insp;
-        } else {
-            self.sidebar_pane = PaneState::new(250.0).range(180.0, 420.0).collapsed();
-            self.inspector_pane = PaneState::new(310.0).range(240.0, 480.0);
+    fn empty_with_handlers(
+        store: prefs::EditorStateStore,
+        runner: CliRunner,
+        writer: WriteRunner,
+        wake: WakeFn,
+    ) -> Self {
+        let worker = Worker::spawn_with_handlers(runner, writer, wake);
+        let diff = DiffState::new(Vec::new());
+        let mut sb = PaneState::new(250.0)
+            .range(180.0, 420.0)
+            .with_width(store.ui.sidebar_width);
+        if !store.ui.sidebar_open {
+            sb = sb.collapsed();
+        }
+        let mut insp = PaneState::new(310.0)
+            .range(240.0, 480.0)
+            .with_width(store.ui.inspector_width);
+        if !store.ui.inspector_open {
+            insp = insp.collapsed();
+        }
+        Self {
+            documents: Vec::new(),
+            active_doc: None,
+            fallback_edit: TextEdit::new(""),
+            workspace: None,
+            voice_project: None,
+            store,
+            sidebar_pane: sb,
+            inspector_pane: insp,
+            view_mode: ViewMode::Write,
+            file_tree: TreeModel::new().key("workspace-files"),
+            sessions: Vec::new(),
+            sessions_collapsed: false,
+            voice_collapsed: false,
+            selected_tree_id: None,
+            file_menu_open: false,
+            active_dialog: None,
+            dialog_input: TextEdit::new(""),
+            dialog_error: None,
+            diff,
+            worker_busy: None,
+            pending_close: None,
+            last_window_title: None,
+            flushed: false,
+            status: "Ready".into(),
+            worker,
         }
     }
 
-    fn open_session_tab_entry(&mut self) {
-        if !self.session_active || self.session.id.is_empty() {
-            return;
+    fn apply_workspace_pane_defaults(&mut self) {
+        let mut sb = PaneState::new(250.0)
+            .range(180.0, 420.0)
+            .with_width(self.store.ui.sidebar_width);
+        if !self.store.ui.sidebar_open {
+            sb = sb.collapsed();
         }
-        let tab_id = format!("session:{}::{}", self.session.project.display(), self.session.id);
-        let path = self.session.project.join("sessions").join(&self.session.id);
-        if let Some(pos) = self.tabs.iter().position(|t| t.id == tab_id) {
-            self.tabs[pos].pinned = true;
-            self.active_tab = Some(pos);
-            return;
+        let mut insp = PaneState::new(310.0)
+            .range(240.0, 480.0)
+            .with_width(self.store.ui.inspector_width);
+        if !self.store.ui.inspector_open {
+            insp = insp.collapsed();
         }
-        self.tabs.push(OpenTab {
-            id: tab_id,
-            title: self.session.source_name.clone(),
-            path,
-            pinned: true,
-            kind: TabKind::Session {
-                project: self.session.project.clone(),
-                session_id: self.session.id.clone(),
-            },
-        });
-        self.active_tab = Some(self.tabs.len() - 1);
+        self.sidebar_pane = sb;
+        self.inspector_pane = insp;
+    }
+
+    pub(crate) fn is_landing_view(&self) -> bool {
+        self.workspace.is_none() && self.documents.is_empty()
+    }
+
+    pub(crate) fn active_doc_ref(&self) -> Option<&DocumentBuffer> {
+        self.active_doc.and_then(|i| self.documents.get(i))
+    }
+
+    pub(crate) fn active_doc_mut(&mut self) -> Option<&mut DocumentBuffer> {
+        self.active_doc.and_then(|i| self.documents.get_mut(i))
+    }
+
+    pub(crate) fn active_is_session(&self) -> bool {
+        self.active_doc_ref().is_some_and(DocumentBuffer::is_session)
+    }
+
+    pub(crate) fn active_has_baseline(&self) -> bool {
+        self.active_doc_ref()
+            .is_some_and(|d| d.original.is_some())
+    }
+
+    pub(crate) fn active_is_locked(&self) -> bool {
+        match self.active_doc_ref() {
+            Some(doc) => {
+                !doc.is_editable()
+                    || self.worker_busy.as_ref().is_some_and(|(id, kind)| {
+                        id == &doc.id && *kind == InFlight::Finish
+                    })
+            }
+            None => true,
+        }
+    }
+
+    pub(crate) fn active_working_edit(&self) -> &TextEdit {
+        self.active_doc_ref()
+            .map_or(&self.fallback_edit, |d| &d.edit)
+    }
+
+    pub(crate) fn active_working_edit_mut(&mut self) -> &mut TextEdit {
+        let Some(idx) = self.active_doc else {
+            return &mut self.fallback_edit;
+        };
+        self.documents
+            .get_mut(idx)
+            .map_or(&mut self.fallback_edit, |d| &mut d.edit)
+    }
+
+    pub(crate) fn active_notes_edit(&self) -> &TextEdit {
+        self.active_doc_ref()
+            .and_then(|d| d.notes.as_ref())
+            .unwrap_or(&self.fallback_edit)
+    }
+
+    pub(crate) fn active_notes_edit_mut(&mut self) -> &mut TextEdit {
+        let Some(idx) = self.active_doc else {
+            return &mut self.fallback_edit;
+        };
+        self.documents
+            .get_mut(idx)
+            .and_then(|d| d.notes.as_mut())
+            .unwrap_or(&mut self.fallback_edit)
+    }
+
+    pub(crate) fn dirty_file_paths(&self) -> HashSet<PathBuf> {
+        self.documents
+            .iter()
+            .filter(|d| !d.is_session() && d.is_dirty())
+            .map(|d| d.path.clone())
+            .collect()
     }
 
     pub(crate) fn open_workspace(&mut self, folder: PathBuf, initial_file: Option<PathBuf>) {
-        self.drain_session_writes();
+        self.drain_autosave_work();
         let folder = folder.canonicalize().unwrap_or(folder);
-        self.session_active = false;
         self.voice_project = crate::cli::discover_voice_project(&folder, None);
         self.store.record_workspace(&folder);
         self.workspace = Some(folder.clone());
-        self.initial_file = initial_file.clone();
-        self.tabs.clear();
-        self.active_tab = None;
+        self.documents.clear();
+        self.active_doc = None;
         self.selected_tree_id = None;
         self.view_mode = ViewMode::Write;
-        self.apply_pane_defaults();
+        self.apply_workspace_pane_defaults();
         self.file_tree = workspace_tree::scan_workspace(
             &folder,
             self.voice_project.as_deref(),
@@ -315,84 +380,14 @@ impl Editor {
         }
     }
 
-    pub(crate) fn active_tab_ref(&self) -> Option<&OpenTab> {
-        self.active_tab.and_then(|i| self.tabs.get(i))
-    }
-
-    pub(crate) fn active_is_session(&self) -> bool {
-        matches!(self.active_tab_ref().map(|t| &t.kind), Some(TabKind::Session { .. }))
-    }
-
-    pub(crate) fn active_has_baseline(&self) -> bool {
-        self.active_is_session()
-    }
-
-    pub(crate) fn active_is_read_only(&self) -> bool {
-        match self.active_tab_ref().map(|t| &t.kind) {
-            Some(TabKind::Session { .. }) => self.is_locked(),
-            Some(TabKind::File { read_only, .. }) => *read_only,
-            None => true,
-        }
-    }
-
-    pub(crate) fn active_working_edit(&self) -> &TextEdit {
-        match self.active_tab_ref().map(|t| &t.kind) {
-            Some(TabKind::Session { .. }) => &self.after,
-            Some(TabKind::File { edit, .. }) => edit,
-            None => &self.fallback_edit,
-        }
-    }
-
-    pub(crate) fn active_working_edit_mut(&mut self) -> &mut TextEdit {
-        let idx = self.active_tab;
-        match idx.and_then(|i| self.tabs.get(i)).map(|t| &t.kind) {
-            Some(TabKind::Session { .. }) => &mut self.after,
-            Some(TabKind::File { .. }) => {
-                if let Some(TabKind::File { edit, .. }) =
-                    idx.and_then(|i| self.tabs.get_mut(i)).map(|t| &mut t.kind)
-                {
-                    edit
-                } else {
-                    &mut self.fallback_edit
-                }
-            }
-            None => &mut self.fallback_edit,
-        }
-    }
-
-    pub(crate) fn dirty_file_paths(&self) -> HashSet<PathBuf> {
-        let mut out = HashSet::new();
-        for tab in &self.tabs {
-            if let TabKind::File { dirty: true, .. } = &tab.kind {
-                out.insert(tab.path.clone());
-            }
-        }
-        out
-    }
-
-    pub(crate) fn tab_is_dirty(&self, tab: &OpenTab) -> bool {
-        match &tab.kind {
-            TabKind::File { dirty, .. } => *dirty,
-            TabKind::Session { project, session_id } => {
-                self.session_active
-                    && self.session.project == *project
-                    && self.session.id == *session_id
-                    && self.is_dirty()
-            }
-        }
-    }
-
     pub(crate) fn open_workspace_file(&mut self, path: PathBuf, pin: bool) {
         let canon = path.canonicalize().unwrap_or(path);
-        let tab_id = format!("file:{}", canon.display());
-        if let Some(pos) = self.tabs.iter().position(|t| t.id == tab_id) {
+        let id = DocId::File(canon.clone());
+        if let Some(pos) = self.documents.iter().position(|d| d.id == id) {
             if pin {
-                self.tabs[pos].pinned = true;
+                self.documents[pos].pinned = true;
             }
-            self.active_tab = Some(pos);
-            if !self.active_has_baseline() && self.view_mode == ViewMode::Compare {
-                self.view_mode = ViewMode::Write;
-            }
+            self.switch_active_doc(pos);
             if let Some(rel) = self.rel_from_workspace(&canon) {
                 self.selected_tree_id = Some(rel.clone());
                 self.file_tree.select(&rel);
@@ -412,35 +407,35 @@ impl Editor {
             .unwrap_or("Untitled")
             .to_owned();
         let rel_id = self.rel_from_workspace(&canon);
-        let read_only = rel_id
+        let tree_entry = rel_id
             .as_deref()
             .and_then(|rel| self.file_tree.get(rel))
-            .and_then(|node| node.data.as_ref())
-            .is_some_and(|entry| entry.read_only)
-            || canon.file_name().and_then(|n| n.to_str()) == Some("voice-guide.md");
-        let new_tab = OpenTab {
-            id: tab_id,
+            .and_then(|node| node.data.as_ref());
+        let (read_only, lockable) =
+            classify_file_flags(tree_entry, &canon, self.voice_project.as_deref());
+        let buf = DocumentBuffer::from_workspace_file(
+            canon,
             title,
-            path: canon.clone(),
-            pinned: pin,
-            kind: TabKind::File {
-                edit: Box::new(TextEdit::new(text)),
-                dirty: false,
-                read_only,
-            },
-        };
+            text,
+            read_only,
+            lockable,
+            pin,
+            self.voice_project.clone(),
+        );
+        self.flush_leaving_doc();
         if !pin
             && let Some(preview_idx) = self
-                .tabs
+                .documents
                 .iter()
-                .position(|t| !t.pinned && !self.tab_is_dirty(t))
+                .position(|d| !d.pinned && !d.is_dirty() && !d.is_session())
         {
-            self.tabs[preview_idx] = new_tab;
-            self.active_tab = Some(preview_idx);
+            self.documents[preview_idx] = buf;
+            self.active_doc = Some(preview_idx);
         } else {
-            self.tabs.push(new_tab);
-            self.active_tab = Some(self.tabs.len() - 1);
+            self.documents.push(buf);
+            self.active_doc = Some(self.documents.len() - 1);
         }
+        self.dispatch_next();
         if self.view_mode == ViewMode::Compare {
             self.view_mode = ViewMode::Write;
         }
@@ -452,17 +447,15 @@ impl Editor {
     }
 
     pub(crate) fn open_session_entry(&mut self, project: PathBuf, session_id: String) {
-        let tab_id = format!("session:{}::{}", project.display(), session_id);
-        if self.session_active && self.session.project == project && self.session.id == session_id {
-            if let Some(pos) = self.tabs.iter().position(|t| t.id == tab_id) {
-                self.tabs[pos].pinned = true;
-                self.active_tab = Some(pos);
-            } else {
-                self.open_session_tab_entry();
-            }
+        let id = DocId::Session {
+            project: project.clone(),
+            id: session_id.clone(),
+        };
+        if let Some(pos) = self.documents.iter().position(|d| d.id == id) {
+            self.documents[pos].pinned = true;
+            self.switch_active_doc(pos);
             return;
         }
-        self.drain_session_writes();
         let loaded = match load_session(project.clone(), session_id.clone()) {
             Ok(session) => session,
             Err(error) => {
@@ -470,23 +463,26 @@ impl Editor {
                 return;
             }
         };
-        self.tabs.retain(|t| !matches!(t.kind, TabKind::Session { .. }));
-        self.session_active = true;
-        self.after = TextEdit::new(loaded.after.clone());
-        self.notes = TextEdit::new(loaded.notes.clone());
-        self.generation = 0;
-        self.saved_generation = 0;
-        self.autosave_due = None;
-        self.pending_save = false;
-        self.finish_requested = false;
-        self.status = if loaded.finished {
+        let mirror_path = self
+            .store
+            .session_links
+            .get(&prefs::EditorStateStore::session_link_key(
+                &project,
+                &session_id,
+            ))
+            .map(|link| link.workspace_file.clone());
+        let finished = loaded.finished;
+        let buf = DocumentBuffer::from_session(loaded, true, mirror_path);
+        self.flush_leaving_doc();
+        self.documents.push(buf);
+        self.active_doc = Some(self.documents.len() - 1);
+        self.refresh_diff();
+        self.dispatch_next();
+        self.status = if finished {
             "Finished".into()
         } else {
             "Ready".into()
         };
-        self.session = loaded;
-        self.refresh_diff();
-        self.open_session_tab_entry();
     }
 
     pub(crate) fn open_voice_doc(&mut self, filename: &str, read_only: bool) {
@@ -504,13 +500,9 @@ impl Editor {
             return;
         }
         self.open_workspace_file(path, true);
-        if read_only
-            && let Some(OpenTab {
-                kind: TabKind::File { read_only: ro, .. },
-                ..
-            }) = self.active_tab.and_then(|i| self.tabs.get_mut(i))
-        {
-            *ro = true;
+        if read_only && let Some(doc) = self.active_doc_mut() {
+            doc.read_only = true;
+            doc.last_saved_label = Some("Read-only".into());
         }
     }
 
@@ -540,86 +532,186 @@ impl Editor {
         }
     }
 
-    pub(crate) fn activate_tab(&mut self, id: &str, _tx: &mut Tx) {
-        if let Some(pos) = self.tabs.iter().position(|t| t.id == id) {
-            self.active_tab = Some(pos);
-            if !self.active_has_baseline() && self.view_mode == ViewMode::Compare {
-                self.view_mode = ViewMode::Write;
-            }
-            if let Some(rel) = self.rel_from_workspace(&self.tabs[pos].path) {
+    fn flush_leaving_doc(&mut self) {
+        let autosave = self.store.ui.autosave_workspace_files;
+        if let Some(doc) = self.active_doc_mut()
+            && doc.is_editable()
+            && doc.is_dirty()
+            && (doc.is_session() || autosave)
+        {
+            doc.pending_save = true;
+            doc.autosave_due = None;
+        }
+    }
+
+    pub(crate) fn switch_active_doc(&mut self, pos: usize) {
+        if pos >= self.documents.len() {
+            return;
+        }
+        if self.active_doc != Some(pos) {
+            self.flush_leaving_doc();
+            self.active_doc = Some(pos);
+            self.dispatch_next();
+        }
+        if !self.active_has_baseline() && self.view_mode == ViewMode::Compare {
+            self.view_mode = ViewMode::Write;
+        } else if self.view_mode == ViewMode::Compare {
+            self.refresh_diff();
+        }
+    }
+
+    pub(crate) fn activate_tab(&mut self, tab_key: &str, tx: &mut Tx) {
+        if let Some(pos) = self.documents.iter().position(|d| d.id.tab_key() == tab_key) {
+            self.switch_active_doc(pos);
+            if let Some(doc) = self.documents.get(pos)
+                && !doc.is_session()
+                && let Some(rel) = self.rel_from_workspace(&doc.path)
+            {
                 self.selected_tree_id = Some(rel.clone());
                 self.file_tree.expand_to(&rel);
                 self.file_tree.select(&rel);
             }
+            self.sync_window_title(tx);
         }
     }
 
-    pub(crate) fn pin_tab_by_id(&mut self, id: &str) {
-        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) {
-            tab.pinned = true;
+    pub(crate) fn pin_tab_by_id(&mut self, tab_key: &str) {
+        if let Some(doc) = self
+            .documents
+            .iter_mut()
+            .find(|d| d.id.tab_key() == tab_key)
+        {
+            doc.pinned = true;
         }
     }
 
-    pub(crate) fn close_tab_by_id(&mut self, id: &str) -> bool {
-        let Some(pos) = self.tabs.iter().position(|t| t.id == id) else {
+    pub(crate) fn close_tab_by_id(&mut self, tab_key: &str, tx: &mut Tx) -> bool {
+        let Some(pos) = self
+            .documents
+            .iter()
+            .position(|d| d.id.tab_key() == tab_key)
+        else {
             return false;
         };
-        match &self.tabs[pos].kind {
-            TabKind::Session { .. } => {
-                self.drain_session_writes();
-                self.session_active = false;
+        let doc = &self.documents[pos];
+        if !doc.is_session()
+            && !self.store.ui.autosave_workspace_files
+            && doc.is_dirty()
+            && doc.is_editable()
+        {
+            self.active_dialog = Some(DialogKind::ConfirmClose {
+                doc_id: doc.id.clone(),
+                title: doc.title.clone(),
+            });
+            self.dialog_error = None;
+            return false;
+        }
+        let doc_id = doc.id.clone();
+        if doc.is_editable() && doc.is_dirty() {
+            if !self.drain_single_doc_save(&doc_id) {
+                return false;
             }
-            TabKind::File {
-                edit,
-                dirty: true,
-                read_only: false,
-            } => {
-                if let Err(err) = fs_io::atomic_write_text(&self.tabs[pos].path, &edit.text) {
-                    self.status = format!("Save failed: {err}");
-                    return false;
-                }
-            }
-            _ => {}
+        } else if self.worker_busy.as_ref().is_some_and(|(id, _)| id == &doc_id) {
+            self.drain_until_idle();
         }
-        self.tabs.remove(pos);
-        if self.tabs.is_empty() {
-            self.active_tab = None;
-        } else {
-            let next = match self.active_tab {
-                Some(active) if active > pos => active - 1,
-                Some(active) if active == pos => pos.min(self.tabs.len() - 1),
-                Some(active) => active,
-                None => 0,
-            };
-            self.active_tab = Some(next);
-        }
-        if !self.active_has_baseline() && self.view_mode == ViewMode::Compare {
-            self.view_mode = ViewMode::Write;
-        }
-        self.save_open_tabs_pref();
+        self.remove_doc_at(pos);
+        self.sync_window_title(tx);
         true
     }
 
-    pub(crate) fn close_active_tab(&mut self) -> bool {
-        let Some(id) = self.active_tab_ref().map(|t| t.id.clone()) else {
-            return false;
-        };
-        self.close_tab_by_id(&id)
+    fn remove_doc_at(&mut self, pos: usize) {
+        self.documents.remove(pos);
+        if self.documents.is_empty() {
+            self.active_doc = None;
+        } else {
+            let next = match self.active_doc {
+                Some(active) if active > pos => active - 1,
+                Some(active) if active == pos => pos.min(self.documents.len() - 1),
+                Some(active) => active,
+                None => 0,
+            };
+            self.active_doc = Some(next);
+        }
+        if !self.active_has_baseline() && self.view_mode == ViewMode::Compare {
+            self.view_mode = ViewMode::Write;
+        } else if self.view_mode == ViewMode::Compare {
+            self.refresh_diff();
+        }
+        self.save_open_tabs_pref();
     }
 
-    pub(crate) fn cycle_tab(&mut self, backwards: bool) {
-        let len = self.tabs.len();
+    pub(crate) fn close_active_tab(&mut self, tx: &mut Tx) -> bool {
+        let Some(key) = self.active_doc_ref().map(|d| d.id.tab_key()) else {
+            return false;
+        };
+        self.close_tab_by_id(&key, tx)
+    }
+
+    pub(crate) fn confirm_close_save(&mut self) {
+        let Some(DialogKind::ConfirmClose { doc_id, .. }) = self.active_dialog.clone() else {
+            return;
+        };
+        self.close_dialog();
+        if let Some(doc) = self.documents.iter_mut().find(|d| d.id == doc_id) {
+            doc.pending_save = true;
+            doc.autosave_due = None;
+            doc.recovery_due = None;
+            doc.pending_recovery = false;
+        }
+        self.pending_close = Some(doc_id);
+        self.dispatch_next();
+    }
+
+    pub(crate) fn confirm_close_discard(&mut self, tx: &mut Tx) {
+        let Some(DialogKind::ConfirmClose { doc_id, .. }) = self.active_dialog.clone() else {
+            return;
+        };
+        self.close_dialog();
+        if let Some(pos) = self.documents.iter().position(|d| d.id == doc_id) {
+            let _ = fs::remove_file(self.documents[pos].recovery_path());
+            if self.pending_close.as_ref() == Some(&doc_id) {
+                self.pending_close = None;
+            }
+            self.remove_doc_at(pos);
+            self.sync_window_title(tx);
+        }
+    }
+
+    pub(crate) fn cycle_tab(&mut self, backwards: bool, tx: &mut Tx) {
+        let len = self.documents.len();
         if len <= 1 {
             return;
         }
-        let cur = self.active_tab.unwrap_or(0);
+        let cur = self.active_doc.unwrap_or(0);
         let next = if backwards {
             (cur + len - 1) % len
         } else {
             (cur + 1) % len
         };
-        let id = self.tabs[next].id.clone();
-        self.activate_tab(&id, &mut Tx::default());
+        let key = self.documents[next].id.tab_key();
+        self.activate_tab(&key, tx);
+    }
+
+    pub(crate) fn desired_window_title(&self) -> String {
+        if let Some(doc) = self.active_doc_ref() {
+            format!("{} — ghostless", doc.title)
+        } else if let Some(ws) = &self.workspace {
+            let name = ws
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("ghostless");
+            format!("{name} — ghostless")
+        } else {
+            "ghostless editor".into()
+        }
+    }
+
+    pub(crate) fn sync_window_title(&mut self, tx: &mut Tx) {
+        let desired = self.desired_window_title();
+        if self.last_window_title.as_deref() != Some(&desired) {
+            self.last_window_title = Some(desired.clone());
+            tx.set_title(desired);
+        }
     }
 
     fn rel_from_workspace(&self, abs: &Path) -> Option<String> {
@@ -632,11 +724,14 @@ impl Editor {
             return;
         };
         let rels: Vec<String> = self
-            .tabs
+            .documents
             .iter()
-            .filter_map(|t| match t.kind {
-                TabKind::File { .. } => rel_path_from_abs(folder, &t.path),
-                TabKind::Session { .. } => None,
+            .filter_map(|d| {
+                if d.is_session() {
+                    None
+                } else {
+                    rel_path_from_abs(folder, &d.path)
+                }
             })
             .collect();
         self.store
@@ -672,6 +767,24 @@ impl Editor {
         self.save_ui_prefs_if_workspace();
     }
 
+    pub(crate) fn toggle_autosave(&mut self) {
+        self.store.ui.autosave_workspace_files = !self.store.ui.autosave_workspace_files;
+        let _ = prefs::save_store(&self.store);
+        if self.store.ui.autosave_workspace_files {
+            self.flush_autosave_buffers();
+        }
+    }
+
+    pub(crate) fn toggle_active_user_lock(&mut self) {
+        if let Some(doc) = self.active_doc_mut()
+            && doc.lockable
+            && !doc.read_only
+            && !doc.finished
+        {
+            doc.user_locked = !doc.user_locked;
+        }
+    }
+
     fn active_target_parent_rel(&self) -> String {
         if let Some(sel) = &self.selected_tree_id
             && let Some(node) = self.file_tree.get(sel)
@@ -693,10 +806,7 @@ impl Editor {
         let Some(node) = self.file_tree.get(sel) else {
             return (false, false);
         };
-        let protected = node
-            .data
-            .as_ref()
-            .is_some_and(|e| e.read_only);
+        let protected = node.data.as_ref().is_some_and(|e| e.read_only);
         let is_file = !node.dir;
         (!protected, is_file)
     }
@@ -764,7 +874,8 @@ impl Editor {
 
     pub(crate) fn duplicate_selected(&mut self) {
         self.file_menu_open = false;
-        let (Some(root), Some(sel)) = (self.workspace.clone(), self.selected_tree_id.clone()) else {
+        let (Some(root), Some(sel)) = (self.workspace.clone(), self.selected_tree_id.clone())
+        else {
             return;
         };
         match workspace_tree::duplicate_file(&root, &sel) {
@@ -779,54 +890,68 @@ impl Editor {
         }
     }
 
-    pub(crate) fn submit_dialog(&mut self, _tx: &mut Tx) {
-        let (Some(root), Some(dialog)) = (self.workspace.clone(), self.active_dialog.clone()) else {
+    pub(crate) fn submit_dialog(&mut self, tx: &mut Tx) {
+        let Some(dialog) = self.active_dialog.clone() else {
+            return;
+        };
+        if matches!(dialog, DialogKind::ConfirmClose { .. }) {
+            self.confirm_close_save();
+            return;
+        }
+        let Some(root) = self.workspace.clone() else {
             return;
         };
         let input = self.dialog_input.text.trim().to_owned();
         match dialog {
-            DialogKind::NewFile { parent_rel } => match workspace_tree::create_file(&root, &parent_rel, &input) {
-                Ok(created) => {
-                    if let Some(rel) = rel_path_from_abs(&root, &created) {
-                        self.selected_tree_id = Some(rel);
+            DialogKind::NewFile { parent_rel } => {
+                match workspace_tree::create_file(&root, &parent_rel, &input) {
+                    Ok(created) => {
+                        if let Some(rel) = rel_path_from_abs(&root, &created) {
+                            self.selected_tree_id = Some(rel);
+                        }
+                        self.close_dialog();
+                        self.refresh_workspace_tree();
+                        self.open_workspace_file(created, true);
+                        self.sync_window_title(tx);
                     }
-                    self.close_dialog();
-                    self.refresh_workspace_tree();
-                    self.open_workspace_file(created, true);
+                    Err(err) => self.dialog_error = Some(err),
                 }
-                Err(err) => self.dialog_error = Some(err),
-            },
-            DialogKind::NewFolder { parent_rel } => match workspace_tree::create_folder(&root, &parent_rel, &input) {
-                Ok(created) => {
-                    if let Some(rel) = rel_path_from_abs(&root, &created) {
-                        self.selected_tree_id = Some(rel.clone());
+            }
+            DialogKind::NewFolder { parent_rel } => {
+                match workspace_tree::create_folder(&root, &parent_rel, &input) {
+                    Ok(created) => {
+                        if let Some(rel) = rel_path_from_abs(&root, &created) {
+                            self.selected_tree_id = Some(rel);
+                        }
+                        self.close_dialog();
+                        self.refresh_workspace_tree();
+                        if let Some(sel) = &self.selected_tree_id {
+                            self.file_tree.set_expanded(sel, true);
+                        }
                     }
-                    self.close_dialog();
-                    self.refresh_workspace_tree();
-                    if let Some(sel) = &self.selected_tree_id {
-                        self.file_tree.set_expanded(sel, true);
-                    }
+                    Err(err) => self.dialog_error = Some(err),
                 }
-                Err(err) => self.dialog_error = Some(err),
-            },
+            }
             DialogKind::Rename { rel_path } => {
                 let old_abs = root.join(&rel_path);
                 let old_canon = old_abs.canonicalize().unwrap_or(old_abs);
                 match workspace_tree::rename_entry(&root, &rel_path, &input) {
                     Ok(renamed) => {
                         let new_canon = renamed.canonicalize().unwrap_or(renamed);
-                        for tab in &mut self.tabs {
-                            if let TabKind::File { .. } = &tab.kind {
-                                if tab.path == old_canon {
-                                    tab.path = new_canon.clone();
-                                    tab.id = format!("file:{}", new_canon.display());
-                                    if let Some(name) = new_canon.file_name().and_then(|n| n.to_str()) {
-                                        tab.title = name.to_owned();
+                        for doc in &mut self.documents {
+                            if !doc.is_session() {
+                                if doc.path == old_canon {
+                                    doc.path = new_canon.clone();
+                                    doc.id = DocId::File(new_canon.clone());
+                                    if let Some(name) =
+                                        new_canon.file_name().and_then(|n| n.to_str())
+                                    {
+                                        doc.title = name.to_owned();
                                     }
-                                } else if let Ok(suffix) = tab.path.strip_prefix(&old_canon) {
+                                } else if let Ok(suffix) = doc.path.strip_prefix(&old_canon) {
                                     let updated = new_canon.join(suffix);
-                                    tab.path = updated.clone();
-                                    tab.id = format!("file:{}", updated.display());
+                                    doc.path = updated.clone();
+                                    doc.id = DocId::File(updated);
                                 }
                             }
                         }
@@ -836,6 +961,7 @@ impl Editor {
                         self.close_dialog();
                         self.refresh_workspace_tree();
                         self.save_open_tabs_pref();
+                        self.sync_window_title(tx);
                     }
                     Err(err) => self.dialog_error = Some(err),
                 }
@@ -845,280 +971,483 @@ impl Editor {
                 let target_canon = target_abs.canonicalize().unwrap_or(target_abs);
                 match workspace_tree::delete_entry(&root, &rel_path) {
                     Ok(()) => {
-                        let removed_ids: Vec<String> = self
-                            .tabs
-                            .iter()
-                            .filter(|t| matches!(t.kind, TabKind::File { .. }) && t.path.starts_with(&target_canon))
-                            .map(|t| t.id.clone())
-                            .collect();
-                        for id in removed_ids {
-                            self.tabs.retain(|t| t.id != id);
-                        }
-                        if let Some(idx) = self.active_tab
-                            && idx >= self.tabs.len()
+                        self.documents
+                            .retain(|d| d.is_session() || !d.path.starts_with(&target_canon));
+                        if let Some(idx) = self.active_doc
+                            && idx >= self.documents.len()
                         {
-                            self.active_tab = (!self.tabs.is_empty()).then_some(self.tabs.len() - 1);
+                            self.active_doc =
+                                (!self.documents.is_empty()).then_some(self.documents.len() - 1);
                         }
                         self.selected_tree_id = None;
                         self.close_dialog();
                         self.refresh_workspace_tree();
                         self.save_open_tabs_pref();
+                        self.sync_window_title(tx);
                     }
                     Err(err) => self.dialog_error = Some(err),
                 }
             }
+            DialogKind::ConfirmClose { .. } => unreachable!(),
         }
     }
 
-    pub(crate) fn is_locked(&self) -> bool {
-        self.session.finished
-            || self.finish_requested
-            || matches!(self.in_flight, Some(InFlight::Finish))
-    }
-
-    pub(crate) fn is_dirty(&self) -> bool {
-        !self.session.finished && self.generation > self.saved_generation
-    }
-
-    pub(crate) fn changed(&mut self, tx: &mut Tx) {
-        if self.is_locked() {
+    pub(crate) fn changed_active(&mut self, tx: &mut Tx) {
+        let Some(idx) = self.active_doc else {
             return;
-        }
-        self.generation += 1;
-        if let Some(tab) = self.active_tab.and_then(|i| self.tabs.get_mut(i))
-            && matches!(tab.kind, TabKind::Session { .. })
-        {
-            tab.pinned = true;
-        }
-        if matches!(self.in_flight, Some(InFlight::Save)) {
-            self.pending_save = true;
-            self.autosave_due = None;
+        };
+        let autosave_files = self.store.ui.autosave_workspace_files;
+        let busy_same_save = {
+            let doc = &self.documents[idx];
+            if !doc.is_editable() {
+                return;
+            }
+            self.worker_busy.as_ref().is_some_and(|(id, kind)| {
+                id == &doc.id && *kind == InFlight::Save
+            })
+        };
+
+        let doc = &mut self.documents[idx];
+        doc.pinned = true;
+        doc.generation += 1;
+        doc.save_error = None;
+        doc.last_saved_label = Some("Unsaved".into());
+        let delay = if doc.is_session() {
+            SESSION_AUTOSAVE_DELAY
         } else {
-            self.autosave_due = Some(tx.clock() + SAVE_DELAY.as_secs_f64());
-            tx.wake_after(SAVE_DELAY);
+            FILE_AUTOSAVE_DELAY
+        };
+
+        if doc.is_session() || autosave_files {
+            if busy_same_save {
+                doc.pending_save = true;
+                doc.autosave_due = None;
+            } else {
+                doc.autosave_due = Some(tx.clock() + delay.as_secs_f64());
+                tx.wake_after(delay);
+            }
+        } else {
+            doc.recovery_due = Some(tx.clock() + FILE_AUTOSAVE_DELAY.as_secs_f64());
+            tx.wake_after(FILE_AUTOSAVE_DELAY);
         }
         self.status = "Unsaved changes".into();
     }
 
-    pub(crate) fn changed_active(&mut self, tx: &mut Tx) {
-        if self.active_is_session() {
-            self.changed(tx);
-            return;
-        }
-        if let Some(tab) = self.active_tab.and_then(|i| self.tabs.get_mut(i))
-            && let TabKind::File {
-                dirty,
-                read_only: false,
-                ..
-            } = &mut tab.kind
-        {
-            *dirty = true;
-            tab.pinned = true;
-            self.status = "Unsaved changes".into();
-        }
-    }
-
     pub(crate) fn refresh_diff(&mut self) {
+        let Some(doc) = self.active_doc_ref() else {
+            self.diff = DiffState::new(Vec::new());
+            return;
+        };
+        let Some(original) = &doc.original else {
+            self.diff = DiffState::new(Vec::new());
+            return;
+        };
         let mut diff = DiffState::new(vec![FileDiff::from_texts(
-            &self.session.source_name,
-            &self.session.original,
-            &self.after.text,
+            &doc.title,
+            original,
+            &doc.edit.text,
         )]);
         diff.set_mode(DiffMode::Split);
         self.diff = diff;
     }
 
     pub(crate) fn save_clicked(&mut self) {
-        if self.is_locked() {
+        let Some(idx) = self.active_doc else {
+            return;
+        };
+        let doc = &mut self.documents[idx];
+        if !doc.is_editable() {
             return;
         }
-        self.pending_save = true;
-        self.autosave_due = None;
+        if !doc.is_dirty() && !doc.recovery_path().is_file() {
+            let label = DocumentBuffer::format_saved_utc();
+            doc.last_saved_label = Some(label);
+            self.status = "Saved locally".into();
+            return;
+        }
+        doc.pending_save = true;
+        doc.autosave_due = None;
+        doc.recovery_due = None;
+        doc.pending_recovery = false;
         self.dispatch_next();
     }
 
-    pub(crate) fn save_active(&mut self) {
-        if self.active_is_session() {
-            self.save_clicked();
-            return;
-        }
-        if let Some(tab) = self.active_tab.and_then(|i| self.tabs.get_mut(i))
-            && let TabKind::File {
-                edit,
-                dirty,
-                read_only: false,
-            } = &mut tab.kind
-        {
-            match fs_io::atomic_write_text(&tab.path, &edit.text) {
-                Ok(()) => {
-                    *dirty = false;
-                    self.status = "Saved locally".into();
-                }
-                Err(error) => {
-                    self.status = format!("Save failed: {error}");
-                }
-            }
-        }
-    }
-
     pub(crate) fn finish(&mut self) {
-        if !self.session_active || self.is_locked() {
+        let Some(idx) = self.active_doc else {
+            return;
+        };
+        if self.active_is_locked() {
             return;
         }
-        self.finish_requested = true;
-        self.pending_save = false;
-        self.autosave_due = None;
+        let doc = &mut self.documents[idx];
+        if !doc.is_session() {
+            return;
+        }
+        doc.finish_requested = true;
+        doc.pending_save = false;
+        doc.autosave_due = None;
         self.status = "Finishing…".into();
         self.dispatch_next();
     }
 
+    pub(crate) fn flush_autosave_buffers(&mut self) {
+        let autosave_files = self.store.ui.autosave_workspace_files;
+        for doc in &mut self.documents {
+            if doc.is_editable() && doc.is_dirty() {
+                if doc.is_session() || autosave_files {
+                    doc.pending_save = true;
+                    doc.autosave_due = None;
+                } else {
+                    doc.pending_recovery = true;
+                    doc.recovery_due = None;
+                }
+            }
+        }
+        self.dispatch_next();
+    }
+
     pub(crate) fn dispatch_next(&mut self) {
-        if self.in_flight.is_some() || self.session.finished || !self.session_active {
+        if self.worker_busy.is_some() {
             return;
         }
-        if self.finish_requested {
-            let snapshot = self
-                .is_dirty()
-                .then(|| (self.after.text.clone(), self.notes.text.clone()));
+
+        // 1. Pending finishes
+        if let Some(doc) = self
+            .documents
+            .iter_mut()
+            .find(|d| d.finish_requested && !d.finished)
+            && let (Some(project), Some(session_id)) =
+                (doc.voice_project.clone(), doc.session_id.clone())
+        {
+            let doc_id = doc.id.clone();
+            let snapshot = doc.is_dirty().then(|| {
+                let notes = doc
+                    .notes
+                    .as_ref()
+                    .map_or_else(String::new, |n| n.text.clone());
+                (doc.edit.text.clone(), notes)
+            });
             match self.worker.send(WorkerRequest::Finish {
-                project: self.session.project.clone(),
-                session_id: self.session.id.clone(),
-                generation: self.generation,
+                doc_id: doc_id.clone(),
+                generation: doc.generation,
+                project,
+                session_id,
+                before_sha256: doc.before_sha256.clone(),
                 snapshot,
+                mirror_path: doc.mirror_path.clone(),
             }) {
                 Ok(()) => {
-                    self.in_flight = Some(InFlight::Finish);
+                    self.worker_busy = Some((doc_id, InFlight::Finish));
                     self.status = "Finishing…".into();
                 }
                 Err(error) => {
-                    self.finish_requested = false;
+                    doc.finish_requested = false;
+                    doc.save_error = Some(error.clone());
                     self.status = format!("Finish stopped: {error}");
                 }
             }
-        } else if self.pending_save {
-            self.pending_save = false;
-            self.autosave_due = None;
-            match self.worker.send(WorkerRequest::Snapshot {
-                project: self.session.project.clone(),
-                session_id: self.session.id.clone(),
-                generation: self.generation,
-                after: self.after.text.clone(),
-                notes: self.notes.text.clone(),
-            }) {
+            return;
+        }
+
+        // 2. Pending atomic saves
+        if let Some(doc) = self
+            .documents
+            .iter_mut()
+            .find(|d| d.pending_save && !d.finished)
+        {
+            doc.pending_save = false;
+            doc.autosave_due = None;
+            doc.recovery_due = None;
+            doc.pending_recovery = false;
+            let doc_id = doc.id.clone();
+            let req = if let (Some(project), Some(session_id)) =
+                (doc.voice_project.clone(), doc.session_id.clone())
+            {
+                WorkerRequest::WriteSession {
+                    doc_id: doc_id.clone(),
+                    generation: doc.generation,
+                    project,
+                    session_id,
+                    before_sha256: doc.before_sha256.clone(),
+                    after: doc.edit.text.clone(),
+                    notes: doc
+                        .notes
+                        .as_ref()
+                        .map_or_else(String::new, |n| n.text.clone()),
+                    mirror_path: doc.mirror_path.clone(),
+                }
+            } else {
+                WorkerRequest::WriteFile {
+                    doc_id: doc_id.clone(),
+                    generation: doc.generation,
+                    path: doc.path.clone(),
+                    content: doc.edit.text.clone(),
+                    clear_recovery: Some(doc.recovery_path()),
+                }
+            };
+            match self.worker.send(req) {
                 Ok(()) => {
-                    self.in_flight = Some(InFlight::Save);
+                    self.worker_busy = Some((doc_id, InFlight::Save));
+                    doc.last_saved_label = Some("Saving…".into());
                     self.status = "Saving…".into();
                 }
                 Err(error) => {
+                    doc.save_error = Some(error.clone());
                     self.status = format!("Save failed: {error}");
                 }
+            }
+            return;
+        }
+
+        // 3. Pending crash-recovery shadow writes (manual-save mode)
+        if let Some(doc) = self
+            .documents
+            .iter_mut()
+            .find(|d| d.pending_recovery && !d.finished && !d.is_session())
+        {
+            doc.pending_recovery = false;
+            doc.recovery_due = None;
+            let doc_id = doc.id.clone();
+            let req = WorkerRequest::WriteRecovery {
+                doc_id: doc_id.clone(),
+                recovery_path: doc.recovery_path(),
+                content: doc.edit.text.clone(),
+            };
+            if self.worker.send(req).is_ok() {
+                self.worker_busy = Some((doc_id, InFlight::Recovery));
             }
         }
     }
 
-    pub(crate) fn apply_reply(&mut self, reply: WorkerReply) -> bool {
-        self.in_flight = None;
-        match reply {
-            WorkerReply::Snapshot { generation, result } => match result {
-                Ok(()) => {
-                    self.saved_generation = self.saved_generation.max(generation);
-                    if self.finish_requested {
-                        self.dispatch_next();
-                    } else if self.generation > self.saved_generation {
-                        self.pending_save = true;
-                        self.dispatch_next();
-                    } else {
-                        self.status = "Saved locally".into();
+    pub(crate) fn apply_reply(&mut self, reply: WorkerReply, tx: Option<&mut Tx>) -> bool {
+        self.worker_busy = None;
+        let ok = match reply {
+            WorkerReply::Saved {
+                doc_id,
+                generation,
+                sha256,
+                result,
+            } => {
+                let mut saved_ok = false;
+                let mut should_close = false;
+                if let Some(doc) = self.documents.iter_mut().find(|d| d.id == doc_id) {
+                    match result {
+                        Ok(()) => {
+                            doc.saved_generation = doc.saved_generation.max(generation);
+                            doc.last_disk_sha256 = sha256;
+                            doc.save_error = None;
+                            if doc.generation > doc.saved_generation {
+                                doc.pending_save = true;
+                            } else {
+                                doc.last_saved_label = Some(DocumentBuffer::format_saved_utc());
+                                self.status = "Saved locally".into();
+                                if self.pending_close.as_ref() == Some(&doc_id) {
+                                    should_close = true;
+                                }
+                            }
+                            saved_ok = true;
+                        }
+                        Err(error) => {
+                            doc.autosave_due = None;
+                            doc.save_error = Some(error.clone());
+                            if self.pending_close.as_ref() == Some(&doc_id) {
+                                self.pending_close = None;
+                            }
+                            if doc.finish_requested {
+                                doc.finish_requested = false;
+                                self.status = format!("Finish stopped: {error}");
+                            } else if doc.pending_save && doc.generation > generation {
+                                // retry next newer edit
+                            } else {
+                                doc.pending_save = false;
+                                self.status = format!("Save failed: {error}");
+                            }
+                        }
                     }
-                    true
                 }
+                if should_close
+                    && let Some(pos) = self.documents.iter().position(|d| d.id == doc_id)
+                {
+                    self.pending_close = None;
+                    self.remove_doc_at(pos);
+                    if let Some(tx) = tx {
+                        self.sync_window_title(tx);
+                    }
+                }
+                saved_ok
+            }
+            WorkerReply::RecoveryWritten { doc_id, result } => match result {
+                Ok(()) => true,
                 Err(error) => {
-                    self.autosave_due = None;
-                    if self.finish_requested {
-                        self.finish_requested = false;
-                        self.status = format!("Finish stopped: {error}");
-                    } else if self.pending_save && self.generation > generation {
-                        self.dispatch_next();
-                    } else {
-                        self.pending_save = false;
-                        self.status = format!("Save failed: {error}");
+                    if let Some(doc) = self.documents.iter_mut().find(|d| d.id == doc_id) {
+                        doc.save_error = Some(error);
                     }
                     false
                 }
             },
-            WorkerReply::Finish {
+            WorkerReply::Finished {
+                doc_id,
                 generation,
                 saved_snapshot,
+                after_sha256,
                 result,
             } => {
-                if saved_snapshot {
-                    self.saved_generation = self.saved_generation.max(generation);
-                }
-                self.finish_requested = false;
-                match result {
-                    Ok(()) => {
-                        self.session.finished = true;
-                        self.pending_save = false;
-                        self.autosave_due = None;
-                        self.status = "Finished. Final and receipt saved locally.".into();
-                        if let Some(voice) = &self.voice_project {
-                            self.sessions =
-                                workspace_tree::scan_sessions(voice, &self.store.session_links);
+                let mut finished_ok = false;
+                if let Some(doc) = self.documents.iter_mut().find(|d| d.id == doc_id) {
+                    if saved_snapshot {
+                        doc.saved_generation = doc.saved_generation.max(generation);
+                        if let Some(sha) = after_sha256 {
+                            doc.last_disk_sha256 = sha;
                         }
-                        true
                     }
-                    Err(error) => {
-                        self.status = format!("Finish stopped: {error}");
-                        false
+                    doc.finish_requested = false;
+                    match result {
+                        Ok(()) => {
+                            doc.finished = true;
+                            doc.read_only = true;
+                            doc.pending_save = false;
+                            doc.autosave_due = None;
+                            doc.save_error = None;
+                            doc.last_saved_label = Some("Finished".into());
+                            self.status = "Finished. Final and receipt saved locally.".into();
+                            if let Some(voice) = &self.voice_project {
+                                self.sessions = workspace_tree::scan_sessions(
+                                    voice,
+                                    &self.store.session_links,
+                                );
+                            }
+                            finished_ok = true;
+                        }
+                        Err(error) => {
+                            doc.save_error = Some(error.clone());
+                            self.status = format!("Finish stopped: {error}");
+                        }
+                    }
+                }
+                finished_ok
+            }
+        };
+        self.dispatch_next();
+        ok
+    }
+
+    fn drain_until_idle(&mut self) {
+        while self.worker_busy.is_some() {
+            match self.worker.recv() {
+                Ok(reply) => {
+                    self.apply_reply(reply, None);
+                }
+                Err(_) => {
+                    self.worker_busy = None;
+                    break;
+                }
+            }
+        }
+    }
+
+    fn drain_single_doc_save(&mut self, doc_id: &DocId) -> bool {
+        if self.worker_busy.is_some() {
+            self.drain_until_idle();
+        }
+        let mut attempted = false;
+        loop {
+            if let Some(doc) = self.documents.iter_mut().find(|d| &d.id == doc_id) {
+                if !doc.is_dirty() || attempted {
+                    return !doc.is_dirty();
+                }
+                attempted = true;
+                doc.pending_save = true;
+                doc.autosave_due = None;
+            } else {
+                return true;
+            }
+            self.dispatch_next();
+            if self.worker_busy.is_none() {
+                return false;
+            }
+            while self.worker_busy.is_some() {
+                match self.worker.recv() {
+                    Ok(reply) => {
+                        let ok = self.apply_reply(reply, None);
+                        if !ok && self.worker_busy.is_none() {
+                            return false;
+                        }
+                    }
+                    Err(_) => {
+                        self.worker_busy = None;
+                        return false;
                     }
                 }
             }
         }
     }
 
-    fn drain_session_writes(&mut self) {
-        let mut attempted_flush_save = false;
-        let mut attempted_finish = false;
+    fn drain_autosave_work(&mut self) {
+        let autosave = self.store.ui.autosave_workspace_files;
+        let mut attempted_finish: HashSet<DocId> = HashSet::new();
+        let mut attempted_save: HashSet<DocId> = HashSet::new();
+        let mut attempted_recovery: HashSet<DocId> = HashSet::new();
+
         loop {
-            if self.in_flight.is_some() {
+            if self.worker_busy.is_some() {
                 match self.worker.recv() {
                     Ok(reply) => {
-                        let ok = self.apply_reply(reply);
-                        if !ok && self.in_flight.is_none() {
+                        let ok = self.apply_reply(reply, None);
+                        if !ok && self.worker_busy.is_none() {
                             eprintln!("ghostless-editor: {}", self.status);
-                            break;
                         }
                         continue;
                     }
                     Err(_) => {
-                        self.in_flight = None;
+                        self.worker_busy = None;
                         break;
                     }
                 }
             }
-            if self.session_active
-                && self.finish_requested
-                && !self.session.finished
-                && !attempted_finish
+
+            if let Some(doc) = self
+                .documents
+                .iter_mut()
+                .find(|d| d.finish_requested && !d.finished && !attempted_finish.contains(&d.id))
             {
-                attempted_finish = true;
+                attempted_finish.insert(doc.id.clone());
                 self.dispatch_next();
-                if self.in_flight.is_some() {
+                if self.worker_busy.is_some() {
                     continue;
                 }
-                eprintln!("ghostless-editor: {}", self.status);
-                break;
             }
-            if self.session_active && self.is_dirty() && !attempted_flush_save {
-                attempted_flush_save = true;
-                self.pending_save = true;
+
+            if let Some(doc) = self.documents.iter_mut().find(|d| {
+                d.is_editable()
+                    && d.is_dirty()
+                    && (d.is_session() || autosave)
+                    && !attempted_save.contains(&d.id)
+            }) {
+                attempted_save.insert(doc.id.clone());
+                doc.pending_save = true;
+                doc.autosave_due = None;
                 self.dispatch_next();
-                if self.in_flight.is_some() {
+                if self.worker_busy.is_some() {
                     continue;
                 }
-                eprintln!("ghostless-editor: {}", self.status);
-                break;
             }
+
+            if let Some(doc) = self.documents.iter_mut().find(|d| {
+                d.is_editable()
+                    && d.is_dirty()
+                    && !d.is_session()
+                    && !autosave
+                    && !attempted_recovery.contains(&d.id)
+            }) {
+                attempted_recovery.insert(doc.id.clone());
+                doc.pending_recovery = true;
+                doc.recovery_due = None;
+                self.dispatch_next();
+                if self.worker_busy.is_some() {
+                    continue;
+                }
+            }
+
             break;
         }
     }
@@ -1128,21 +1457,7 @@ impl Editor {
             return;
         }
         self.flushed = true;
-        self.drain_session_writes();
-        for tab in &mut self.tabs {
-            if let TabKind::File {
-                edit,
-                dirty,
-                read_only: false,
-            } = &mut tab.kind
-                && *dirty
-            {
-                match fs_io::atomic_write_text(&tab.path, &edit.text) {
-                    Ok(()) => *dirty = false,
-                    Err(err) => eprintln!("ghostless-editor: {err}"),
-                }
-            }
-        }
+        self.drain_autosave_work();
         if self.workspace.is_some() {
             self.save_open_tabs_pref();
             self.save_ui_prefs_if_workspace();
@@ -1155,6 +1470,37 @@ impl Drop for Editor {
     fn drop(&mut self) {
         self.flush_on_exit();
     }
+}
+
+fn classify_file_flags(
+    tree_entry: Option<&WorkspaceEntry>,
+    path: &Path,
+    voice_project: Option<&Path>,
+) -> (bool, bool) {
+    let is_pre_answers = path.file_name().and_then(|n| n.to_str()) == Some("pre-answers.md");
+    if let Some(entry) = tree_entry {
+        let lockable = entry.kind == FileKind::Corpus || is_pre_answers;
+        return (entry.read_only, lockable);
+    }
+    let name = path.file_name().and_then(|n| n.to_str());
+    let mut read_only = name == Some("voice-guide.md");
+    let mut lockable = is_pre_answers;
+    if let Some(voice) = voice_project
+        && let Ok(rel) = path.strip_prefix(voice)
+    {
+        if rel
+            .parent()
+            .is_some_and(|p| p.starts_with("corpus") || p.starts_with("transcripts"))
+        {
+            lockable = true;
+        }
+        if name.is_some_and(|n| {
+            matches!(n, "voice-guide.md" | "voice-stats.json") || n.starts_with("edits-summary.")
+        }) {
+            read_only = true;
+        }
+    }
+    (read_only, lockable)
 }
 
 fn rel_path_from_abs(root: &Path, abs: &Path) -> Option<String> {
@@ -1175,23 +1521,44 @@ fn rel_path_from_abs(root: &Path, abs: &Path) -> Option<String> {
 pub(crate) fn poll(editor: &mut Editor, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
     while let Ok(reply) = editor.worker.try_recv() {
-        editor.apply_reply(reply);
+        editor.apply_reply(reply, Some(tx));
         changed = true;
     }
-    if editor.in_flight.is_none()
-        && editor.session_active
-        && !editor.session.finished
-        && let Some(due) = editor.autosave_due
-    {
-        if clock >= due {
-            editor.pending_save = true;
-            editor.autosave_due = None;
-            editor.dispatch_next();
-            changed = true;
-        } else {
-            tx.wake_after(Duration::from_secs_f64((due - clock).max(0.0)));
+
+    let autosave = editor.store.ui.autosave_workspace_files;
+    let mut next_wake: Option<f64> = None;
+    for doc in &mut editor.documents {
+        if !doc.is_editable() || !doc.is_dirty() {
+            continue;
+        }
+        if doc.is_session() || autosave {
+            if let Some(due) = doc.autosave_due {
+                if clock >= due {
+                    doc.pending_save = true;
+                    doc.autosave_due = None;
+                    changed = true;
+                } else {
+                    next_wake = Some(next_wake.map_or(due, |m| m.min(due)));
+                }
+            }
+        } else if let Some(due) = doc.recovery_due {
+            if clock >= due {
+                doc.pending_recovery = true;
+                doc.recovery_due = None;
+                changed = true;
+            } else {
+                next_wake = Some(next_wake.map_or(due, |m| m.min(due)));
+            }
         }
     }
+
+    editor.dispatch_next();
+    if editor.worker_busy.is_none()
+        && let Some(due) = next_wake
+    {
+        tx.wake_after(Duration::from_secs_f64((due - clock).max(0.0)));
+    }
+
     if editor.workspace.is_some()
         && !editor.sidebar_pane.is_resizing()
         && !editor.inspector_pane.is_resizing()
@@ -1208,6 +1575,8 @@ pub(crate) fn poll(editor: &mut Editor, clock: f64, tx: &mut Tx) -> bool {
             editor.save_ui_prefs_if_workspace();
         }
     }
+
+    editor.sync_window_title(tx);
     changed
 }
 
@@ -1223,7 +1592,7 @@ pub(crate) fn on_key(editor: &mut Editor, key: &KeyEvent, tx: &mut Tx) -> bool {
         }
         return true;
     }
-    if !editor.session_active && editor.workspace.is_none() {
+    if editor.is_landing_view() {
         return false;
     }
     if is_sidebar_toggle(key) {
@@ -1238,15 +1607,15 @@ pub(crate) fn on_key(editor: &mut Editor, key: &KeyEvent, tx: &mut Tx) -> bool {
         editor.open_new_file_dialog();
         return true;
     }
-    if key.is_command('w') && !key.mods.shift && editor.close_active_tab() {
+    if key.is_command('w') && !key.mods.shift && editor.close_active_tab(tx) {
         return true;
     }
     if key.key == Key::Tab && (key.mods.cmd || key.mods.ctrl) {
-        editor.cycle_tab(key.mods.shift);
+        editor.cycle_tab(key.mods.shift, tx);
         return true;
     }
     if key.is_command('s') && !key.mods.shift {
-        editor.save_active();
+        editor.save_clicked();
         return true;
     }
     if key.is_command('d') && !key.mods.shift && editor.active_has_baseline() {
@@ -1266,15 +1635,12 @@ mod tests {
     use super::*;
     use crate::{
         session::Session,
-        worker::{CliRunner, InFlight, WakeFn},
+        worker::{CliRunner, InFlight, WakeFn, WriteOp, WriteRunner},
     };
     use rune::Tx;
-    use serde_json::Value;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex, mpsc};
     use std::{thread, time::Duration};
-
-    type RecordedCall = (Vec<String>, Option<String>);
 
     fn test_session() -> Session {
         Session {
@@ -1293,9 +1659,17 @@ mod tests {
         Box::new(|| {})
     }
 
+    fn ok_writer() -> WriteRunner {
+        Box::new(|_| Ok(()))
+    }
+
+    fn ok_runner() -> CliRunner {
+        Box::new(|_, _| Ok("{}".into()))
+    }
+
     fn drain_until_idle(editor: &mut Editor) {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while editor.in_flight.is_some() {
+        while editor.worker_busy.is_some() {
             assert!(
                 std::time::Instant::now() < deadline,
                 "timed out waiting for background worker"
@@ -1311,41 +1685,47 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel::<()>();
         let (release_tx, release_rx) = mpsc::channel::<()>();
         let release_rx = Mutex::new(release_rx);
-        let calls: Arc<Mutex<Vec<RecordedCall>>> = Arc::new(Mutex::new(Vec::new()));
-        let recorded = calls.clone();
+        let writes: Arc<Mutex<Vec<WriteOp>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorded = writes.clone();
 
-        let runner: CliRunner = Box::new(move |args, input| {
-            recorded.lock().unwrap().push((
-                args.iter().map(|item| (*item).to_owned()).collect(),
-                input.map(str::to_owned),
-            ));
+        let writer: WriteRunner = Box::new(move |op| {
+            recorded.lock().unwrap().push(op.clone());
             let _ = entered_tx.send(());
             let _ = release_rx.lock().unwrap().recv();
-            Ok("{}".into())
+            Ok(())
         });
 
-        let mut editor = Editor::with_worker(test_session(), runner, noop_wake());
+        let mut editor = Editor::with_handlers(
+            test_session(),
+            prefs::EditorStateStore::default(),
+            ok_runner(),
+            writer,
+            noop_wake(),
+        );
         let mut tx = Tx::default();
-        editor.after.text = "First draft edit.".into();
-        editor.changed(&mut tx);
+        editor.active_working_edit_mut().text = "First draft edit.".into();
+        editor.changed_active(&mut tx);
         editor.save_clicked();
 
-        assert_eq!(editor.in_flight, Some(InFlight::Save));
+        assert_eq!(
+            editor.worker_busy.as_ref().map(|(_, k)| *k),
+            Some(InFlight::Save)
+        );
         assert_eq!(editor.status, "Saving…");
         entered_rx
             .recv_timeout(Duration::from_secs(2))
-            .expect("worker started running snapshot");
+            .expect("worker started running write");
 
-        editor.after.text = "Second draft edit.".into();
-        editor.changed(&mut tx);
-        assert!(editor.pending_save);
+        editor.active_working_edit_mut().text = "Second draft edit.".into();
+        editor.changed_active(&mut tx);
+        assert!(editor.documents[0].pending_save);
 
         release_tx.send(()).unwrap();
         release_tx.send(()).unwrap();
         drain_until_idle(&mut editor);
         assert_eq!(editor.status, "Saved locally");
-        assert!(!editor.is_dirty());
-        assert_eq!(calls.lock().unwrap().len(), 2);
+        assert!(!editor.documents[0].is_dirty());
+        assert_eq!(writes.lock().unwrap().len(), 2);
     }
 
     #[test]
@@ -1353,88 +1733,103 @@ mod tests {
         let (started_tx, started_rx) = mpsc::channel::<()>();
         let (release_tx, release_rx) = mpsc::channel::<()>();
         let release_rx = Mutex::new(release_rx);
-        let calls: Arc<Mutex<Vec<RecordedCall>>> = Arc::new(Mutex::new(Vec::new()));
-        let recorded = calls.clone();
+        let writes: Arc<Mutex<Vec<WriteOp>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorded = writes.clone();
 
-        let runner: CliRunner = Box::new(move |args, input| {
+        let writer: WriteRunner = Box::new(move |op| {
             let count = {
                 let mut guard = recorded.lock().unwrap();
-                guard.push((
-                    args.iter().map(|item| (*item).to_owned()).collect(),
-                    input.map(str::to_owned),
-                ));
+                guard.push(op.clone());
                 guard.len()
             };
             if count == 1 {
                 let _ = started_tx.send(());
                 let _ = release_rx.lock().unwrap().recv();
             }
-            Ok("{}".into())
+            Ok(())
         });
 
-        let mut editor = Editor::with_worker(test_session(), runner, noop_wake());
+        let mut editor = Editor::with_handlers(
+            test_session(),
+            prefs::EditorStateStore::default(),
+            ok_runner(),
+            writer,
+            noop_wake(),
+        );
         let mut tx = Tx::default();
-        editor.after.text = "Edit 0".into();
-        editor.changed(&mut tx);
+        editor.active_working_edit_mut().text = "Edit 0".into();
+        editor.changed_active(&mut tx);
         assert!(poll(&mut editor, 1.0, &mut tx));
-        assert_eq!(editor.in_flight, Some(InFlight::Save));
+        assert_eq!(
+            editor.worker_busy.as_ref().map(|(_, k)| *k),
+            Some(InFlight::Save)
+        );
         started_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("first save entered worker");
 
         for idx in 1..=5 {
-            editor.after.text = format!("Edit {idx}");
-            editor.notes.text = format!("Note {idx}");
-            editor.changed(&mut tx);
+            editor.active_working_edit_mut().text = format!("Edit {idx}");
+            editor.active_notes_edit_mut().text = format!("Note {idx}");
+            editor.changed_active(&mut tx);
         }
 
         release_tx.send(()).unwrap();
         drain_until_idle(&mut editor);
 
-        let guard = calls.lock().unwrap();
+        let guard = writes.lock().unwrap();
         assert_eq!(
             guard.len(),
             2,
             "5 rapid edits must coalesce into one follow-up save"
         );
-        let last_payload: Value =
-            serde_json::from_str(guard[1].1.as_deref().unwrap()).unwrap();
-        assert_eq!(last_payload["after"], "Edit 5");
-        assert_eq!(last_payload["notes"], "Note 5");
+        match &guard[1] {
+            WriteOp::Session { after, notes, .. } => {
+                assert_eq!(after, "Edit 5");
+                assert_eq!(notes, "Note 5");
+            }
+            other => panic!("expected WriteOp::Session, got {other:?}"),
+        }
         assert_eq!(editor.status, "Saved locally");
-        assert!(!editor.is_dirty());
+        assert!(!editor.documents[0].is_dirty());
     }
 
     #[test]
     fn flush_on_exit_saves_dirty_edits_before_autosave_timer_and_is_idempotent() {
-        let calls: Arc<Mutex<Vec<RecordedCall>>> = Arc::new(Mutex::new(Vec::new()));
-        let recorded = calls.clone();
-        let runner: CliRunner = Box::new(move |args, input| {
-            recorded.lock().unwrap().push((
-                args.iter().map(|item| (*item).to_owned()).collect(),
-                input.map(str::to_owned),
-            ));
-            Ok("{}".into())
+        let writes: Arc<Mutex<Vec<WriteOp>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorded = writes.clone();
+        let writer: WriteRunner = Box::new(move |op| {
+            recorded.lock().unwrap().push(op.clone());
+            Ok(())
         });
 
-        let mut editor = Editor::with_worker(test_session(), runner, noop_wake());
+        let mut editor = Editor::with_handlers(
+            test_session(),
+            prefs::EditorStateStore::default(),
+            ok_runner(),
+            writer,
+            noop_wake(),
+        );
         let mut tx = Tx::default();
-        editor.after.text = "Typed right before closing.".into();
-        editor.notes.text = "Keep this note.".into();
-        editor.changed(&mut tx);
-        assert!(editor.is_dirty());
-        assert_eq!(editor.in_flight, None);
+        editor.active_working_edit_mut().text = "Typed right before closing.".into();
+        editor.active_notes_edit_mut().text = "Keep this note.".into();
+        editor.changed_active(&mut tx);
+        assert!(editor.documents[0].is_dirty());
+        assert!(editor.worker_busy.is_none());
 
         editor.flush_on_exit();
         editor.flush_on_exit();
 
-        let guard = calls.lock().unwrap();
+        let guard = writes.lock().unwrap();
         assert_eq!(guard.len(), 1);
-        assert_eq!(guard[0].0[0], "snapshot");
-        let payload: Value = serde_json::from_str(guard[0].1.as_deref().unwrap()).unwrap();
-        assert_eq!(payload["after"], "Typed right before closing.");
-        assert_eq!(payload["notes"], "Keep this note.");
-        assert!(!editor.is_dirty());
+        match &guard[0] {
+            WriteOp::Session { after, notes, .. } => {
+                assert_eq!(after, "Typed right before closing.");
+                assert_eq!(notes, "Keep this note.");
+            }
+            other => panic!("expected WriteOp::Session, got {other:?}"),
+        }
+        assert!(!editor.documents[0].is_dirty());
     }
 
     #[test]
@@ -1442,26 +1837,39 @@ mod tests {
         let (started_tx, started_rx) = mpsc::channel::<()>();
         let (release_tx, release_rx) = mpsc::channel::<()>();
         let release_rx = Mutex::new(release_rx);
-        let calls: Arc<Mutex<Vec<RecordedCall>>> = Arc::new(Mutex::new(Vec::new()));
-        let recorded = calls.clone();
+        let events: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let write_events = events.clone();
+        let cli_events = events.clone();
 
-        let runner: CliRunner = Box::new(move |args, input| {
-            let cmd = args[0].to_owned();
-            recorded.lock().unwrap().push((
-                args.iter().map(|item| (*item).to_owned()).collect(),
-                input.map(str::to_owned),
-            ));
-            if cmd == "snapshot" {
+        let writer: WriteRunner = Box::new(move |_| {
+            let count = {
+                let mut g = write_events.lock().unwrap();
+                g.push("write_session");
+                g.len()
+            };
+            if count == 1 {
                 let _ = started_tx.send(());
                 let _ = release_rx.lock().unwrap().recv();
+            }
+            Ok(())
+        });
+        let runner: CliRunner = Box::new(move |args, _| {
+            if args[0] == "finish" {
+                cli_events.lock().unwrap().push("finish");
             }
             Ok("{}".into())
         });
 
-        let mut editor = Editor::with_worker(test_session(), runner, noop_wake());
+        let mut editor = Editor::with_handlers(
+            test_session(),
+            prefs::EditorStateStore::default(),
+            runner,
+            writer,
+            noop_wake(),
+        );
         let mut tx = Tx::default();
-        editor.after.text = "Final prose.".into();
-        editor.changed(&mut tx);
+        editor.active_working_edit_mut().text = "Final prose.".into();
+        editor.changed_active(&mut tx);
         editor.save_clicked();
         started_rx
             .recv_timeout(Duration::from_secs(2))
@@ -1469,15 +1877,13 @@ mod tests {
 
         editor.finish();
         editor.finish();
-        assert!(editor.is_locked());
+        assert!(editor.active_is_locked());
 
         release_tx.send(()).unwrap();
         editor.flush_on_exit();
 
-        let guard = calls.lock().unwrap();
-        let commands: Vec<&str> = guard.iter().map(|(args, _)| args[0].as_str()).collect();
-        assert_eq!(commands, vec!["snapshot", "finish"]);
-        assert!(editor.session.finished);
+        assert_eq!(*events.lock().unwrap(), vec!["write_session", "finish"]);
+        assert!(editor.documents[0].finished);
         assert_eq!(editor.status, "Finished. Final and receipt saved locally.");
     }
 
@@ -1485,20 +1891,26 @@ mod tests {
     fn failed_save_keeps_dirty_without_spinning_and_flush_does_not_loop() {
         let calls: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
         let counter = calls.clone();
-        let runner: CliRunner = Box::new(move |_, _| {
+        let writer: WriteRunner = Box::new(move |_| {
             *counter.lock().unwrap() += 1;
             Err("disk full".into())
         });
 
-        let mut editor = Editor::with_worker(test_session(), runner, noop_wake());
+        let mut editor = Editor::with_handlers(
+            test_session(),
+            prefs::EditorStateStore::default(),
+            ok_runner(),
+            writer,
+            noop_wake(),
+        );
         let mut tx = Tx::default();
-        editor.after.text = "Will fail once.".into();
-        editor.changed(&mut tx);
+        editor.active_working_edit_mut().text = "Will fail once.".into();
+        editor.changed_active(&mut tx);
         editor.save_clicked();
         drain_until_idle(&mut editor);
 
         assert_eq!(*calls.lock().unwrap(), 1);
-        assert!(editor.is_dirty());
+        assert!(editor.documents[0].is_dirty());
         assert!(editor.status.contains("Save failed: disk full"));
         assert!(!poll(&mut editor, 10.0, &mut tx));
         assert_eq!(*calls.lock().unwrap(), 1);
@@ -1509,31 +1921,56 @@ mod tests {
     }
 
     #[test]
-    fn open_workspace_keeps_worker_alive_for_subsequent_session_open() {
+    fn per_tab_undo_redo_survives_switching_tabs() {
         let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let base = std::env::temp_dir().join(format!("ghostless-ws-worker-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let workspace = base.join("writings");
+        let base = std::env::temp_dir().join(format!("ghostless-undo-tabs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
         let home = base.join("home");
-        std::fs::create_dir_all(workspace.join("drafts")).unwrap();
-        std::fs::create_dir_all(&home).unwrap();
-        std::fs::write(workspace.join("drafts/one.md"), "One\n").unwrap();
-        std::fs::write(workspace.join("drafts/two.md"), "Two\n").unwrap();
+        let ws = base.join("ws");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(ws.join("drafts")).unwrap();
+        fs::write(ws.join("drafts/a.md"), "Alpha").unwrap();
+        fs::write(ws.join("drafts/b.md"), "Beta").unwrap();
 
         let prev_home = std::env::var_os("GHOSTLESS_HOME");
         unsafe { std::env::set_var("GHOSTLESS_HOME", &home); }
 
-        let mut editor = Editor::with_worker(test_session(), Box::new(|_, _| Ok("{}".into())), noop_wake());
-        editor.open_workspace(workspace.clone(), Some(workspace.join("drafts/one.md")));
-        assert!(!editor.flushed);
-        assert!(editor.worker.tx.is_some());
-        assert_eq!(editor.tabs.len(), 1);
-        assert!(editor.tabs[0].pinned);
+        let mut editor = Editor::empty_with_handlers(
+            prefs::EditorStateStore::default(),
+            ok_runner(),
+            ok_writer(),
+            noop_wake(),
+        );
+        editor.open_workspace(ws.clone(), Some(ws.join("drafts/a.md")));
+        editor.open_workspace_file(ws.join("drafts/b.md"), true);
 
-        // Single-click preview opens and reuses preview slot
-        editor.open_workspace_file(workspace.join("drafts/two.md"), false);
-        assert_eq!(editor.tabs.len(), 2);
-        assert!(!editor.tabs[1].pinned);
+        let key_a = DocId::File(ws.join("drafts/a.md").canonicalize().unwrap()).tab_key();
+        let key_b = DocId::File(ws.join("drafts/b.md").canonicalize().unwrap()).tab_key();
+        let mut tx = Tx::default();
+
+        // Edit Tab A
+        editor.activate_tab(&key_a, &mut tx);
+        editor.active_working_edit_mut().insert(" one");
+        editor.changed_active(&mut tx);
+        assert_eq!(editor.active_working_edit().text, "Alpha one");
+
+        // Switch to Tab B and edit Tab B
+        editor.activate_tab(&key_b, &mut tx);
+        editor.active_working_edit_mut().insert(" two");
+        editor.changed_active(&mut tx);
+        assert_eq!(editor.active_working_edit().text, "Beta two");
+
+        // Switch back to Tab A: undo/redo must still be intact and independent
+        editor.activate_tab(&key_a, &mut tx);
+        assert_eq!(editor.active_working_edit().text, "Alpha one");
+        editor.active_working_edit_mut().undo();
+        assert_eq!(editor.active_working_edit().text, "Alpha");
+        editor.active_working_edit_mut().redo();
+        assert_eq!(editor.active_working_edit().text, "Alpha one");
+
+        // Tab B stayed untouched
+        editor.activate_tab(&key_b, &mut tx);
+        assert_eq!(editor.active_working_edit().text, "Beta two");
 
         unsafe {
             if let Some(v) = prev_home {
@@ -1542,6 +1979,70 @@ mod tests {
                 std::env::remove_var("GHOSTLESS_HOME");
             }
         }
-        let _ = std::fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn blur_flushes_dirty_autosave_buffers_and_manual_save_respects_mode() {
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let base = std::env::temp_dir().join(format!("ghostless-blur-save-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let ws = base.join("ws");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(ws.join("drafts")).unwrap();
+        let file_a = ws.join("drafts/a.md");
+        let file_b = ws.join("drafts/b.md");
+        fs::write(&file_a, "Original A").unwrap();
+        fs::write(&file_b, "Original B").unwrap();
+
+        let prev_home = std::env::var_os("GHOSTLESS_HOME");
+        unsafe { std::env::set_var("GHOSTLESS_HOME", &home); }
+
+        // Auto-save ON: blur flushes file A immediately to disk.
+        let mut editor = Editor::empty_with_handlers(
+            prefs::EditorStateStore::default(),
+            ok_runner(),
+            Box::new(execute_write_op),
+            noop_wake(),
+        );
+        editor.open_workspace(ws.clone(), Some(file_a.clone()));
+        let mut tx = Tx::default();
+        editor.active_working_edit_mut().text = "Updated A on blur".into();
+        editor.changed_active(&mut tx);
+        assert!(editor.documents[0].is_dirty());
+
+        editor.flush_autosave_buffers();
+        drain_until_idle(&mut editor);
+        assert_eq!(fs_io::read_utf8(&file_a).unwrap(), "Updated A on blur");
+        assert!(!editor.documents[0].is_dirty());
+
+        // Auto-save OFF (Manual Save): blur writes only crash-recovery shadow file,
+        // NOT file B; explicit Cmd/Ctrl+S writes file B and clears recovery file.
+        editor.store.ui.autosave_workspace_files = false;
+        editor.open_workspace_file(file_b.clone(), true);
+        let b_rec = editor.active_doc_ref().unwrap().recovery_path();
+        editor.active_working_edit_mut().text = "Manual B edit".into();
+        editor.changed_active(&mut tx);
+        editor.flush_autosave_buffers();
+        drain_until_idle(&mut editor);
+        assert_eq!(fs_io::read_utf8(&file_b).unwrap(), "Original B");
+        assert_eq!(fs_io::read_utf8(&b_rec).unwrap(), "Manual B edit");
+        assert!(editor.active_doc_ref().unwrap().is_dirty());
+
+        editor.save_clicked();
+        drain_until_idle(&mut editor);
+        assert_eq!(fs_io::read_utf8(&file_b).unwrap(), "Manual B edit");
+        assert!(!b_rec.exists());
+        assert!(!editor.active_doc_ref().unwrap().is_dirty());
+
+        unsafe {
+            if let Some(v) = prev_home {
+                std::env::set_var("GHOSTLESS_HOME", v);
+            } else {
+                std::env::remove_var("GHOSTLESS_HOME");
+            }
+        }
+        let _ = fs::remove_dir_all(&base);
     }
 }
