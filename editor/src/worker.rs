@@ -289,6 +289,9 @@ pub(crate) fn write_session_direct(
     notes: &str,
     mirror_path: Option<&Path>,
 ) -> Result<(), String> {
+    if mirror_path.is_some_and(|path| !path.is_absolute()) {
+        return Err("Session mirror path requires a workspace root".into());
+    }
     if !valid_session_id(session_id) {
         return Err("Invalid session ID".into());
     }

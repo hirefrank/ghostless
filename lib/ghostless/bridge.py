@@ -51,7 +51,7 @@ def _resolve_project(params: dict[str, object]) -> dict[str, object]:
     path = _optional_text(params, "path")
     workspace = Path(path).expanduser() if path else None
     candidates = (workspace, workspace / "voice") if workspace is not None else ()
-    for candidate in (*candidates, None):
+    for candidate in candidates if workspace is not None else (None,):
         try:
             root, source = find_project_with_source(candidate)
         except (ProjectError, AttributeError):

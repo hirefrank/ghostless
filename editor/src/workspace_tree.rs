@@ -573,6 +573,10 @@ pub(crate) fn rename_entry(root: &Path, rel_path: &str, new_name: &str) -> Resul
 }
 
 pub(crate) fn duplicate_file(root: &Path, rel_path: &str) -> Result<PathBuf, String> {
+    duplicate_file_with_limit(root, rel_path, 10_000)
+}
+
+fn duplicate_file_with_limit(root: &Path, rel_path: &str, limit: u32) -> Result<PathBuf, String> {
     let source = entry_path(root, rel_path)?;
     if !source.is_file() {
         return Err(format!(
@@ -585,7 +589,7 @@ pub(crate) fn duplicate_file(root: &Path, rel_path: &str) -> Result<PathBuf, Str
         .and_then(OsStr::to_str)
         .ok_or("Invalid workspace filename")?;
     let bytes = fs::read(&source).map_err(|error| path_error(&source, error))?;
-    for number in 1.. {
+    for number in 1..=limit {
         let name = if number == 1 {
             format!("{stem}-copy.md")
         } else {
@@ -616,7 +620,7 @@ pub(crate) fn duplicate_file(root: &Path, rel_path: &str) -> Result<PathBuf, Str
             Err(error) => return Err(path_error(&target, error)),
         }
     }
-    unreachable!()
+    Err("Could not find an available copy filename".into())
 }
 
 pub(crate) fn delete_entry(root: &Path, rel_path: &str) -> Result<(), String> {
@@ -847,6 +851,17 @@ mod tests {
         assert!(!new.is_expanded("seeds"));
         assert!(new.is_expanded("seeds/demo"));
         assert!(new.contains("seeds/demo/another.md"));
+    }
+
+    #[test]
+    fn duplicate_reports_when_all_names_are_taken() {
+        let workspace = Workspace::fixture();
+        let root = &workspace.0;
+        workspace.write("draft.md", "original");
+        workspace.write("draft-copy.md", "first");
+        workspace.write("draft-copy-2.md", "second");
+        assert!(duplicate_file_with_limit(root, "draft.md", 2).is_err());
+        assert_eq!(fs::read_to_string(root.join("draft-copy.md")).unwrap(), "first");
     }
 
     #[test]

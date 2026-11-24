@@ -133,7 +133,7 @@ impl Editor {
                 &session.project,
                 &session.id,
             ))
-            .map(|link| link.workspace_file.clone());
+            .map(|link| resolve_mirror_path(&link.workspace_file, None));
         let mut diff = DiffState::new(vec![FileDiff::from_texts(
             &session.source_name,
             &session.original,
@@ -317,7 +317,13 @@ impl Editor {
     }
 
     pub(crate) fn open_workspace(&mut self, folder: PathBuf, initial_file: Option<PathBuf>) {
-        self.drain_autosave_work();
+        if !self.drain_autosave_work() {
+            return;
+        }
+        if self.documents.iter().any(|doc| doc.is_dirty()) {
+            self.status = "Workspace not changed: save or discard unsaved documents first".into();
+            return;
+        }
         let folder = folder.canonicalize().unwrap_or(folder);
         self.voice_project = crate::cli::discover_voice_project(&folder, None);
         self.store.record_workspace(&folder);
@@ -470,7 +476,7 @@ impl Editor {
                 &project,
                 &session_id,
             ))
-            .map(|link| link.workspace_file.clone());
+            .map(|link| resolve_mirror_path(&link.workspace_file, self.workspace.as_deref()));
         let finished = loaded.finished;
         let buf = DocumentBuffer::from_session(loaded, true, mirror_path);
         self.flush_leaving_doc();
@@ -1213,8 +1219,12 @@ impl Editor {
                 recovery_path: doc.recovery_path(),
                 content: doc.edit.text.clone(),
             };
-            if self.worker.send(req).is_ok() {
-                self.worker_busy = Some((doc_id, InFlight::Recovery));
+            match self.worker.send(req) {
+                Ok(()) => self.worker_busy = Some((doc_id, InFlight::Recovery)),
+                Err(error) => {
+                    doc.save_error = Some(error.clone());
+                    self.status = format!("Recovery failed: {error}");
+                }
             }
         }
     }
@@ -1277,11 +1287,17 @@ impl Editor {
                 saved_ok
             }
             WorkerReply::RecoveryWritten { doc_id, result } => match result {
-                Ok(()) => true,
+                Ok(()) => {
+                    if let Some(doc) = self.documents.iter_mut().find(|d| d.id == doc_id) {
+                        doc.save_error = None;
+                    }
+                    true
+                },
                 Err(error) => {
                     if let Some(doc) = self.documents.iter_mut().find(|d| d.id == doc_id) {
-                        doc.save_error = Some(error);
+                        doc.save_error = Some(error.clone());
                     }
+                    self.status = format!("Recovery failed: {error}");
                     false
                 }
             },
@@ -1382,7 +1398,8 @@ impl Editor {
         }
     }
 
-    fn drain_autosave_work(&mut self) {
+    fn drain_autosave_work(&mut self) -> bool {
+        let mut success = true;
         let autosave = self.store.ui.autosave_workspace_files;
         let mut attempted_finish: HashSet<DocId> = HashSet::new();
         let mut attempted_save: HashSet<DocId> = HashSet::new();
@@ -1393,13 +1410,16 @@ impl Editor {
                 match self.worker.recv() {
                     Ok(reply) => {
                         let ok = self.apply_reply(reply, None);
-                        if !ok && self.worker_busy.is_none() {
+                        if !ok {
+                            success = false;
                             eprintln!("ghostless-editor: {}", self.status);
                         }
                         continue;
                     }
                     Err(_) => {
                         self.worker_busy = None;
+                        self.status = "Workspace not changed: save worker stopped".into();
+                        success = false;
                         break;
                     }
                 }
@@ -1450,6 +1470,17 @@ impl Editor {
 
             break;
         }
+        if self.documents.iter().any(|doc| doc.save_error.is_some()) {
+            success = false;
+        }
+        if !success {
+            if let Some(error) = self.documents.iter().find_map(|doc| doc.save_error.as_ref()) {
+                self.status = format!("Workspace not changed: {error}");
+            } else if !self.status.contains("worker stopped") {
+                self.status = "Workspace not changed: a save failed".into();
+            }
+        }
+        success
     }
 
     pub(crate) fn flush_on_exit(&mut self) {
@@ -1469,6 +1500,15 @@ impl Editor {
 impl Drop for Editor {
     fn drop(&mut self) {
         self.flush_on_exit();
+    }
+}
+
+fn resolve_mirror_path(path: &Path, workspace: Option<&Path>) -> PathBuf {
+    if path.is_absolute() { return path.to_path_buf(); }
+    match workspace {
+        Some(root) if fs_io::is_contained_in(root, &root.join(path)) => root.join(path),
+        // Leave unresolved paths relative so the worker rejects them instead of writing to cwd.
+        _ => path.to_path_buf(),
     }
 }
 
@@ -1792,6 +1832,57 @@ mod tests {
         }
         assert_eq!(editor.status, "Saved locally");
         assert!(!editor.documents[0].is_dirty());
+    }
+
+    #[test]
+    fn workspace_switch_preserves_dirty_documents_when_save_fails() {
+        let writer: WriteRunner = Box::new(|_| Err("disk full".into()));
+        let mut editor = Editor::with_handlers(test_session(), prefs::EditorStateStore::default(), ok_runner(), writer, noop_wake());
+        let mut tx = Tx::default();
+        editor.active_working_edit_mut().text = "unsaved work".into();
+        editor.changed_active(&mut tx);
+        editor.open_workspace(PathBuf::from("/tmp/other-workspace"), None);
+        assert!(editor.workspace.is_none());
+        assert_eq!(editor.active_working_edit().text, "unsaved work");
+        assert!(editor.documents[0].is_dirty());
+        assert!(editor.status.contains("disk full"));
+    }
+
+    #[test]
+    fn workspace_switch_preserves_manual_buffer_when_recovery_fails() {
+        let writer: WriteRunner = Box::new(|_| Err("recovery disk full".into()));
+        let mut store = prefs::EditorStateStore::default();
+        store.ui.autosave_workspace_files = false;
+        let mut editor = Editor::empty_with_handlers(store, ok_runner(), writer, noop_wake());
+        editor.workspace = Some(PathBuf::from("/tmp/old-workspace"));
+        editor.documents.push(DocumentBuffer::from_workspace_file(PathBuf::from("/tmp/draft.md"), "draft.md".into(), "before".into(), false, false, true, None));
+        editor.active_doc = Some(0);
+        editor.active_working_edit_mut().text = "unsaved manual text".into();
+        editor.changed_active(&mut Tx::default());
+        editor.open_workspace(PathBuf::from("/tmp/new-workspace"), None);
+        assert_eq!(editor.workspace.as_deref(), Some(Path::new("/tmp/old-workspace")));
+        assert_eq!(editor.active_working_edit().text, "unsaved manual text");
+        assert!(editor.status.contains("recovery disk full"));
+    }
+
+    #[test]
+    fn workspace_switch_retains_dirty_buffer_when_worker_stops() {
+        let mut editor = Editor::with_handlers(test_session(), prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake());
+        editor.active_working_edit_mut().text = "still here".into();
+        editor.changed_active(&mut Tx::default());
+        editor.worker.shutdown();
+        editor.open_workspace(PathBuf::from("/tmp/other-workspace"), None);
+        assert!(editor.workspace.is_none());
+        assert_eq!(editor.active_working_edit().text, "still here");
+        assert!(editor.status.contains("Workspace not changed"));
+    }
+
+    #[test]
+    fn mirror_paths_require_and_stay_within_workspace() {
+        let root = std::env::temp_dir();
+        assert_eq!(resolve_mirror_path(Path::new("draft.md"), Some(&root)), root.join("draft.md"));
+        assert!(!resolve_mirror_path(Path::new("../outside.md"), Some(&root)).is_absolute());
+        assert!(!resolve_mirror_path(Path::new("draft.md"), None).is_absolute());
     }
 
     #[test]

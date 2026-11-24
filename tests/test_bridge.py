@@ -40,6 +40,17 @@ class BridgeTests(unittest.TestCase):
         self.addCleanup(env.stop)
         os.environ.pop("GHOSTLESS_PROJECT", None)
 
+    def test_explicit_unrelated_workspace_does_not_use_default(self) -> None:
+        home = self.base / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.json").write_text(json.dumps({"defaultProject": str(self.voice)}), encoding="utf-8")
+        unrelated = self.base / "unrelated"
+        unrelated.mkdir()
+        response = handle_request({"id": 1, "method": "resolve_project", "params": {"path": str(unrelated)}})
+        self.assertEqual(response["result"], {"project": None, "source": None})
+        with contextlib.chdir(self.base):
+            self.assertEqual(handle_request({"method": "resolve_project"})["result"]["project"], str(self.voice))
+
     def test_methods_via_handle_request(self) -> None:
         with contextlib.chdir(self.base):
             self.exercise_methods(handle_request)
