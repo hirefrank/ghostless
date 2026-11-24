@@ -4,6 +4,7 @@ use serde_json::json;
 pub(crate) type CliFn = dyn Fn(&[&str], Option<&str>) -> Result<String, String> + Send;
 pub(crate) type CliRunner = Box<CliFn>;
 pub(crate) type WakeFn = Box<dyn Fn() + Send>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InFlight {
     Save,
@@ -12,11 +13,15 @@ pub(crate) enum InFlight {
 
 pub(crate) enum WorkerRequest {
     Snapshot {
+        project: PathBuf,
+        session_id: String,
         generation: u64,
         after: String,
         notes: String,
     },
     Finish {
+        project: PathBuf,
+        session_id: String,
         generation: u64,
         snapshot: Option<(String, String)>,
     },
@@ -41,13 +46,15 @@ pub(crate) struct Worker {
 }
 
 impl Worker {
-    pub(crate) fn spawn(project: PathBuf, session_id: String, runner: CliRunner, wake: WakeFn) -> Self {
+    pub(crate) fn spawn(runner: CliRunner, wake: WakeFn) -> Self {
         let (req_tx, req_rx) = mpsc::channel::<WorkerRequest>();
         let (rep_tx, rep_rx) = mpsc::channel::<WorkerReply>();
         let join = thread::spawn(move || {
             while let Ok(request) = req_rx.recv() {
                 let reply = match request {
                     WorkerRequest::Snapshot {
+                        project,
+                        session_id,
                         generation,
                         after,
                         notes,
@@ -56,6 +63,8 @@ impl Worker {
                         WorkerReply::Snapshot { generation, result }
                     }
                     WorkerRequest::Finish {
+                        project,
+                        session_id,
                         generation,
                         snapshot,
                     } => {
@@ -137,4 +146,3 @@ pub(crate) fn run_finish(project: &Path, session_id: &str, runner: &CliFn) -> Re
     )?;
     Ok(())
 }
-

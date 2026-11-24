@@ -10,6 +10,8 @@ pub(crate) struct Session {
     pub(crate) original: String,
     pub(crate) after: String,
     pub(crate) notes: String,
+    #[allow(dead_code)]
+    pub(crate) before_sha256: String,
     pub(crate) finished: bool,
 }
 
@@ -86,6 +88,10 @@ pub(crate) fn parse_launch(args: Vec<String>) -> Result<LaunchTarget, String> {
     } else {
         session.expect("one session supplied")
     };
+    Ok(LaunchTarget::Session(load_session(project, id)?))
+}
+
+pub(crate) fn load_session(project: PathBuf, id: String) -> Result<Session, String> {
     if !valid_session_id(&id) {
         return Err("Invalid session ID".into());
     }
@@ -93,9 +99,11 @@ pub(crate) fn parse_launch(args: Vec<String>) -> Result<LaunchTarget, String> {
     if !folder.join("session.json").is_file() {
         return Err(format!("Session does not exist: {}", folder.display()));
     }
-    let metadata: Value = serde_json::from_slice(&std::fs::read(folder.join("session.json"))
-        .map_err(|error| format!("Cannot read {}: {error}", folder.join("session.json").display()))?)
-        .map_err(|error| format!("Cannot read session metadata in {}: {error}", folder.display()))?;
+    let metadata: Value = serde_json::from_slice(
+        &std::fs::read(folder.join("session.json"))
+            .map_err(|error| format!("Cannot read {}: {error}", folder.join("session.json").display()))?,
+    )
+    .map_err(|error| format!("Cannot read session metadata in {}: {error}", folder.display()))?;
     if metadata.get("kind").and_then(Value::as_str) != Some("ghostless-edit-session") {
         return Err("Unsupported session format".into());
     }
@@ -103,15 +111,22 @@ pub(crate) fn parse_launch(args: Vec<String>) -> Result<LaunchTarget, String> {
         let path = folder.join(file);
         std::fs::read_to_string(&path).map_err(|error| format!("Cannot read {}: {error}", path.display()))
     };
-    Ok(LaunchTarget::Session(Session {
+    let original = read("before.md")?;
+    let before_sha256 = metadata
+        .get("beforeSha256")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| crate::fs_io::sha256_text(&original));
+    Ok(Session {
         project,
         id,
         source_name: metadata.get("sourceDraftName").and_then(Value::as_str).unwrap_or("draft.md").into(),
-        original: read("before.md")?,
+        original,
         after: read("after.md")?,
         notes: if folder.join("notes.md").exists() { read("notes.md")? } else { String::new() },
+        before_sha256,
         finished: folder.join("receipt.json").is_file(),
-    }))
+    })
 }
 
 

@@ -48,6 +48,7 @@ pub(crate) fn ghostless_home() -> PathBuf {
     std::env::var_os("GHOSTLESS_HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).unwrap_or_default()).join(".ghostless"))
 }
 pub(crate) fn state_path() -> PathBuf { ghostless_home().join("editor-state.json") }
+#[allow(dead_code)]
 pub(crate) fn recovery_dir() -> PathBuf { ghostless_home().join("recovery") }
 pub(crate) fn load_store() -> EditorStateStore {
     let text = match std::fs::read_to_string(state_path()) { Ok(text) => text, Err(_) => return EditorStateStore::default() };

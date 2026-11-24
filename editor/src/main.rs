@@ -1,12 +1,8 @@
 //! Local Rune editor over ghostless edit sessions.
 use rune::{App, AppSpec};
-#[allow(dead_code)]
-mod fs_io;
-#[allow(dead_code)]
-mod prefs;
-#[cfg(test)]
-static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 mod cli;
+mod fs_io;
+mod prefs;
 mod session;
 mod state;
 mod ui;
@@ -14,6 +10,10 @@ mod ui_welcome;
 mod worker;
 #[allow(dead_code)]
 mod workspace_tree;
+
+#[cfg(test)]
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 use session::*;
 use state::*;
 use ui::*;
@@ -31,7 +31,7 @@ fn main() {
         poll: Some(poll),
         on_key: Some(on_key),
         scenes: &[("diff", |editor| {
-            editor.show_diff = true;
+            editor.view_mode = ViewMode::Compare;
             editor.refresh_diff();
         })],
         ..AppSpec::new(
