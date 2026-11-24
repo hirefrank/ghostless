@@ -12,6 +12,8 @@ mod state;
 mod ui;
 mod ui_welcome;
 mod worker;
+#[allow(dead_code)]
+mod workspace_tree;
 use session::*;
 use state::*;
 use ui::*;
