@@ -815,7 +815,9 @@ impl Editor {
         let Some(node) = self.file_tree.get(sel) else {
             return (false, false);
         };
-        let protected = node.data.as_ref().is_some_and(|e| e.read_only);
+        let protected = node.data.as_ref().is_some_and(|e| {
+            e.read_only || e.abs_path.file_name().is_some_and(|name| name == "manifest.json")
+        });
         let is_file = !node.dir;
         (!protected, is_file)
     }

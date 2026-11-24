@@ -514,13 +514,13 @@ pub(crate) fn create_folder(root: &Path, parent_rel: &str, name: &str) -> Result
     Ok(path)
 }
 
-fn ensure_mutable(root: &Path, path: &Path, deleting: bool) -> Result<(), String> {
+fn ensure_mutable(root: &Path, path: &Path) -> Result<(), String> {
     let kind = fs::symlink_metadata(path)
         .map_err(|error| path_error(path, error))?
         .file_type();
     if !kind.is_dir() {
         let protected = |path: &Path| {
-            deleting && path.file_name() == Some(OsStr::new("manifest.json"))
+            path.file_name() == Some(OsStr::new("manifest.json"))
                 || path
                     .ancestors()
                     .skip(1)
@@ -542,7 +542,7 @@ fn ensure_mutable(root: &Path, path: &Path, deleting: bool) -> Result<(), String
     if kind.is_dir() {
         for item in fs::read_dir(path).map_err(|error| path_error(path, error))? {
             let item = item.map_err(|error| path_error(path, error))?;
-            ensure_mutable(root, &item.path(), deleting)?;
+            ensure_mutable(root, &item.path())?;
         }
     }
     Ok(())
@@ -554,7 +554,7 @@ pub(crate) fn rename_entry(root: &Path, rel_path: &str, new_name: &str) -> Resul
         .canonicalize()
         .map_err(|error| path_error(root, error))?;
     let source = entry_path(&root, rel_path)?;
-    ensure_mutable(&root, &source, false)?;
+    ensure_mutable(&root, &source)?;
     let target = checked_path(&root, source.with_file_name(new_name))?;
     if source != target {
         match fs::symlink_metadata(&target) {
@@ -577,7 +577,9 @@ pub(crate) fn duplicate_file(root: &Path, rel_path: &str) -> Result<PathBuf, Str
 }
 
 fn duplicate_file_with_limit(root: &Path, rel_path: &str, limit: u32) -> Result<PathBuf, String> {
-    let source = entry_path(root, rel_path)?;
+    let root = root.canonicalize().map_err(|error| path_error(root, error))?;
+    let source = entry_path(&root, rel_path)?;
+    ensure_mutable(&root, &source)?;
     if !source.is_file() {
         return Err(format!(
             "Workspace entry is not a file: {}",
@@ -602,7 +604,7 @@ fn duplicate_file_with_limit(root: &Path, rel_path: &str, limit: u32) -> Result<
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(path_error(&target, error)),
         }
-        let target = checked_path(root, target)?;
+        let target = checked_path(&root, target)?;
         match OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -628,7 +630,7 @@ pub(crate) fn delete_entry(root: &Path, rel_path: &str) -> Result<(), String> {
         .canonicalize()
         .map_err(|error| path_error(root, error))?;
     let path = entry_path(&root, rel_path)?;
-    ensure_mutable(&root, &path, true)?;
+    ensure_mutable(&root, &path)?;
     let meta = fs::symlink_metadata(&path).map_err(|error| path_error(&path, error))?;
     if meta.is_dir() {
         fs::remove_dir_all(&path)
@@ -904,6 +906,8 @@ mod tests {
         assert!(delete_entry(root, "").is_err());
         assert!(delete_entry(root, "seeds/../voice/manifest.json").is_err());
         assert!(delete_entry(root, "voice/manifest.json").is_err());
+        assert!(rename_entry(root, "voice/manifest.json", "renamed.json").is_err());
+        assert!(duplicate_file(root, "voice/manifest.json").is_err());
         assert!(delete_entry(root, "voice").is_err());
         for path in [
             "voice/voice-guide.md",
@@ -914,6 +918,9 @@ mod tests {
         ] {
             assert!(delete_entry(root, path).is_err(), "{path}");
             assert!(rename_entry(root, path, "renamed").is_err(), "{path}");
+            if root.join(path).is_file() {
+                assert!(duplicate_file(root, path).is_err(), "{path}");
+            }
             assert!(root.join(path).exists(), "{path}");
         }
     }

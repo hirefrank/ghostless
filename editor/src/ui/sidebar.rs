@@ -131,7 +131,7 @@ pub(crate) fn build(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
             )
             .item(
                 MenuItem::new("Duplicate")
-                    .disabled(!is_file)
+                    .disabled(!is_file || !can_mutate)
                     .on_select(|e: &mut Editor| {
                         e.file_menu_open = false;
                         e.duplicate_selected();
