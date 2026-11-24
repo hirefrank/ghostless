@@ -132,7 +132,7 @@ impl Editor {
                 &session.project,
                 &session.id,
             ))
-            .map(|link| resolve_mirror_path(&link.workspace_file, None));
+            .and_then(|link| link.workspace_file.is_absolute().then(|| link.workspace_file.clone()));
         let mut diff = DiffState::new(vec![FileDiff::from_texts(
             &session.source_name,
             &session.original,
@@ -141,7 +141,11 @@ impl Editor {
         diff.set_mode(DiffMode::Split);
         let worker = Worker::spawn_with_handlers(runner, writer, wake);
         let voice = Some(session.project.clone());
-        let status = if session.finished {
+        let unresolved_link = store.session_links.get(&prefs::EditorStateStore::session_link_key(&session.project, &session.id))
+            .is_some_and(|link| !link.workspace_file.is_absolute());
+        let status = if unresolved_link {
+            "Linked file unavailable without a workspace; session saves locally".into()
+        } else if session.finished {
             "Finished".into()
         } else {
             "Ready".into()
@@ -980,6 +984,13 @@ impl Editor {
             DialogKind::Delete { rel_path, .. } => {
                 let target_abs = root.join(&rel_path);
                 let target_canon = target_abs.canonicalize().unwrap_or(target_abs);
+                if self.documents.iter().any(|doc| {
+                    !doc.is_session() && doc.path.starts_with(&target_canon)
+                        && (doc.is_dirty() || self.worker_busy.as_ref().is_some_and(|(id, _)| id == &doc.id))
+                }) {
+                    self.dialog_error = Some("Save or close unsaved files before deleting them.".into());
+                    return;
+                }
                 match workspace_tree::delete_entry(&root, &rel_path) {
                     Ok(()) => {
                         self.documents
@@ -1255,7 +1266,10 @@ impl Editor {
                                 doc.pending_save = true;
                             } else {
                                 doc.last_saved_label = Some(DocumentBuffer::format_saved_utc());
-                                self.status = "Saved locally".into();
+                                let missing_mirror = doc.mirror_path.is_none() && doc.voice_project.as_ref().zip(doc.session_id.as_ref()).is_some_and(|(project, id)| {
+                                    self.store.session_links.get(&prefs::EditorStateStore::session_link_key(project, id)).is_some_and(|link| !link.workspace_file.is_absolute())
+                                });
+                                self.status = if missing_mirror { "Saved locally; linked file unavailable without a workspace" } else { "Saved locally" }.into();
                                 if self.pending_close.as_ref() == Some(&doc_id) {
                                     should_close = true;
                                 }
@@ -1835,6 +1849,49 @@ mod tests {
         }
         assert_eq!(editor.status, "Saved locally");
         assert!(!editor.documents[0].is_dirty());
+    }
+
+    #[test]
+    fn deleting_file_or_folder_with_dirty_tab_is_rejected() {
+        let root = std::env::temp_dir().join(format!("ghostless-delete-dirty-{}", std::process::id()));
+        fs::create_dir_all(root.join("drafts")).unwrap();
+        let file = root.join("drafts/draft.md");
+        fs::write(&file, "disk version").unwrap();
+        let mut editor = Editor::empty_with_handlers(prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake());
+        editor.workspace = Some(root.clone());
+        editor.documents.push(DocumentBuffer::from_workspace_file(file.clone(), "draft.md".into(), "disk version".into(), false, false, true, None));
+        editor.active_doc = Some(0);
+        editor.active_working_edit_mut().text = "unsaved work".into();
+        editor.changed_active(&mut Tx::default());
+        for (rel, is_dir) in [("drafts/draft.md", false), ("drafts", true)] {
+            editor.active_dialog = Some(DialogKind::Delete { rel_path: rel.into(), display_name: rel.into(), is_dir });
+            editor.submit_dialog(&mut Tx::default());
+            assert!(file.exists());
+            assert_eq!(editor.active_working_edit().text, "unsaved work");
+            assert!(editor.dialog_error.as_deref().unwrap().contains("unsaved"));
+        }
+        editor.documents.clear();
+        editor.workspace = None;
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn standalone_session_saves_when_link_has_no_workspace() {
+        let session = test_session();
+        let mut store = prefs::EditorStateStore::default();
+        store.session_links.insert(prefs::EditorStateStore::session_link_key(&session.project, &session.id), prefs::SessionLink { workspace_file: "draft.md".into(), last_synced_sha256: String::new() });
+        let writes: Arc<Mutex<Vec<WriteOp>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = writes.clone();
+        let writer: WriteRunner = Box::new(move |op| { captured.lock().unwrap().push(op.clone()); Ok(()) });
+        let mut editor = Editor::with_handlers(session, store, ok_runner(), writer, noop_wake());
+        assert!(editor.status.contains("linked file unavailable") || editor.status.contains("Linked file unavailable"));
+        editor.active_working_edit_mut().text = "session edit".into();
+        editor.changed_active(&mut Tx::default());
+        editor.save_clicked();
+        drain_until_idle(&mut editor);
+        assert!(matches!(&writes.lock().unwrap()[0], WriteOp::Session { mirror_path: None, .. }));
+        assert!(!editor.documents[0].is_dirty());
+        assert!(editor.status.contains("linked file unavailable"));
     }
 
     #[test]

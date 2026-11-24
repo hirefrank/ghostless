@@ -137,7 +137,9 @@ class BridgeTests(unittest.TestCase):
             return response["result"]
 
         self.assertEqual(ask("ping"), {"version": version()})
-        for path in (self.voice, self.workspace):
+        nested = self.workspace / "seeds" / "demo"
+        nested.mkdir(parents=True, exist_ok=True)
+        for path in (self.voice, self.workspace, nested):
             self.assertEqual(
                 ask("resolve_project", path=str(path)),
                 {"project": str(self.voice), "source": "--project"},

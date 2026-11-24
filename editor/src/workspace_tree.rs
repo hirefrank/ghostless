@@ -590,12 +590,13 @@ fn duplicate_file_with_limit(root: &Path, rel_path: &str, limit: u32) -> Result<
         .file_stem()
         .and_then(OsStr::to_str)
         .ok_or("Invalid workspace filename")?;
+    let extension = source.extension().and_then(OsStr::to_str).map(|ext| format!(".{ext}")).unwrap_or_default();
     let bytes = fs::read(&source).map_err(|error| path_error(&source, error))?;
     for number in 1..=limit {
         let name = if number == 1 {
-            format!("{stem}-copy.md")
+            format!("{stem}-copy{extension}")
         } else {
-            format!("{stem}-copy-{number}.md")
+            format!("{stem}-copy-{number}{extension}")
         };
         let target = source.with_file_name(name);
         // Skip occupied names before checking containment, including symlinks to another workspace.
@@ -873,6 +874,12 @@ mod tests {
     fn creates_renames_duplicates_and_deletes_workspace_files() {
         let workspace = Workspace::fixture();
         let root = &workspace.0;
+        workspace.write("sample.txt", "plain");
+        workspace.write("sample.markdown", "markdown");
+        workspace.write("extensionless", "text");
+        assert_eq!(duplicate_file(root, "sample.txt").unwrap(), root.join("sample-copy.txt"));
+        assert_eq!(duplicate_file(root, "sample.markdown").unwrap(), root.join("sample-copy.markdown"));
+        assert_eq!(duplicate_file(root, "extensionless").unwrap(), root.join("extensionless-copy"));
         let folder = create_folder(root, "", "work").unwrap();
         let path = create_file(root, "work", "draft").unwrap();
         assert_eq!(path, folder.join("draft.md"));
