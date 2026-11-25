@@ -242,6 +242,7 @@ pub(crate) enum BridgeReply {
     },
     SessionStart {
         doc_id: Option<DocId>,
+        generation: u64,
         result: Result<SessionStartResult, String>,
     },
     SessionFinish {
@@ -610,6 +611,7 @@ impl Job {
             },
             BridgeOp::SessionStart { .. } => BridgeReply::SessionStart {
                 doc_id: self.doc_id,
+                generation: self.generation,
                 result: parse_value(result),
             },
             BridgeOp::SessionFinish { .. } => BridgeReply::SessionFinish {
@@ -640,6 +642,7 @@ impl Job {
             BridgeOp::SessionsList { .. } => BridgeReply::SessionsList { result: Err(error) },
             BridgeOp::SessionStart { .. } => BridgeReply::SessionStart {
                 doc_id: self.doc_id,
+                generation: self.generation,
                 result: Err(error),
             },
             BridgeOp::SessionFinish { .. } => BridgeReply::SessionFinish {

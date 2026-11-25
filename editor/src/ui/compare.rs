@@ -6,18 +6,16 @@ use rune_kit::{Button, ButtonVariant, ControlSize, Kit, SegmentedControl, diff::
 use crate::{documents::count_words, hunks, state::Editor};
 
 pub(crate) fn build(editor: &Editor, kit: &Kit) -> El {
-    let Some(doc) = editor.active_doc_ref() else {
+    let Some(original) = editor.compare_left_text().map(str::to_owned) else {
         return col().key("compare-body");
     };
-    let original = doc.original.as_deref().unwrap_or("");
-    let heading = if editor.conflict_compare && doc.conflict.is_some() {
-        "Disk vs session"
-    } else {
-        "Baseline vs draft"
+    let Some(current) = editor.active_doc_ref().map(|doc| doc.edit.text.clone()) else {
+        return col().key("compare-body");
     };
-    let hunks = hunks::diff_hunks(original, &doc.edit.text);
-    let before_words = count_words(original);
-    let after_words = count_words(&doc.edit.text);
+    let heading = if editor.is_conflict_compare() { "Disk vs session" } else { "Baseline vs draft" };
+    let hunks = hunks::diff_hunks(&original, &current);
+    let before_words = count_words(&original);
+    let after_words = count_words(&current);
     let delta = after_words as i64 - before_words as i64;
     let signed = if delta > 0 { format!("+{delta}") } else { delta.to_string() };
     let summary = format!(
@@ -26,6 +24,7 @@ pub(crate) fn build(editor: &Editor, kit: &Kit) -> El {
     );
     let mode = if editor.compare_unified() { 1 } else { 0 };
     let editable = editor.can_revert();
+    let show_revert = !editor.is_conflict_compare();
     let mut column = col()
         .gap(8.0)
         .grow(1.0)
@@ -45,47 +44,52 @@ pub(crate) fn build(editor: &Editor, kit: &Kit) -> El {
                         })
                         .build(kit),
                 )
-                .child(text(summary).font(kit.ty.small).color(kit.c.text_muted).grow(1.0).shrink())
-                .child(
-                    Button::new("Revert to Original")
-                        .variant(ButtonVariant::Outline)
-                        .control_size(ControlSize::Small)
-                        .disabled(!editable)
-                        .on_press(|editor: &mut Editor| editor.confirm_revert())
-                        .build(kit)
-                        .key("revert-original"),
-                ),
+                .child(text(summary).font(kit.ty.small).color(kit.c.text_muted).grow(1.0).shrink()),
         );
+    if show_revert {
+        column = column.child(
+            row().w_full().child(
+                Button::new("Revert to Original")
+                    .variant(ButtonVariant::Outline)
+                    .control_size(ControlSize::Small)
+                    .disabled(!editable)
+                    .on_press(|editor: &mut Editor| editor.confirm_revert())
+                    .build(kit)
+                    .key("revert-original"),
+            ),
+        );
+    }
     if !hunks.is_empty() {
         let mut list = col().key("changed-hunks").gap(4.0).w_full();
         list = list.child(text("Changed hunks").font(kit.ty.text_xsmall_medium).color(kit.c.text_muted));
         for (index, hunk) in hunks.iter().enumerate() {
-            let removed = preview(original, hunk.before_bytes.clone());
-            let added = preview(&doc.edit.text, hunk.after_bytes.clone());
-            list = list.child(
-                row()
-                    .w_full()
-                    .center_y()
-                    .gap(8.0)
-                    .child(
-                        text(format!("− {removed} / + {added}"))
-                            .font(kit.ty.small)
-                            .color(kit.c.text_base)
-                            .grow(1.0)
-                            .shrink(),
-                    )
-                    .child(
-                        Button::new("Revert hunk")
-                            .variant(ButtonVariant::Ghost)
-                            .control_size(ControlSize::Small)
-                            .disabled(!editable)
-                            .on_press_tx(move |editor: &mut Editor, tx| {
-                                editor.revert_hunk(index, tx);
-                            })
-                            .build(kit)
-                            .key(format!("revert-hunk-{index}")),
-                    ),
-            );
+            let removed = preview(&original, hunk.before_bytes.clone());
+            let added = preview(&current, hunk.after_bytes.clone());
+            let mut line = row()
+                .w_full()
+                .center_y()
+                .gap(8.0)
+                .child(
+                    text(format!("− {removed} / + {added}"))
+                        .font(kit.ty.small)
+                        .color(kit.c.text_base)
+                        .grow(1.0)
+                        .shrink(),
+                );
+            if show_revert {
+                line = line.child(
+                    Button::new("Revert hunk")
+                        .variant(ButtonVariant::Ghost)
+                        .control_size(ControlSize::Small)
+                        .disabled(!editable)
+                        .on_press_tx(move |editor: &mut Editor, tx| {
+                            editor.revert_hunk(index, tx);
+                        })
+                        .build(kit)
+                        .key(format!("revert-hunk-{index}")),
+                );
+            }
+            list = list.child(line);
         }
         column = column.child(list);
     }
