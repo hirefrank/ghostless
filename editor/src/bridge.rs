@@ -228,12 +228,14 @@ pub(crate) enum BridgeOp {
 #[derive(Clone, Debug)]
 pub(crate) enum BridgeReply {
     Judge {
+        request_id: u64,
         doc_id: DocId,
         generation: u64,
         section: String,
         result: Box<JudgeReport>,
     },
     Build {
+        #[allow(dead_code)]
         doc_id: Option<DocId>,
         result: Result<BuildSummary, String>,
     },
@@ -358,7 +360,7 @@ impl BridgeClient {
         doc_id: Option<DocId>,
         generation: u64,
         op: BridgeOp,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         let Some(tx) = &self.tx else {
             return Err("Voice bridge stopped".into());
         };
@@ -375,6 +377,7 @@ impl BridgeClient {
             section_label,
             op,
         })
+        .map(|()| id)
         .map_err(|_| "Voice bridge stopped".into())
     }
 
@@ -596,6 +599,7 @@ impl Job {
                 let report = serde_json::from_value::<JudgeReport>(result)
                     .unwrap_or_else(|error| JudgeReport::from_error(format!("Invalid judge report: {error}")));
                 BridgeReply::Judge {
+                    request_id: self.id,
                     doc_id,
                     generation: self.generation,
                     section: self.section_label,
@@ -630,6 +634,7 @@ impl Job {
     fn fail(self, error: String) -> BridgeReply {
         match self.op {
             BridgeOp::JudgeText { .. } => BridgeReply::Judge {
+                request_id: self.id,
                 doc_id: self.doc_id.unwrap_or(DocId::File(PathBuf::new())),
                 generation: self.generation,
                 section: self.section_label,

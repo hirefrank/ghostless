@@ -69,6 +69,10 @@ pub(crate) struct DocumentBuffer {
     pub last_disk_sha256: String,
     /// Section chosen in the inspector. `None` follows frontmatter `section:`.
     pub section_override: Option<String>,
+    /// Bumped when the judge section or voice guide changes, without dirtying the draft.
+    pub judge_epoch: u64,
+    /// Request id of the judge call that may still update this tab.
+    pub latest_judge_request: Option<u64>,
     pub conflict: Option<SessionConflict>,
     pub force_mirror: bool,
     cached_words: Cell<(u64, usize)>,
@@ -113,6 +117,8 @@ impl DocumentBuffer {
             save_error: None,
             last_disk_sha256: sha,
             section_override: None,
+            judge_epoch: 0,
+            latest_judge_request: None,
             conflict: None,
             force_mirror: false,
             cached_words: Cell::new((u64::MAX, 0)),
@@ -161,6 +167,8 @@ impl DocumentBuffer {
             save_error: None,
             last_disk_sha256: sha,
             section_override: None,
+            judge_epoch: 0,
+            latest_judge_request: None,
             conflict: None,
             force_mirror: false,
             cached_words: Cell::new((u64::MAX, 0)),

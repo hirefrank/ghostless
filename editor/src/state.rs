@@ -123,7 +123,7 @@ pub(crate) struct Editor {
     pub(crate) status: String,
     pub(crate) judge_due: Option<f64>,
     judge_armed: bool,
-    judge_inflight: Option<(DocId, u64)>,
+    judge_inflight: Option<JudgeInFlight>,
     pub(crate) latest_judge: Option<crate::bridge::JudgeReport>,
     judge_cache: HashMap<String, crate::bridge::JudgeReport>,
     pub(crate) inspector_tab: usize,
@@ -140,6 +140,14 @@ pub(crate) struct Editor {
     session_start_inflight: Option<(DocId, u64)>,
     pub(crate) bridge: crate::bridge::BridgeClient,
     pub(crate) worker: Worker,
+}
+
+struct JudgeInFlight {
+    doc_id: DocId,
+    generation: u64,
+    judge_epoch: u64,
+    section: String,
+    request_id: u64,
 }
 
 impl Editor {
@@ -1748,8 +1756,20 @@ impl Editor {
     }
 
     pub(crate) fn set_judge_section(&mut self, section: String, clock: f64) {
-        let Some(doc) = self.active_doc_mut() else { return };
-        doc.section_override = Some(section);
+        let Some(index) = self.active_doc else { return };
+        if section_for_document(&self.documents[index]) == section {
+            return;
+        }
+        let doc_id = self.documents[index].id.clone();
+        let tab = self.documents[index].id.tab_key();
+        self.documents[index].section_override = Some(section);
+        self.documents[index].judge_epoch += 1;
+        self.documents[index].latest_judge_request = None;
+        self.judge_cache.remove(&tab);
+        self.latest_judge = None;
+        if self.judge_inflight.as_ref().is_some_and(|inflight| inflight.doc_id == doc_id) {
+            self.judge_inflight = None;
+        }
         self.request_judge(clock);
     }
 
@@ -2312,42 +2332,58 @@ impl Editor {
 
     fn dispatch_judge(&mut self) {
         let Some(project) = self.voice_project.clone() else { return };
-        let Some(doc) = self.active_doc_ref() else { return };
-        if !judge_target(doc) {
+        let Some(index) = self.active_doc else { return };
+        if !judge_target(&self.documents[index]) {
             return;
         }
-        let doc_id = doc.id.clone();
-        let generation = doc.generation;
-        if self.judge_inflight.as_ref().is_some_and(|(id, sent)| id == &doc_id && *sent == generation) {
+        let doc_id = self.documents[index].id.clone();
+        let generation = self.documents[index].generation;
+        let judge_epoch = self.documents[index].judge_epoch;
+        let section = section_for_document(&self.documents[index]);
+        if self.judge_inflight.as_ref().is_some_and(|inflight| {
+            inflight.doc_id == doc_id
+                && inflight.generation == generation
+                && inflight.judge_epoch == judge_epoch
+                && inflight.section == section
+        }) {
             return;
         }
-        let section = section_for_document(doc);
-        let text = doc.edit.text.clone();
-        let section_param = (section != "all").then_some(section);
-        if self.bridge.request(
+        let text = self.documents[index].edit.text.clone();
+        let section_param = (section != "all").then(|| section.clone());
+        if let Ok(request_id) = self.bridge.request(
             Some(doc_id.clone()),
             generation,
             crate::bridge::BridgeOp::JudgeText { project, text, section: section_param },
-        ).is_ok() {
-            self.judge_inflight = Some((doc_id, generation));
+        ) {
+            self.documents[index].latest_judge_request = Some(request_id);
+            self.judge_inflight = Some(JudgeInFlight {
+                doc_id,
+                generation,
+                judge_epoch,
+                section,
+                request_id,
+            });
         }
     }
 
     pub(crate) fn apply_bridge_reply(&mut self, reply: crate::bridge::BridgeReply) {
         use crate::bridge::BridgeReply;
         match reply {
-            BridgeReply::Judge { doc_id, generation, section, result } => {
+            BridgeReply::Judge { request_id, doc_id, generation, section, result } => {
                 let mut result = *result;
                 if result.section.is_empty() {
-                    result.section = section;
+                    result.section = section.clone();
                 }
-                if self.judge_inflight.as_ref().is_some_and(|(id, sent)| id == &doc_id && *sent == generation) {
+                if self.judge_inflight.as_ref().is_some_and(|inflight| inflight.request_id == request_id) {
                     self.judge_inflight = None;
                 }
                 let Some(doc) = self.documents.iter().find(|doc| doc.id == doc_id) else {
                     return;
                 };
-                if doc.generation != generation {
+                if doc.generation != generation
+                    || doc.latest_judge_request != Some(request_id)
+                    || section_for_document(doc) != section
+                {
                     return;
                 }
                 let key = doc.id.tab_key();
@@ -2357,13 +2393,16 @@ impl Editor {
                     self.latest_judge = Some(result);
                 }
             }
-            BridgeReply::Build { doc_id, result } => match result {
+            BridgeReply::Build { result, .. } => match result {
                 Ok(_) => {
-                    let current = doc_id.is_none()
-                        || self.active_doc_ref().is_some_and(|doc| Some(&doc.id) == doc_id.as_ref());
-                    if current {
-                        self.judge_armed = true;
+                    for doc in &mut self.documents {
+                        doc.judge_epoch += 1;
+                        doc.latest_judge_request = None;
                     }
+                    self.judge_cache.clear();
+                    self.latest_judge = None;
+                    self.judge_inflight = None;
+                    self.judge_armed = true;
                 }
                 Err(error) => self.status = format!("Build failed: {error}"),
             },
@@ -4787,6 +4826,7 @@ mod tests {
         assert_eq!(editor.voice_pill_label().as_deref(), Some("Voice: 86 · 1 gap"));
         let doc_id = editor.documents[0].id.clone();
         editor.apply_bridge_reply(BridgeReply::Judge {
+            request_id: 0,
             doc_id: doc_id.clone(),
             generation: 1,
             section: "notes".into(),
@@ -4798,6 +4838,7 @@ mod tests {
         editor.changed_active(&mut tx);
         let superseded = editor.documents[0].generation - 1;
         editor.apply_bridge_reply(BridgeReply::Judge {
+            request_id: 0,
             doc_id,
             generation: superseded,
             section: "notes".into(),
@@ -4863,6 +4904,165 @@ mod tests {
         }
         assert!(editor.latest_judge.is_none());
         assert!(editor.judge_due.is_some());
+    }
+
+    struct ScriptedHold {
+        scores: Vec<i32>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        started: mpsc::Sender<usize>,
+        release: Arc<(Mutex<usize>, std::sync::Condvar)>,
+    }
+
+    impl crate::bridge::BridgeBackend for ScriptedHold {
+        fn call(&mut self, _method: &str, params: &serde_json::Value) -> Result<serde_json::Value, String> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = self.started.send(n);
+            let (lock, cv) = &*self.release;
+            let _guard = cv
+                .wait_timeout_while(lock.lock().unwrap(), Duration::from_secs(2), |ready| *ready <= n)
+                .unwrap();
+            let score = self.scores.get(n).copied().unwrap_or(1);
+            let section = params.get("section").and_then(|value| value.as_str()).unwrap_or("all");
+            Ok(serde_json::json!({
+                "ok": true, "score": score, "failUnder": 70, "section": section, "needsBuild": false
+            }))
+        }
+    }
+
+    fn release_holds(release: &Arc<(Mutex<usize>, std::sync::Condvar)>, ready: usize) {
+        let (lock, cv) = &**release;
+        *lock.lock().unwrap() = ready;
+        cv.notify_all();
+    }
+
+    fn wait_for_judge_score(editor: &mut Editor, score: i32) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut tx = Tx::default();
+        while editor.latest_judge.as_ref().map(|report| report.score) != Some(score) {
+            assert!(std::time::Instant::now() < deadline, "judge score {score} did not land");
+            poll(editor, 10.0, &mut tx);
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn section_switch_during_judge_keeps_the_new_section_score() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = mpsc::channel();
+        let release = Arc::new((Mutex::new(0usize), std::sync::Condvar::new()));
+        let mut editor = Editor::with_handlers_backend(
+            test_session(),
+            prefs::EditorStateStore::default(),
+            ok_runner(),
+            ok_writer(),
+            noop_wake(),
+            Some(Box::new(ScriptedHold {
+                scores: vec![11, 91],
+                calls: Arc::clone(&calls),
+                started: started_tx,
+                release: Arc::clone(&release),
+            })),
+        );
+        editor.judge_armed = false;
+        let mut tx = Tx::default();
+        editor.request_judge(0.0);
+        poll(&mut editor, JUDGE_DELAY.as_secs_f64(), &mut tx);
+        assert_eq!(started_rx.recv_timeout(Duration::from_secs(2)).unwrap(), 0);
+        editor.set_judge_section("essays".into(), JUDGE_DELAY.as_secs_f64());
+        assert!(!editor.documents[0].is_dirty());
+        assert!(editor.latest_judge.is_none());
+        poll(&mut editor, (JUDGE_DELAY + JUDGE_DELAY).as_secs_f64(), &mut tx);
+        assert_eq!(editor.bridge.submitted.load(Ordering::Relaxed), 2);
+        assert_eq!(editor.judge_inflight.as_ref().map(|inflight| inflight.section.as_str()), Some("essays"));
+        release_holds(&release, 2);
+        wait_for_judge_score(&mut editor, 91);
+        let key = editor.documents[0].id.tab_key();
+        assert_eq!(editor.judge_cache.get(&key).map(|report| report.score), Some(91));
+        assert_eq!(editor.voice_pill_label().as_deref(), Some("Voice: 91"));
+        assert!(!editor.documents[0].is_dirty());
+        assert!(editor.latest_judge.as_ref().is_some_and(|report| report.score != 11));
+    }
+
+    #[test]
+    fn aba_section_switch_and_rebuild_drop_stale_judge_replies() {
+        use crate::bridge::BuildSummary;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = mpsc::channel();
+        let release = Arc::new((Mutex::new(0usize), std::sync::Condvar::new()));
+        let mut editor = Editor::with_handlers_backend(
+            test_session(),
+            prefs::EditorStateStore::default(),
+            ok_runner(),
+            ok_writer(),
+            noop_wake(),
+            Some(Box::new(ScriptedHold {
+                scores: vec![11, 22, 33],
+                calls: Arc::clone(&calls),
+                started: started_tx,
+                release: Arc::clone(&release),
+            })),
+        );
+        editor.judge_armed = false;
+        let mut tx = Tx::default();
+        editor.request_judge(0.0);
+        let delay = JUDGE_DELAY.as_secs_f64();
+        poll(&mut editor, delay, &mut tx);
+        assert_eq!(started_rx.recv_timeout(Duration::from_secs(2)).unwrap(), 0);
+        editor.set_judge_section("essays".into(), delay);
+        poll(&mut editor, delay * 2.0, &mut tx);
+        editor.set_judge_section("all".into(), delay * 2.0);
+        poll(&mut editor, delay * 3.0, &mut tx);
+        assert_eq!(editor.bridge.submitted.load(Ordering::Relaxed), 3);
+        assert!(!editor.documents[0].is_dirty());
+        release_holds(&release, 3);
+        wait_for_judge_score(&mut editor, 33);
+        assert_eq!(editor.latest_judge.as_ref().map(|report| report.score), Some(33));
+        assert!(!editor.documents[0].is_dirty());
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = mpsc::channel();
+        let release = Arc::new((Mutex::new(0usize), std::sync::Condvar::new()));
+        let mut editor = Editor::with_handlers_backend(
+            test_session(),
+            prefs::EditorStateStore::default(),
+            ok_runner(),
+            ok_writer(),
+            noop_wake(),
+            Some(Box::new(ScriptedHold {
+                scores: vec![11, 44],
+                calls,
+                started: started_tx,
+                release: Arc::clone(&release),
+            })),
+        );
+        editor.judge_armed = false;
+        editor.request_judge(0.0);
+        poll(&mut editor, delay, &mut tx);
+        assert_eq!(started_rx.recv_timeout(Duration::from_secs(2)).unwrap(), 0);
+        editor.apply_bridge_reply(crate::bridge::BridgeReply::Build {
+            doc_id: Some(editor.documents[0].id.clone()),
+            result: Ok(BuildSummary {
+                gold_pieces: 1,
+                counts: serde_json::Value::Null,
+                bronze_format_only: false,
+                warnings: Vec::new(),
+                generated_at: String::new(),
+            }),
+        });
+        assert_eq!(editor.documents[0].judge_epoch, 1);
+        assert!(editor.documents[0].latest_judge_request.is_none());
+        assert!(editor.latest_judge.is_none());
+        assert!(editor.judge_inflight.is_none());
+        assert!(!editor.documents[0].is_dirty());
+        poll(&mut editor, delay, &mut tx);
+        poll(&mut editor, delay * 2.0, &mut tx);
+        assert_eq!(editor.bridge.submitted.load(Ordering::Relaxed), 2);
+        release_holds(&release, 2);
+        wait_for_judge_score(&mut editor, 44);
+        assert!(!editor.documents[0].is_dirty());
     }
 
     #[test]
