@@ -5,13 +5,22 @@ use rune_kit::{
 };
 use crate::state::{DialogKind, Editor, ViewMode};
 
+mod canvas;
+mod find_bar;
+pub(crate) mod folder_search;
+pub(crate) mod quick_switcher;
+mod preview;
+pub(crate) use preview::{PREVIEW_BODY, reveal_find_position};
+pub(crate) mod reference;
 mod sidebar;
 mod status_bar;
 mod tabs;
 mod toolbar;
 
+#[cfg(test)]
 pub(crate) const TEXTAREA_LINE_HEIGHT: f32 = 17.5;
 
+#[cfg(test)]
 pub(crate) fn working_textarea_metrics(pane_height: Option<f32>) -> (f32, usize) {
     let height = pane_height.unwrap_or(80.0).floor().max(80.0);
     let rows = ((height / TEXTAREA_LINE_HEIGHT).ceil() as usize).max(4);
@@ -23,35 +32,71 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
         return crate::ui_welcome::view(editor, cx);
     }
 
-    let kit = Kit::neutral(cx.system_dark());
+    let kit = crate::theme::build_kit(editor.store.ui.theme, cx.system_dark());
     let mut overlays: Vec<El> = Vec::new();
 
-    let tb = toolbar::build(editor, &kit);
+    let tb = toolbar::build(editor, &kit, &mut overlays);
     let sb = sidebar::build(editor, &kit, &mut overlays);
     let insp = build_inspector(editor, cx, &kit);
 
     let stage = build_stage(editor, cx, &kit);
+    let stage = if editor.reference.open && editor.view_mode != ViewMode::Compare {
+        row().grow(1.0).w_full().min_h(0.0)
+            .child(col().grow(1.0).w(0.0).min_h(0.0).child(reference::build(editor, &kit, &mut overlays)))
+            .child(col().w(1.0).h_full().fill(kit.c.border_muted))
+            .child(col().grow(1.0).w(0.0).min_h(0.0).child(stage))
+    } else { stage };
+    let stage = if editor.find.open && editor.view_mode != ViewMode::Compare && editor.active_doc_ref().is_some() {
+        col().grow(1.0).w_full().min_h(0.0).child(stage)
+            .child(find_bar::build(editor, &kit).pin(None, Some(8.0), Some(8.0), None))
+    } else { stage };
     let mut main = col()
         .key("stage")
         .w_full()
         .h_full()
         .min_h(0.0)
         .fill(kit.c.bg_base);
-    if !editor.documents.is_empty() {
+    if !editor.documents.is_empty() && !editor.focus_mode {
         main = main.child(tabs::build(editor, cx, &kit));
     }
-    main = main.child(stage).child(status_bar::build(editor, &kit));
+    main = main.child(stage);
+    if editor.focus_mode {
+        let count = editor.active_doc_ref().map(|doc| doc.word_counts().0).unwrap_or(0);
+        main = main.child(row().w_full().px(12.0).center_y()
+            .child(text(format!("{count} words")).font(kit.ty.small).color(kit.c.text_faint))
+            .child(row().grow(1.0))
+            .child(Button::new("Exit Focus (Esc / F11)").variant(ButtonVariant::GhostMuted)
+                .on_press(|e: &mut Editor| e.focus_mode = false).build(&kit)));
+    } else { main = main.child(status_bar::build(editor, &kit)); }
 
-    let shell = SplitView::new(main)
-        .sidebar(&editor.sidebar_pane, |e: &mut Editor| &mut e.sidebar_pane, sb)
-        .inspector(&editor.inspector_pane, |e: &mut Editor| &mut e.inspector_pane, insp)
-        .toolbar(tb)
+    let mut split = SplitView::new(main);
+    if !editor.focus_mode {
+        split = split.sidebar(&editor.sidebar_pane, |e: &mut Editor| &mut e.sidebar_pane, sb)
+            .inspector(&editor.inspector_pane, |e: &mut Editor| &mut e.inspector_pane, insp);
+    }
+    let shell = split.toolbar(tb)
         .titlebar_inset(cx.titlebar_inset())
         .reduced_motion(cx.is_reduced_motion())
         .build(&kit);
 
     mount_dialogs(editor, &kit, &mut overlays);
+    quick_switcher::mount(editor, &kit, &mut overlays);
+    folder_search::mount(editor, &kit, &mut overlays);
     rune_kit::root(shell, overlays)
+}
+
+fn mount_search_dialog(dialog: Dialog, editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
+    let before = overlays.len();
+    dialog.build(kit, overlays);
+    // Rune-Kit appends the scrim, then the layer containing the entire dialog.
+    // Set the return target on that layer so the close button and outside click
+    // restore focus as well as Escape, even if the dialog opened without focus.
+    if let Some(key) = editor.document_focus_key()
+        && overlays.len() > before
+        && let Some(layer) = overlays.pop()
+    {
+        overlays.push(layer.focus_return(key));
+    }
 }
 
 fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
@@ -72,23 +117,16 @@ fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
             );
     };
 
+    if editor.active_uses_rendered_preview() {
+        return preview::build(&doc.edit.text, &editor.store.ui, kit, Some(&editor.find));
+    }
+
     match editor.view_mode {
-        ViewMode::Preview => col()
-            .key("preview-body")
-            .grow(1.0)
-            .w_full()
-            .min_h(0.0)
-            .center()
-            .gap(8.0)
-            .padding(24.0)
-            .child(text("Markdown Preview").font(kit.ty.ui_medium).color(kit.c.text_base))
-            .child(
-                text("Preview rendering arrives in Wave 2.3; switch back to Write to keep editing.")
-                    .font(kit.ty.ui)
-                    .color(kit.c.text_muted),
-            ),
         ViewMode::Compare if editor.active_has_baseline() => col()
             .key("compare-body")
+            .focusable(true)
+            .role("region")
+            .label("Draft comparison")
             .grow(1.0)
             .w_full()
             .min_h(0.0)
@@ -96,26 +134,9 @@ fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
                 DiffView::new(|e: &Editor| &e.diff, |e: &mut Editor| &mut e.diff)
                     .build(editor, kit),
             ),
-        ViewMode::Compare | ViewMode::Write => {
+        _ => {
             let locked = editor.active_is_locked();
-            let (working_height, working_rows) =
-                working_textarea_metrics(cx.layout_size("working-body").map(|size| size[1]));
-            let body = col()
-                .key("working-body")
-                .grow(1.0)
-                .w_full()
-                .min_h(0.0)
-                .child(
-                    TextArea::new(editor.active_working_edit())
-                        .label("Working draft")
-                        .width(None)
-                        .rows(working_rows)
-                        .max_height(working_height)
-                        .disabled(locked)
-                        .on_edit(|e: &mut Editor| e.active_working_edit_mut())
-                        .on_change(|e: &mut Editor, tx: &mut Tx| e.changed_active(tx))
-                        .build(kit),
-                );
+            let body = canvas::build(editor, cx, kit, locked);
             let mut pane = col()
                 .key("working-pane")
                 .grow(1.0)

@@ -1,17 +1,27 @@
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
     thread,
 };
 use serde_json::Value;
-use crate::{documents::DocId, fs_io, session::valid_session_id, workspace_tree};
+use crate::{
+    documents::DocId, fs_io,
+    quick_open::{FolderMatch, search_workspace_files},
+    session::valid_session_id,
+    workspace_tree::{self, WorkspaceEntry},
+};
 
 pub(crate) type CliFn = dyn Fn(&[&str], Option<&str>) -> Result<String, String> + Send;
 pub(crate) type CliRunner = Box<CliFn>;
 pub(crate) type WriteFn = dyn Fn(&WriteOp) -> Result<WriteOutcome, String> + Send;
 pub(crate) type WriteRunner = Box<WriteFn>;
-pub(crate) type WakeFn = Box<dyn Fn() + Send>;
+pub(crate) type WakeFn = Box<dyn Fn() + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InFlight {
@@ -104,10 +114,122 @@ pub(crate) enum WorkerReply {
     },
 }
 
+struct SearchRequest {
+    id: u64,
+    files: Vec<WorkspaceEntry>,
+    buffers: HashMap<PathBuf, Option<String>>,
+    query: String,
+}
+
+pub(crate) struct SearchReply {
+    pub(crate) id: u64,
+    pub(crate) matches: Vec<FolderMatch>,
+}
+
+#[derive(Default)]
+struct SearchQueue {
+    pending: Option<SearchRequest>,
+    closed: bool,
+}
+
+#[derive(Default)]
+struct SearchMailbox {
+    queue: Mutex<SearchQueue>,
+    ready: Condvar,
+    generation: AtomicU64,
+}
+
+impl SearchMailbox {
+    fn receive(&self) -> Option<SearchRequest> {
+        let mut queue = self.ready.wait_while(self.queue.lock().unwrap(), |queue| {
+            queue.pending.is_none() && !queue.closed
+        }).unwrap();
+        queue.pending.take()
+    }
+}
+
+pub(crate) struct SearchWorker {
+    mailbox: Arc<SearchMailbox>,
+    rx: mpsc::Receiver<SearchReply>,
+}
+
+impl SearchWorker {
+    fn spawn(wake: Arc<WakeFn>) -> Self {
+        Self::spawn_with_search(wake, |request, cancelled| {
+            search_workspace_files(&request.files, &request.buffers, &request.query, 200, cancelled)
+        })
+    }
+
+    fn spawn_with_search(
+        wake: Arc<WakeFn>,
+        search: impl Fn(&SearchRequest, &dyn Fn() -> bool) -> Vec<FolderMatch> + Send + 'static,
+    ) -> Self {
+        let (replies, rx) = mpsc::channel();
+        let mailbox = Arc::new(SearchMailbox::default());
+        let reader = Arc::clone(&mailbox);
+        thread::spawn(move || {
+            while let Some(request) = reader.receive() {
+                let cancelled = || request.id != reader.generation.load(Ordering::Relaxed);
+                if cancelled() {
+                    continue;
+                }
+                let matches = search(&request, &cancelled);
+                if !cancelled() && replies.send(SearchReply { id: request.id, matches }).is_ok() {
+                    wake();
+                }
+            }
+        });
+        Self { mailbox, rx }
+    }
+
+    pub(crate) fn submit(
+        &self,
+        files: Vec<WorkspaceEntry>,
+        buffers: HashMap<PathBuf, Option<String>>,
+        query: String,
+    ) -> Result<u64, String> {
+        let mut queue = self.mailbox.queue.lock().unwrap();
+        if queue.closed {
+            return Err("Workspace search is unavailable".into());
+        }
+        let id = self.mailbox.generation.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        queue.pending = Some(SearchRequest { id, files, buffers, query });
+        self.mailbox.ready.notify_one();
+        Ok(id)
+    }
+
+    pub(crate) fn cancel(&self) {
+        let mut queue = self.mailbox.queue.lock().unwrap();
+        self.mailbox.generation.fetch_add(1, Ordering::Relaxed);
+        queue.pending = None;
+    }
+
+    pub(crate) fn try_recv(&self) -> Result<SearchReply, mpsc::TryRecvError> {
+        self.rx.try_recv()
+    }
+
+    fn shutdown(&self) {
+        // Closing also wakes an idle reader. A reader already in filesystem I/O
+        // can exit once the read returns, independently of the save worker.
+        let mut queue = self.mailbox.queue.lock().unwrap();
+        queue.closed = true;
+        self.mailbox.generation.fetch_add(1, Ordering::Relaxed);
+        queue.pending = None;
+        self.mailbox.ready.notify_one();
+    }
+}
+
+impl Drop for SearchWorker {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
 pub(crate) struct Worker {
     pub(crate) tx: Option<mpsc::Sender<WorkerRequest>>,
     pub(crate) rx: mpsc::Receiver<WorkerReply>,
     pub(crate) join: Option<thread::JoinHandle<()>>,
+    pub(crate) search: SearchWorker,
 }
 
 impl Worker {
@@ -116,6 +238,8 @@ impl Worker {
         writer: WriteRunner,
         wake: WakeFn,
     ) -> Self {
+        let wake = Arc::new(wake);
+        let search = SearchWorker::spawn(Arc::clone(&wake));
         let (req_tx, req_rx) = mpsc::channel::<WorkerRequest>();
         let (rep_tx, rep_rx) = mpsc::channel::<WorkerReply>();
         let join = thread::spawn(move || {
@@ -227,6 +351,7 @@ impl Worker {
             tx: Some(req_tx),
             rx: rep_rx,
             join: Some(join),
+            search,
         }
     }
 
@@ -247,6 +372,7 @@ impl Worker {
     }
 
     pub(crate) fn shutdown(&mut self) {
+        self.search.shutdown();
         self.tx.take();
         if let Some(handle) = self.join.take() {
             let _ = handle.join();
@@ -382,6 +508,73 @@ pub(crate) fn run_finish(project: &Path, session_id: &str, runner: &CliFn) -> Re
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn blocked_search_does_not_delay_save_or_finish_and_skips_superseded_queries() {
+        use std::time::Duration;
+
+        let wait = Duration::from_secs(5);
+        let (started, searches) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let mut worker = Worker::spawn_with_handlers(
+            Box::new(|_, _| Ok(String::new())),
+            Box::new(|_| Ok(WriteOutcome::Local)),
+            Box::new(|| {}),
+        );
+        worker.search.shutdown();
+        worker.search = SearchWorker::spawn_with_search(
+            Arc::new(Box::new(|| {})),
+            move |request, cancelled| {
+                started.send(request.query.clone()).unwrap();
+                if request.query == "old" {
+                    blocked.recv_timeout(wait).unwrap();
+                    assert!(cancelled());
+                }
+                Vec::new()
+            },
+        );
+        worker.search.submit(Vec::new(), HashMap::new(), "old".into()).unwrap();
+        assert_eq!(searches.recv_timeout(wait).unwrap(), "old");
+        worker.search.submit(Vec::new(), HashMap::new(), "skipped".into()).unwrap();
+        let latest = worker.search.submit(Vec::new(), HashMap::new(), "latest".into()).unwrap();
+
+        let path = PathBuf::from("worker-search-test.md");
+        let doc_id = DocId::File(path.clone());
+        worker.send(WorkerRequest::WriteFile {
+            doc_id: doc_id.clone(),
+            generation: 1,
+            path,
+            content: "draft".into(),
+            clear_recovery: None,
+        }).unwrap();
+        worker.send(WorkerRequest::Finish {
+            doc_id,
+            generation: 1,
+            project: std::env::temp_dir(),
+            session_id: "session".into(),
+            before_sha256: None,
+            snapshot: None,
+            mirror_path: None,
+            mirror_expected_sha256: None,
+        }).unwrap();
+        let save = worker.rx.recv_timeout(wait);
+        let finish = worker.rx.recv_timeout(wait);
+        release.send(()).unwrap();
+
+        assert!(matches!(save, Ok(WorkerReply::Saved { result: Ok(WriteOutcome::Local), .. })));
+        assert!(matches!(finish, Ok(WorkerReply::Finished { result: Ok(()), .. })));
+        assert_eq!(searches.recv_timeout(wait).unwrap(), "latest");
+        assert_eq!(worker.search.rx.recv_timeout(wait).unwrap().id, latest);
+
+        // The same worker can go idle after delivering a reply and accept more work.
+        for _ in 0..32 {
+            worker.search.cancel();
+            let id = worker.search.submit(Vec::new(), HashMap::new(), "again".into()).unwrap();
+            assert_eq!(worker.search.rx.recv_timeout(wait).unwrap().id, id);
+        }
+        worker.shutdown();
+        assert!(worker.search.submit(Vec::new(), HashMap::new(), "closed".into()).is_err());
+    }
 
     #[test]
     fn write_session_direct_writes_atomically_and_enforces_receipt_and_baseline_guards() {
