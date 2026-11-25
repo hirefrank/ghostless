@@ -318,8 +318,12 @@ def confirm_rule(
     }
     state["rejected"].pop(rule_id, None)
     state["retired"].pop(rule_id, None)
+    # No section means every section. Re-confirming without one drops a
+    # previous scope instead of leaving it in place.
     if checked_section:
         state["scope"][rule_id] = checked_section
+    else:
+        state["scope"].pop(rule_id, None)
     save_rules(root, state)
     return {
         "id": rule_id,
@@ -386,8 +390,23 @@ def rules_summary(root: Path, *, edits: Mapping[str, object] | None = None) -> R
     candidates = mine_candidates(root, edit_data)
     by_id = {candidate["id"]: candidate for candidate in candidates}
 
+    # A hand edit or merge can put one id in more than one bucket.
+    # Precedence matches derive_status: rejected, then retired, then confirmed.
+    rejected_ids = {rule_id for rule_id, _decision in _decision_items(state, "rejected")}
+    retired_ids = {
+        rule_id
+        for rule_id, _decision in _decision_items(state, "retired")
+        if rule_id not in rejected_ids
+    }
+    confirmed_ids = {
+        rule_id
+        for rule_id, _decision in _decision_items(state, "confirmed")
+        if rule_id not in rejected_ids and rule_id not in retired_ids
+    }
     confirmed: list[ConfirmedRule] = []
     for rule_id, decision in _decision_items(state, "confirmed"):
+        if rule_id not in confirmed_ids:
+            continue
         candidate = by_id.get(rule_id) or _candidate_from_id(rule_id, threshold)
         raw_receipts = decision.get("receipts")
         raw_pieces = decision.get("pieces")
@@ -440,6 +459,8 @@ def rules_summary(root: Path, *, edits: Mapping[str, object] | None = None) -> R
             }
         )
     for rule_id, decision in _decision_items(state, "retired"):
+        if rule_id not in retired_ids:
+            continue
         candidate = by_id.get(rule_id) or _candidate_from_id(rule_id, threshold)
         raw_at = decision.get("at")
         retired_list.append(

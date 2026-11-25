@@ -31,6 +31,7 @@ from ghostless.rules import (  # noqa: E402
     reject_rule,
     retire_rule,
     rules_summary,
+    save_rules,
     scope_rule,
 )
 from ghostless.sessions import finish_session, snapshot_session, start_session  # noqa: E402
@@ -549,6 +550,65 @@ class RuleDecisionTests(unittest.TestCase):
         summary = rules_summary(self.project)
         self.assertEqual([item["id"] for item in summary["rejected"]], ["struct:split-paragraphs"])
         self.assertEqual(summary["hypotheses"], [])
+
+    def test_overlapping_buckets_keep_rejected_then_retired(self) -> None:
+        state = default_rules()
+        record = {"at": "2026-01-02T00:00:00Z", "receipts": [], "pieces": []}
+        state["confirmed"] = {
+            "cut:delve": dict(record),
+            "add:honestly": dict(record),
+            "struct:keep": dict(record),
+        }
+        state["rejected"] = {
+            "cut:delve": {"at": "2026-01-03T00:00:00Z"},
+            "struct:keep": {"at": "2026-01-03T00:00:00Z"},
+        }
+        state["retired"] = {
+            "add:honestly": {"at": "2026-01-03T00:00:00Z"},
+            "struct:keep": {"at": "2026-01-03T00:00:00Z"},
+        }
+        state["scope"] = {"cut:delve": "notes", "add:honestly": "essays"}
+        save_rules(self.project, state)
+        summary = rules_summary(self.project)
+        self.assertEqual([item["id"] for item in summary["confirmed"]], [])
+        self.assertEqual([item["id"] for item in summary["retired"]], ["add:honestly"])
+        self.assertEqual(
+            sorted(item["id"] for item in summary["rejected"]),
+            ["cut:delve", "struct:keep"],
+        )
+        self.assertEqual(active_rules(self.project), [])
+
+    def test_reconfirm_without_section_returns_to_global(self) -> None:
+        self.three_cuts()
+        confirm_rule(self.project, "cut:delve", section="notes")
+        self.assertEqual(active_rules(self.project)[0]["scope"], "notes")
+        cleared = confirm_rule(self.project, "cut:delve")
+        self.assertIsNone(cleared["scope"])
+        self.assertIsNone(active_rules(self.project)[0]["scope"])
+        self.assertNotIn("cut:delve", load_rules(self.project)["scope"])
+        confirm_rule(self.project, "cut:delve", section="essays")
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = main(
+                ["rules", "confirm", "cut:delve", "--global", "--project", str(self.project)]
+            )
+        self.assertEqual(code, 0)
+        self.assertIsNone(active_rules(self.project)[0]["scope"])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            conflict = main(
+                [
+                    "rules",
+                    "confirm",
+                    "cut:delve",
+                    "--global",
+                    "--section",
+                    "notes",
+                    "--project",
+                    str(self.project),
+                ]
+            )
+        self.assertEqual(conflict, 2)
+        self.assertIn("cannot be combined", err.getvalue())
 
 
 class RuleFileTests(unittest.TestCase):

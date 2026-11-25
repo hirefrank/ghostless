@@ -270,11 +270,16 @@ def confirm_check(
     token: str,
     *,
     section: str | None = None,
+    clear_section: bool = False,
 ) -> dict[str, object]:
     """Make a saved check active. An explicit confirm can reverse a rejection.
 
     A rebuild or a new edit cannot. That is the same gate as a voice rule:
     rejection sticks until the writer confirms it again on purpose.
+    `clear_section` returns the check to every section. Omitting both that
+    and `section` keeps a section already stored on a live confirm, or the
+    section of a still-pending pair. A rejected record does not put a section
+    back.
     """
     state = load_checks(root)
     identifier = resolve_check_id(root, token)
@@ -284,8 +289,10 @@ def confirm_check(
             f"No check {token}. Save one from an edit with "
             "`ghostless learn --check` or `ghostless checks add <slug> --text`."
         )
-    checked = _checked_section(section)
-    if checked is None:
+    if clear_section and section is not None:
+        raise ProjectError("--global cannot be combined with --section.")
+    checked = None if clear_section else _checked_section(section)
+    if checked is None and not clear_section:
         current = proposal.get("section")
         checked = current if isinstance(current, str) and current else None
     state["confirmed"][identifier] = {
@@ -349,8 +356,9 @@ def resolve_check_id(root: Path, token: str) -> str:
 def checks_summary(root: Path) -> ChecksSummary:
     """Confirmed, still-pending, and rejected checks for the guide and the CLI."""
     state = load_checks(root)
-    confirmed_ids = set(state["confirmed"])
+    # Rejection wins when a merge leaves the same id in both buckets.
     rejected_ids = set(state["rejected"])
+    confirmed_ids = set(state["confirmed"]) - rejected_ids
     pending: list[dict[str, object]] = []
     seen: set[str] = set()
     for item in _pair_checks(root):
@@ -362,6 +370,7 @@ def checks_summary(root: Path) -> ChecksSummary:
     confirmed = [
         {"id": identifier, **record}
         for identifier, record in _items(state, "confirmed")
+        if identifier in confirmed_ids
     ]
     rejected = [
         {"id": identifier, "status": "rejected", **record}
@@ -907,7 +916,12 @@ def _proposal(root: Path, state: ChecksState, identifier: str) -> dict[str, obje
     for key in ("confirmed", "rejected"):
         record = _record(state, key, identifier)
         if record is not None and isinstance(record.get("text"), str) and isinstance(record.get("span"), str):
-            section = record.get("section") if isinstance(record.get("section"), str) else None
+            # A rejection remembers the sentence, not the scope. Copying the
+            # section here made a later confirm unable to return to global.
+            section = None
+            if key == "confirmed":
+                raw_section = record.get("section")
+                section = raw_section if isinstance(raw_section, str) else None
             pair = record.get("pair") if isinstance(record.get("pair"), str) else ""
             return {
                 "text": record["text"],

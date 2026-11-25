@@ -18,6 +18,8 @@ sys.path.insert(0, str(ROOT / "lib"))
 
 from ghostless.checks import (  # noqa: E402
     check_id,
+    checks_summary,
+    confirm_check,
     grade_confirmed,
     passes_check,
 )
@@ -386,6 +388,59 @@ class CheckSaveTests(unittest.TestCase):
         (self.project / "checks.json").write_text("{not json\n", encoding="utf-8")
         with self.assertRaisesRegex(ProjectError, "checks.json"):
             build_voice(self.project)
+
+    def test_overlapping_confirmed_and_rejected_keeps_only_rejected(self) -> None:
+        identifier = check_id(LABEL)
+        other = "chk-other"
+        record = {
+            "at": "2026-01-02T00:00:00Z",
+            "text": LABEL,
+            "span": "Level 9:",
+            "polarity": "forbid",
+            "pair": "pair",
+            "section": "notes",
+        }
+        payload = {
+            "kind": "ghostless-checks",
+            "version": 1,
+            "confirmed": {identifier: record, other: {**record, "text": "Other."}},
+            "rejected": {identifier: {**record, "at": "2026-01-03T00:00:00Z"}},
+        }
+        (self.project / "checks.json").write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        summary = checks_summary(self.project)
+        confirmed_ids = [item["id"] for item in summary["confirmed"]]
+        rejected_ids = [item["id"] for item in summary["rejected"]]
+        self.assertEqual(confirmed_ids, [other])
+        self.assertEqual(rejected_ids, [identifier])
+        self.assertNotIn(identifier, [item["id"] for item in summary["pending"]])
+
+    def test_confirm_without_section_returns_a_check_to_global(self) -> None:
+        self.learn(
+            "Level 9: starts the note. Then we stop.",
+            "The correction starts the note. Then we stop.",
+            checks=[LABEL],
+        )
+        identifier = check_id(LABEL)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                main(["checks", "confirm", LABEL, "--section", "notes", "--project", str(self.project)]),
+                0,
+            )
+        scoped = json.loads((self.project / "checks.json").read_text(encoding="utf-8"))
+        self.assertEqual(scoped["confirmed"][identifier]["section"], "notes")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["checks", "reject", LABEL, "--project", str(self.project)]), 0)
+            self.assertEqual(main(["checks", "confirm", LABEL, "--project", str(self.project)]), 0)
+        revived = json.loads((self.project / "checks.json").read_text(encoding="utf-8"))
+        self.assertIsNone(revived["confirmed"][identifier]["section"])
+        self.assertNotIn(identifier, revived["rejected"])
+        again = confirm_check(self.project, identifier, section="essays")
+        self.assertEqual(again["section"], "essays")
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = main(["checks", "confirm", LABEL, "--global", "--project", str(self.project)])
+        self.assertEqual(code, 0)
+        cleared = json.loads((self.project / "checks.json").read_text(encoding="utf-8"))
+        self.assertIsNone(cleared["confirmed"][identifier]["section"])
 
 
 class CheckGradeTests(unittest.TestCase):

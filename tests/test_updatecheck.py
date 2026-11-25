@@ -138,6 +138,35 @@ class UpdatePlanTests(unittest.TestCase):
             finally:
                 os.chdir(old)
 
+    def test_failed_fetch_does_not_start_the_cooldown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            calls = {"n": 0}
+
+            def fetch() -> tuple[bool, str | None]:
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    return False, None
+                return True, "9.9.9"
+
+            with patch.dict(os.environ, {"GHOSTLESS_HOME": str(home)}):
+                for var in (
+                    "GHOSTLESS_NO_UPDATE",
+                    "GHOSTLESS_UPDATE_CHECK",
+                    "GHOSTLESS_JUST_UPDATED",
+                    "GHOSTLESS_PROJECT",
+                ):
+                    os.environ.pop(var, None)
+                self.assertEqual(run_once(fetcher=fetch), "current")
+                self.assertFalse((home / "last-update-check").exists())
+                self.assertEqual(run_once(fetcher=fetch), "update 9.9.9")
+                self.assertTrue((home / "last-update-check").is_file())
+
+                def explode() -> tuple[bool, str | None]:
+                    raise AssertionError("a fresh stamp should skip the next fetch")
+
+                self.assertEqual(run_once(fetcher=explode), "skip")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,7 +12,7 @@ import json
 import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from ghostless.checks import write_pair_checks
+from ghostless.checks import prepare_checks, write_pair_checks
 from ghostless.io import atomic_write_json, atomic_write_text, sha256_text, utc_now_iso, utc_today
 from ghostless.learn import DIFF_SUMMARY_KEYS, diff_texts, find_existing_learn_pair, learn_edit
 from ghostless.paths import ProjectError
@@ -168,6 +168,11 @@ def finish_session(
     receipt_path = folder / "receipt.json"
     if receipt_path.is_file():
         receipt = _load_json(receipt_path)
+        # A crash between the receipt write and the status write leaves
+        # session.json open. The receipt is the source of truth on retry.
+        if metadata.get("status") != "final":
+            metadata["status"] = "final"
+            atomic_write_json(folder / "session.json", metadata, ensure_ascii=False)
         if receipt.get("finalSha256") == sha256_text(after):
             if checks:
                 _attach_checks(root, receipt, checks)
@@ -176,6 +181,10 @@ def finish_session(
         raise ProjectError("This session is already finished with a different final. Start a new session.")
     if before.rstrip("\n") == after.rstrip("\n"):
         raise ProjectError("The final is identical to the original draft. Make an edit before finishing.")
+    # Refuse a bad check before any session file changes, so a rejected
+    # finish can be retried against the same notes and final.
+    if checks:
+        prepare_checks(root, before, after, checks)
     if note is not None:
         atomic_write_text(folder / "notes.md", note)
     notes_path = folder / "notes.md"

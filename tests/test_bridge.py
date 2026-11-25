@@ -294,6 +294,86 @@ class BridgeTests(unittest.TestCase):
             self.assertIs(response["ok"], False)
             self.assertIn(error, str(response["error"]))
 
+    def test_global_clears_rule_and_check_scope(self) -> None:
+        rule_id = "cut:delve"
+        (self.voice / "rules.json").write_text(
+            json.dumps(
+                {
+                    "kind": "ghostless-rules",
+                    "version": 1,
+                    "confirmed": {rule_id: {"at": "2026-01-02T00:00:00Z", "receipts": [], "pieces": []}},
+                    "rejected": {},
+                    "retired": {},
+                    "scope": {rule_id: "notes"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        check_id = "chk-level"
+        (self.voice / "checks.json").write_text(
+            json.dumps(
+                {
+                    "kind": "ghostless-checks",
+                    "version": 1,
+                    "confirmed": {
+                        check_id: {
+                            "at": "2026-01-02T00:00:00Z",
+                            "text": 'The opener avoids "Level 9:".',
+                            "span": "Level 9:",
+                            "polarity": "forbid",
+                            "pair": "2026-01-02",
+                            "section": "notes",
+                        }
+                    },
+                    "rejected": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        ruled = handle_request(
+            {
+                "id": 1,
+                "method": "rules_decide",
+                "params": {
+                    "project": str(self.voice),
+                    "action": "confirm",
+                    "ruleId": rule_id,
+                    "global": True,
+                },
+            }
+        )
+        self.assertTrue(ruled["ok"], ruled.get("error"))
+        self.assertIsNone(ruled["result"]["scope"])
+        checked = handle_request(
+            {
+                "id": 2,
+                "method": "checks_decide",
+                "params": {
+                    "project": str(self.voice),
+                    "action": "confirm",
+                    "target": check_id,
+                    "global": True,
+                },
+            }
+        )
+        self.assertTrue(checked["ok"], checked.get("error"))
+        self.assertIsNone(checked["result"]["section"])
+        conflict = handle_request(
+            {
+                "id": 3,
+                "method": "rules_decide",
+                "params": {
+                    "project": str(self.voice),
+                    "action": "confirm",
+                    "ruleId": rule_id,
+                    "global": True,
+                    "section": "notes",
+                },
+            }
+        )
+        self.assertFalse(conflict["ok"])
+        self.assertIn("cannot be combined", str(conflict["error"]))
+
 
 if __name__ == "__main__":
     unittest.main()

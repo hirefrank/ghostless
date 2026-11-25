@@ -122,7 +122,9 @@ def run_once(
         local=version(),
         fetch_ok=fetch_ok,
     )
-    _write_stamp(stamp_path)
+    # A transient failure must not start the 24h cooldown.
+    if fetch_ok:
+        _write_stamp(stamp_path)
     return decision
 
 

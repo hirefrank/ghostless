@@ -201,6 +201,45 @@ class SessionTests(unittest.TestCase):
         recorded = log.read_text(encoding="utf-8").splitlines()
         self.assertEqual(recorded[2:], ["--session", str(session["id"])])
 
+    def test_invalid_check_leaves_session_files_unchanged(self) -> None:
+        session = self.start()
+        folder = self.project / str(session["path"])
+        snapshot_session(
+            self.project,
+            session=str(session["id"]),
+            after="A better thought.\n",
+            notes="Keep this note.",
+        )
+        after_text = (folder / "after.md").read_text(encoding="utf-8")
+        notes_text = (folder / "notes.md").read_text(encoding="utf-8")
+        with self.assertRaisesRegex(ProjectError, "sentence length"):
+            finish_session(
+                self.project,
+                None,
+                session=str(session["id"]),
+                note="Should not land.",
+                checks=["Keep the median sentence length near the target."],
+            )
+        self.assertEqual((folder / "after.md").read_text(encoding="utf-8"), after_text)
+        self.assertEqual((folder / "notes.md").read_text(encoding="utf-8"), notes_text)
+        self.assertFalse((folder / "receipt.json").exists())
+        metadata = json.loads((folder / "session.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["status"], "open")
+        self.assertEqual(list((self.project / "gold").glob("*/meta.json")), [])
+
+    def test_retry_repairs_open_status_when_receipt_exists(self) -> None:
+        session = self.start()
+        folder = self.project / str(session["path"])
+        (folder / "after.md").write_text("A better thought.\n", encoding="utf-8")
+        finish_session(self.project, None, session=str(session["id"]))
+        metadata = json.loads((folder / "session.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["status"], "final")
+        metadata["status"] = "open"
+        (folder / "session.json").write_text(json.dumps(metadata) + "\n", encoding="utf-8")
+        finish_session(self.project, None, session=str(session["id"]))
+        healed = json.loads((folder / "session.json").read_text(encoding="utf-8"))
+        self.assertEqual(healed["status"], "final")
+
 
 def _write_fake_editor(path: Path) -> Path:
     """A Python editor double. Windows starts ``.py`` files through the interpreter."""

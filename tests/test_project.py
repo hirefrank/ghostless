@@ -19,7 +19,7 @@ SAMPLE = ROOT / "fixtures" / "sample-voice"
 sys.path.insert(0, str(ROOT / "lib"))
 
 from ghostless import __version__  # noqa: E402
-from ghostless.build import build_voice  # noqa: E402
+from ghostless.build import build_voice, stale_inputs  # noqa: E402
 from ghostless.cli import main  # noqa: E402
 from ghostless.paths import ProjectError, find_project_with_source  # noqa: E402
 from ghostless.project import (  # noqa: E402
@@ -717,6 +717,84 @@ class VersionFileTests(unittest.TestCase):
             )
             self.assertEqual(extracted_missing.returncode, 0, extracted_missing.stderr)
             self.assertEqual(extracted_missing.stdout.strip(), "")
+
+
+class StaleDeletionTests(unittest.TestCase):
+    def test_deleted_inputs_mark_voice_stats_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            shutil.copytree(SAMPLE, project)
+            (project / "STYLE.md").write_text("Be direct.\n", encoding="utf-8")
+            (project / "AUDIENCE.md").write_text("Builders.\n", encoding="utf-8")
+            (project / "transcripts").mkdir()
+            (project / "transcripts" / "talk.md").write_text("I said this aloud.\n", encoding="utf-8")
+            pair = project / "gold" / "2026-01-02-notes"
+            pair.mkdir(parents=True)
+            (pair / "before.md").write_text("Before.\n", encoding="utf-8")
+            (pair / "after.md").write_text("After the edit.\n", encoding="utf-8")
+            (pair / "meta.json").write_text(
+                json.dumps(
+                    {
+                        "date": "2026-01-02",
+                        "origin": "writer-first",
+                        "beforeFile": "before.md",
+                        "afterFile": "after.md",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (project / "rules.json").write_text(
+                json.dumps(
+                    {
+                        "kind": "ghostless-rules",
+                        "version": 1,
+                        "confirmed": {
+                            "cut:delve": {"at": "2026-01-02T00:00:00Z", "receipts": [], "pieces": []}
+                        },
+                        "rejected": {},
+                        "retired": {},
+                        "scope": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (project / "checks.json").write_text(
+                json.dumps(
+                    {
+                        "kind": "ghostless-checks",
+                        "version": 1,
+                        "confirmed": {
+                            "chk-1": {
+                                "at": "2026-01-02T00:00:00Z",
+                                "text": "Keep it.",
+                                "span": "Keep",
+                                "polarity": "require",
+                                "pair": "pair",
+                                "section": "notes",
+                            }
+                        },
+                        "rejected": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            build_voice(project)
+            self.assertEqual(stale_inputs(project), [])
+            deleted = (
+                "corpus/gold/notes/desk.md",
+                "transcripts/talk.md",
+                "gold/2026-01-02-notes/after.md",
+                "STYLE.md",
+                "AUDIENCE.md",
+                "rules.json",
+                "checks.json",
+            )
+            for rel in deleted:
+                (project / rel).unlink()
+            stale = stale_inputs(project)
+            for rel in deleted:
+                self.assertIn(rel, stale)
 
 
 def _cargo_package_version(cargo: str) -> str:

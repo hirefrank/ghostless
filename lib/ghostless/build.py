@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from ghostless.checks import checks_summary
@@ -66,14 +67,77 @@ def stale_inputs(root: Path) -> list[str]:
     candidates.extend(_iter_input_files(root / "gold", root=root, suffixes=_GOLD_INPUT_SUFFIXES))
 
     stale: list[str] = []
+    present: set[str] = set()
     for path in candidates:
+        rel = path.relative_to(root).as_posix()
+        present.add(rel)
         try:
             mtime = path.stat().st_mtime_ns
         except OSError:
             continue
         if mtime > stats_mtime:
-            stale.append(path.relative_to(root).as_posix())
-    return sorted(stale)
+            stale.append(rel)
+    stale.extend(_deleted_inputs(root, present))
+    return sorted(set(stale))
+
+
+def _deleted_inputs(root: Path, present: set[str]) -> list[str]:
+    """Inputs recorded by the last build that are no longer on disk.
+
+    `stale_inputs` otherwise only notices files that are still there and newer
+    than voice-stats.json, so a deletion looks clean.
+    """
+    stats = _read_stats(root / "voice-stats.json")
+    if stats is None:
+        return []
+    missing: list[str] = []
+    for rel in _recorded_paths(stats):
+        if rel in present or (root / rel).is_file():
+            continue
+        missing.append(rel)
+    for key, name in NOTE_FILES:
+        recorded = stats.get(key)
+        if isinstance(recorded, str) and recorded.strip() and name not in present:
+            missing.append(name)
+    if _has_decisions(stats.get("rules")) and "rules.json" not in present:
+        missing.append("rules.json")
+    if _has_decisions(stats.get("checks")) and "checks.json" not in present:
+        missing.append("checks.json")
+    return missing
+
+
+def _read_stats(path: Path) -> dict[str, object] | None:
+    try:
+        data: object = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _recorded_paths(stats: dict[str, object]) -> list[str]:
+    files = stats.get("files")
+    if not isinstance(files, list):
+        return []
+    paths: list[str] = []
+    for row in files:
+        if not isinstance(row, dict):
+            continue
+        rel = row.get("path")
+        if isinstance(rel, str) and rel:
+            paths.append(rel)
+    return paths
+
+
+def _has_decisions(block: object) -> bool:
+    if not isinstance(block, dict):
+        return False
+    for key in ("confirmed", "rejected", "retired", "pending"):
+        value = block.get(key)
+        if isinstance(value, list | dict) and len(value) > 0:
+            return True
+    return False
 
 
 def _iter_input_files(

@@ -264,6 +264,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Rule id, e.g. cut:delve, add:honestly, or struct:cut-em-dash",
     )
     rules_parser.add_argument("--section", help="Limit a confirmed rule to this section")
+    rules_parser.add_argument(
+        "--global",
+        dest="make_global",
+        action="store_true",
+        help="Return a confirmed rule to every section",
+    )
     rules_parser.add_argument("--json", action="store_true")
     _add_project(rules_parser)
 
@@ -285,6 +291,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     checks_parser.add_argument("--text", help="Check sentence from the edit (add only)")
     checks_parser.add_argument("--section", help="Limit a confirmed check to this section")
+    checks_parser.add_argument(
+        "--global",
+        dest="make_global",
+        action="store_true",
+        help="Return a confirmed check to every section",
+    )
     checks_parser.add_argument("--json", action="store_true")
     _add_project(checks_parser)
 
@@ -821,10 +833,18 @@ def _cmd_rules(args: argparse.Namespace) -> int:
         raise ProjectError(
             f"`ghostless rules {action}` needs a rule id, for example cut:delve."
         )
+    if action != "confirm" and args.make_global:
+        raise ProjectError("--global only applies to confirm.")
     if action in ("reject", "retire") and args.section:
         raise ProjectError("--section only applies to confirm.")
+    if action == "confirm" and args.section and args.make_global:
+        raise ProjectError("--global cannot be combined with --section.")
     if action == "confirm":
-        result = confirm_rule(root, args.rule_id, section=args.section)
+        result = confirm_rule(
+            root,
+            args.rule_id,
+            section=None if args.make_global else args.section,
+        )
     elif action == "reject":
         result = reject_rule(root, args.rule_id)
     else:
@@ -852,7 +872,7 @@ def _cmd_checks(args: argparse.Namespace) -> int:
     root = _project(args.project)
     action = args.action
     if action == "list":
-        if args.target or args.text or args.section:
+        if args.target or args.text or args.section or args.make_global:
             raise ProjectError("`ghostless checks` lists decisions. Pass confirm, reject, or add to change one.")
         summary = checks_summary(root)
         if args.json:
@@ -863,8 +883,8 @@ def _cmd_checks(args: argparse.Namespace) -> int:
     if action == "add":
         if not args.target or not args.text:
             raise ProjectError("`ghostless checks add <slug> --text` needs the learned pair and the sentence.")
-        if args.section:
-            raise ProjectError("--section applies to confirm. Add the check, then confirm it.")
+        if args.section or args.make_global:
+            raise ProjectError("--section and --global apply to confirm. Add the check, then confirm it.")
         prepared = write_pair_checks(root, args.target, [args.text])
         if args.json:
             print(json.dumps(prepared, indent=2, ensure_ascii=False))
@@ -873,12 +893,19 @@ def _cmd_checks(args: argparse.Namespace) -> int:
         return 0
     if not args.target:
         raise ProjectError(f"`ghostless checks {action}` needs a check id or the check sentence.")
-    if action == "reject" and args.section:
-        raise ProjectError("--section only applies to confirm.")
+    if action == "reject" and (args.section or args.make_global):
+        raise ProjectError("--section and --global only apply to confirm.")
     if args.text:
         raise ProjectError("--text is only for add.")
+    if action == "confirm" and args.section and args.make_global:
+        raise ProjectError("--global cannot be combined with --section.")
     if action == "confirm":
-        result = confirm_check(root, args.target, section=args.section)
+        result = confirm_check(
+            root,
+            args.target,
+            section=None if args.make_global else args.section,
+            clear_section=bool(args.make_global),
+        )
     else:
         result = reject_check(root, args.target)
     if args.json:

@@ -103,14 +103,29 @@ def _list_sessions(root: Path) -> list[dict[str, object]]:
     return items
 
 
+def _confirm_section(params: dict[str, object]) -> tuple[str | None, bool]:
+    """Section for a confirm, and whether the caller asked for every section.
+
+    The flag is how a check leaves a previous section. A rule treats a missing
+    section the same way: confirm without one is global.
+    """
+    section = _optional_text(params, "section")
+    make_global = _flag(params, "global")
+    if make_global and section is not None:
+        raise ProjectError("Parameter 'section' cannot be combined with 'global'.")
+    return (None, True) if make_global else (section, False)
+
+
 def _decide_rule(root: Path, params: dict[str, object]) -> dict[str, object]:
     action = _required_text(params, "action")
     identifier = _required_text(params, "ruleId")
     section = _optional_text(params, "section")
+    make_global = _flag(params, "global")
     if action == "confirm":
-        return rules.confirm_rule(root, identifier, section=section)
-    if section is not None:
-        raise ProjectError("Parameter 'section' applies to confirm.")
+        section, make_global = _confirm_section(params)
+        return rules.confirm_rule(root, identifier, section=None if make_global else section)
+    if section is not None or make_global:
+        raise ProjectError("Parameters 'section' and 'global' apply to confirm.")
     if action == "reject":
         return rules.reject_rule(root, identifier)
     if action == "retire":
@@ -122,10 +137,12 @@ def _decide_check(root: Path, params: dict[str, object]) -> object:
     action = _required_text(params, "action")
     target = _required_text(params, "target")
     section = _optional_text(params, "section")
+    make_global = _flag(params, "global")
     if action == "confirm":
-        return checks.confirm_check(root, target, section=section)
-    if section is not None:
-        raise ProjectError("Parameter 'section' applies to confirm.")
+        section, clear_section = _confirm_section(params)
+        return checks.confirm_check(root, target, section=section, clear_section=clear_section)
+    if section is not None or make_global:
+        raise ProjectError("Parameters 'section' and 'global' apply to confirm.")
     if action == "reject":
         return checks.reject_check(root, target)
     if action == "add":
