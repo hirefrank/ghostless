@@ -12,3 +12,7 @@
 - **Pinned dependencies**: Do not modify `editor/Cargo.lock` or bump the pinned
   `anomalyco/rune` commit (`fa07f485dd52d8f66db317460566ef4dc4784821`) in
   `editor/Cargo.toml` unless explicitly requested.
+
+## Learned User Preferences
+
+- When a pull request should close GitHub issues, attach those issues to the PR so merge closes them automatically.
