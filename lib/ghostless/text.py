@@ -35,9 +35,7 @@ TASK_BOX = re.compile(r"^[ \t]{0,3}\[[ xX]\][ \t]+", re.MULTILINE)
 HR_STAR = re.compile(r"^[ \t]*(?:\*[ \t]*){3,}$", re.MULTILINE)
 HR_UNDER = re.compile(r"^[ \t]*(?:_[ \t]*){3,}$", re.MULTILINE)
 HR_DASH = re.compile(r"^[ \t]*(?:-[ \t]*){3,}$", re.MULTILINE)
-ABBREV_RE = re.compile(
-    r"(?i)\b(?:mr|mrs|ms|dr|prof|sr|jr|st|vs|etc|e\.g|i\.e|u\.s|u\.k)\."
-)
+ABBREV_RE = re.compile(r"(?i)\b(?:mr|mrs|ms|dr|prof|sr|jr|st|vs|etc|e\.g|i\.e|u\.s|u\.k)\.")
 DECIMAL_RE = re.compile(r"(?<=\d)\.(?=\d)")
 CONTRACTION_RE = re.compile(
     r"(?i)^(?:[a-z]+n't|[a-z]+'(?:re|ve|ll|d|m)|(?:it|that|there|here|what|who|let|he|she|how|where|when|why)'s)$"

@@ -82,16 +82,10 @@ AI_TELLS: tuple[str, ...] = (
 _NOT_X_ITS_Y = (
     re.compile(r"(?i)\bit(?:'s| is)\s+not\b[^.!?\n]{0,90}?\bit(?:'s| is)\b"),
     re.compile(r"(?i)\b(?:this|that|it)\s+isn't\b[^.!?\n]{0,90}?\bit(?:'s| is)\b"),
-    re.compile(
-        r"(?i)\bnot\s+(?:[A-Za-z]+(?:'[A-Za-z]+)?\s+){1,8}[A-Za-z]+(?:'[A-Za-z]+)?,\s*it(?:'s| is)\b"
-    ),
+    re.compile(r"(?i)\bnot\s+(?:[A-Za-z]+(?:'[A-Za-z]+)?\s+){1,8}[A-Za-z]+(?:'[A-Za-z]+)?,\s*it(?:'s| is)\b"),
 )
-_TRIPLET = re.compile(
-    r"\b([A-Za-z][A-Za-z'-]{3,}),\s+([A-Za-z][A-Za-z'-]{3,}),\s+and\s+([A-Za-z][A-Za-z'-]{3,})\b"
-)
-_ORDINAL = re.compile(
-    r"(?i)\bfirst(?:ly)?,\s+[^.!?\n]{0,80}?\bsecond(?:ly)?,\s+[^.!?\n]{0,80}?\bthird(?:ly)?\b"
-)
+_TRIPLET = re.compile(r"\b([A-Za-z][A-Za-z'-]{3,}),\s+([A-Za-z][A-Za-z'-]{3,}),\s+and\s+([A-Za-z][A-Za-z'-]{3,})\b")
+_ORDINAL = re.compile(r"(?i)\bfirst(?:ly)?,\s+[^.!?\n]{0,80}?\bsecond(?:ly)?,\s+[^.!?\n]{0,80}?\bthird(?:ly)?\b")
 
 
 @dataclass(frozen=True)

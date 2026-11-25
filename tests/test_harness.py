@@ -66,7 +66,9 @@ class HarnessMapTests(unittest.TestCase):
         self.assertTrue(_ephemeral_package(Path("/home/user/.npm/_npx/abc/node_modules/ghostless")))
         self.assertTrue(_ephemeral_package(Path("/home/user/.cache/pnpm/dlx/abc/node_modules/ghostless")))
         self.assertFalse(_ephemeral_package(ROOT))
-        self.assertFalse(_ephemeral_package(Path("/home/user/.local/share/mise/installs/node/22/lib/node_modules/ghostless")))
+        self.assertFalse(
+            _ephemeral_package(Path("/home/user/.local/share/mise/installs/node/22/lib/node_modules/ghostless"))
+        )
 
 
 @unittest.skipIf(os.name == "nt", "Bash shims run on Unix only")
@@ -108,7 +110,10 @@ class HarnessTests(unittest.TestCase):
             env = self._env(home)
             install = subprocess.run(
                 [str(ROOT / "setup"), "--agent", "cursor"],
-                check=False, capture_output=True, text=True, env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
             )
             self.assertEqual(install.returncode, 0, install.stderr)
             skills = home / ".cursor" / "skills"
@@ -118,7 +123,10 @@ class HarnessTests(unittest.TestCase):
             (foreign / "SKILL.md").write_text("foreign skill", encoding="utf-8")
             reset = subprocess.run(
                 [str(ROOT / "bin" / "ghostless"), "reset", "--agent", "cursor", "--yes"],
-                check=False, capture_output=True, text=True, env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
             )
             self.assertEqual(reset.returncode, 0, reset.stderr)
             self.assertTrue((foreign / "SKILL.md").is_file())
@@ -136,7 +144,10 @@ class HarnessTests(unittest.TestCase):
             (skills / "ghostless-draft").symlink_to(foreign)
             completed = subprocess.run(
                 [str(ROOT / "setup"), "--agent", "cursor"],
-                check=False, capture_output=True, text=True, env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             link = skills / "ghostless-draft"
@@ -151,7 +162,10 @@ class HarnessTests(unittest.TestCase):
             link_root.symlink_to(ROOT)
             completed = subprocess.run(
                 [str(link_root / "setup"), "--agent", "cursor"],
-                check=False, capture_output=True, text=True, env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
             )
             self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
             self.assertTrue((home / ".cursor" / "skills" / "ghostless-draft" / "SKILL.md").is_file())
@@ -171,11 +185,19 @@ class HarnessTests(unittest.TestCase):
 
             bin_doctor = subprocess.run(
                 [str(ROOT / "bin" / "ghostless"), "doctor"],
-                check=False, capture_output=True, text=True, env=env, cwd=home,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=home,
             )
             py_doctor = subprocess.run(
                 [sys.executable, "-m", "ghostless", "doctor"],
-                check=False, capture_output=True, text=True, env=py_env, cwd=home,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=py_env,
+                cwd=home,
             )
             self.assertEqual(bin_doctor.returncode, 0, bin_doctor.stderr)
             self.assertEqual(py_doctor.returncode, 0, py_doctor.stderr)
@@ -190,7 +212,10 @@ class HarnessTests(unittest.TestCase):
             env = self._env(home, GHOSTLESS_SKILLS_DIR=str(custom_skills))
             install = subprocess.run(
                 [str(ROOT / "bin" / "ghostless"), "install-skills"],
-                check=False, capture_output=True, text=True, env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
             )
             self.assertEqual(install.returncode, 0, install.stderr + install.stdout)
             for skill in ("ghostless-draft", "ghostless-edit", "ghostless-learn"):
@@ -200,7 +225,10 @@ class HarnessTests(unittest.TestCase):
 
             reset = subprocess.run(
                 [str(ROOT / "bin" / "ghostless"), "reset", "--yes"],
-                check=False, capture_output=True, text=True, env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
             )
             self.assertEqual(reset.returncode, 0, reset.stderr + reset.stdout)
             for skill in ("ghostless-draft", "ghostless-edit", "ghostless-learn"):
@@ -235,9 +263,7 @@ class HarnessTests(unittest.TestCase):
         binary = path / "bin" / "ghostless"
         binary.parent.mkdir()
         binary.write_text(
-            "#!/bin/sh\n"
-            f"echo suite-id={marker}\n"
-            "echo \"stable=${GHOSTLESS_STABLE_LAUNCHER:-}\"\n",
+            f'#!/bin/sh\necho suite-id={marker}\necho "stable=${{GHOSTLESS_STABLE_LAUNCHER:-}}"\n',
             encoding="utf-8",
         )
         binary.chmod(0o755)
@@ -277,7 +303,10 @@ class HarnessTests(unittest.TestCase):
             env = self._env(home)
             ran = subprocess.run(
                 [str(launcher), "ignored"],
-                check=False, capture_output=True, text=True, env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
             )
             self.assertEqual(ran.returncode, 0, ran.stderr)
             self.assertIn("suite-id=old", ran.stdout)
@@ -287,7 +316,10 @@ class HarnessTests(unittest.TestCase):
             doctor_env["PYTHONPATH"] = str(ROOT / "lib")
             doctor = subprocess.run(
                 [sys.executable, "-m", "ghostless", "doctor"],
-                check=False, capture_output=True, text=True, env=doctor_env,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=doctor_env,
             )
             self.assertEqual(doctor.returncode, 0, doctor.stderr + doctor.stdout)
             self.assertIn("Install: version-scoped", doctor.stdout)
@@ -298,7 +330,10 @@ class HarnessTests(unittest.TestCase):
             shutil.rmtree(old)
             gone = subprocess.run(
                 [str(launcher), "doctor"],
-                check=False, capture_output=True, text=True, env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
             )
             self.assertEqual(gone.returncode, 1)
             self.assertIn(str(old.resolve()), gone.stderr)
@@ -308,7 +343,10 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(reinstalled.returncode, 0, reinstalled.stdout + reinstalled.stderr)
             moved = subprocess.run(
                 [str(launcher), "ignored"],
-                check=False, capture_output=True, text=True, env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
             )
             self.assertEqual(moved.returncode, 0, moved.stderr)
             self.assertIn("suite-id=new", moved.stdout)

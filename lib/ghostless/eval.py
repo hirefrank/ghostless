@@ -97,9 +97,7 @@ def load_edit_pairs(root: Path) -> tuple[list[EditPair], list[str]]:
             after_path = pair_file_path(meta, meta_path, "afterFile", "after.md", base=pair_dir)
         except ProjectError as exc:
             if "escapes" in str(exc) or "not a valid path" in str(exc):
-                notes.append(
-                    f"Skipped {meta_path.parent.name}: before/after file escapes pair directory."
-                )
+                notes.append(f"Skipped {meta_path.parent.name}: before/after file escapes pair directory.")
             else:
                 notes.append(f"Skipped {meta_path.parent.name}: {exc}")
             continue
@@ -143,7 +141,7 @@ def split_items(items: Sequence[_T], holdout: int | None, seed: int) -> tuple[li
         return [], []
     count = holdout if holdout is not None else max(1, round(len(items) * DEFAULT_HOLDOUT_SHARE))
     count = max(1, min(int(count), len(items)))
-    rng = random.Random(seed)
+    rng = random.Random(seed)  # noqa: S311  # holdout shuffle, not a secret
     picked = set(rng.sample(range(len(items)), count))
     train = [item for index, item in enumerate(items) if index not in picked]
     held = [item for index, item in enumerate(items) if index in picked]
@@ -224,9 +222,7 @@ def evaluate(
         raise ProjectError("Pass either --cv or --holdout, not both.")
     manifest = load_manifest(root)
     pieces = discover(root, manifest)
-    weights_map: dict[str, float] = {
-        str(key): float(value) for key, value in manifest["weights"].items()
-    }
+    weights_map: dict[str, float] = {str(key): float(value) for key, value in manifest["weights"].items()}
     minimum = manifest["goldVoiceMinimum"]
     fail_under = manifest["failUnder"]
     overrides: Mapping[str, object] = manifest["overrides"]
@@ -246,9 +242,7 @@ def evaluate(
     pairs, notes = load_edit_pairs(root)
     notes = [*holdout_notes, *notes]
     if cv is True and not pairs:
-        raise ProjectError(
-            "--cv needs learned edit pairs. Without them, eval holds out gold prose pieces."
-        )
+        raise ProjectError("--cv needs learned edit pairs. Without them, eval holds out gold prose pieces.")
     if pairs:
         use_cv = cv if cv is not None else (holdout is None and 3 <= len(pairs) <= 30)
         if use_cv:
@@ -280,15 +274,12 @@ def evaluate(
             _, held_pairs = split_items(pairs, holdout, seed)
         report["holdouts"] = holdout_eval
         held_payload: list[dict[str, object]] = [
-            {"slug": pair.slug, "section": pair.section, "before": pair.before}
-            for pair in held_pairs
+            {"slug": pair.slug, "section": pair.section, "before": pair.before} for pair in held_pairs
         ]
         report["confirmedChecks"] = grade_confirmed(root, held_payload, seed=seed)
         return report
 
-    gold_prose_count = sum(
-        1 for piece in pieces if piece.tier == "gold" and piece.kind == "prose"
-    )
+    gold_prose_count = sum(1 for piece in pieces if piece.tier == "gold" and piece.kind == "prose")
     if holdout_eval is not None and gold_prose_count < 2:
         return {
             "ok": True,
@@ -305,9 +296,7 @@ def evaluate(
             "verdict": "Evaluated files in holdouts/ against the corpus targets (no edit pairs yet).",
             "items": holdout_eval["items"],
             "holdouts": holdout_eval,
-            "confirmedChecks": empty_confirmed_checks(
-                "No edit pairs, so there are no confirmed checks to grade."
-            ),
+            "confirmedChecks": empty_confirmed_checks("No edit pairs, so there are no confirmed checks to grade."),
             "notes": notes,
         }
 
@@ -324,9 +313,7 @@ def evaluate(
     )
     report["cv"] = False
     report["holdouts"] = holdout_eval
-    report["confirmedChecks"] = empty_confirmed_checks(
-        "No edit pairs, so there are no confirmed checks to grade."
-    )
+    report["confirmedChecks"] = empty_confirmed_checks("No edit pairs, so there are no confirmed checks to grade.")
     return report
 
 
@@ -390,9 +377,7 @@ def _evaluate_edits(
     stats = compile_stats(train_pieces, weights=weights, gold_voice_minimum=minimum)
     confidence = corpus_confidence(stats)
     if confidence["level"] == "low":
-        notes.append(
-            "The train sample is small, so treat the correlation as a direction, not a verdict."
-        )
+        notes.append("The train sample is small, so treat the correlation as a direction, not a verdict.")
     items = [
         _judge_edit_pair(
             pair,
@@ -465,9 +450,7 @@ def _evaluate_edits_cv(
         key=lambda fold: (len(fold[0]), fold[1]["words"]),
     )
     if smallest_confidence["level"] == "low":
-        notes.append(
-            "The train sample is small, so treat the correlation as a direction, not a verdict."
-        )
+        notes.append("The train sample is small, so treat the correlation as a direction, not a verdict.")
     return _finalize_edits_report(
         pairs=pairs,
         train_pieces=smallest_train,
@@ -537,11 +520,7 @@ def _finalize_edits_report(
     notes: list[str],
     cv: bool,
 ) -> dict[str, object]:
-    scored = [
-        item
-        for item in items
-        if isinstance(item.get("score"), int) and not isinstance(item.get("score"), bool)
-    ]
+    scored = [item for item in items if isinstance(item.get("score"), int) and not isinstance(item.get("score"), bool)]
     n = len(scored)
     pairs_for_stats: list[tuple[float, float]] = []
     for item in scored:
@@ -561,8 +540,7 @@ def _finalize_edits_report(
         notes.append(f"{len(items) - n} held-out pair(s) could not be scored.")
     if n < MIN_CORRELATION_POINTS:
         notes.append(
-            f"Only {n} held-out pair(s) produced a score. Three or more are needed "
-            "to say anything about correlation."
+            f"Only {n} held-out pair(s) produced a score. Three or more are needed to say anything about correlation."
         )
 
     accepted = [item for item in scored if item.get("accepted")]
@@ -608,8 +586,7 @@ def _evaluate_prose(
     if len(gold) < 2:
         return _failure(
             "prose",
-            "Need at least two gold prose pieces to hold one out. "
-            "Add writing to corpus/gold or learn an edit pair.",
+            "Need at least two gold prose pieces to hold one out. Add writing to corpus/gold or learn an edit pair.",
             notes,
             seed,
         )
@@ -619,8 +596,7 @@ def _evaluate_prose(
     if not train_pieces:
         return _failure(
             "prose",
-            "Holding out every gold piece left no corpus to build targets from. "
-            "Hold out fewer pieces.",
+            "Holding out every gold piece left no corpus to build targets from. Hold out fewer pieces.",
             notes,
             seed,
         )
@@ -760,9 +736,7 @@ def _holdout_block(items: list[dict[str, object]]) -> dict[str, object]:
     passed = sum(
         1
         for item in items
-        if isinstance(item.get("score"), int)
-        and not isinstance(item.get("score"), bool)
-        and item.get("ok")
+        if isinstance(item.get("score"), int) and not isinstance(item.get("score"), bool) and item.get("ok")
     )
     return {
         "pieces": len(items),
@@ -856,10 +830,7 @@ def _verdict(n: int, direction: str, value: float | None) -> str:
     if direction == "negative":
         return f"Higher scores came with lighter edits (r={value:.2f}, n={n})."
     if direction == "positive":
-        return (
-            f"Higher scores came with heavier edits, so the score points the wrong way "
-            f"(r={value:.2f}, n={n})."
-        )
+        return f"Higher scores came with heavier edits, so the score points the wrong way (r={value:.2f}, n={n})."
     if direction == "none":
         return f"Scores and edit rates moved independently (r={value:.2f}, n={n})."
     return "There is not enough variation to judge the score."
@@ -987,9 +958,7 @@ def _format_checks(report: dict[str, object]) -> list[str]:
         if failing:
             lines.append("  failing:")
             for item in failing[:8]:
-                lines.append(
-                    f"    {item.get('slug')} {item.get('case')}: {item.get('text')}"
-                )
+                lines.append(f"    {item.get('slug')} {item.get('case')}: {item.get('text')}")
             if len(failing) > 8:
                 lines.append(f"    ... {len(failing) - 8} more")
     return lines

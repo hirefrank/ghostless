@@ -37,7 +37,7 @@ BOTH_DIRECTIONS = (
 
 # Metrics a manifest `overrides` entry may pin: the two-direction metrics
 # plus em dashes, which has its own comparison.
-OVERRIDABLE_METRICS = BOTH_DIRECTIONS + ("emDashesPer1k",)
+OVERRIDABLE_METRICS = (*BOTH_DIRECTIONS, "emDashesPer1k")
 
 METRIC_LABELS: dict[str, str] = {
     "medianSentenceLength": "median sentence length",

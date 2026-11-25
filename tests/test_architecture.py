@@ -94,9 +94,8 @@ class ArchitectureTests(unittest.TestCase):
                     ignores.append(f"{path.name}:{lineno}")
             tree = ast.parse(source, filename=str(path))
             for node in tree.body:
-                if isinstance(node, ast.FunctionDef):
-                    if node.name in forbidden or node.name in tracked:
-                        defs.setdefault(node.name, []).append(path.name)
+                if isinstance(node, ast.FunctionDef) and (node.name in forbidden or node.name in tracked):
+                    defs.setdefault(node.name, []).append(path.name)
 
         self.assertEqual(ignores, [])
         for name in forbidden:
@@ -156,9 +155,7 @@ class SharedIoTests(unittest.TestCase):
                 "Edited line without newline",
             )
             self.assertEqual(matched, project / "gold" / str(result["slug"]))
-            self.assertIsNone(
-                find_existing_learn_pair(project, "Different draft", "Edited line without newline")
-            )
+            self.assertIsNone(find_existing_learn_pair(project, "Different draft", "Edited line without newline"))
 
 
 if __name__ == "__main__":

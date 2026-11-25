@@ -50,11 +50,7 @@ class LearnTests(unittest.TestCase):
         self.assertEqual(diff["wordsBefore"], diff["wordsAfter"])
         self.assertEqual(diff["tokenEdits"], 0)
         self.assertEqual(diff["editRate"], 0.0)
-        marks = {
-            item["mark"]: item
-            for item in diff["structuralChanges"]
-            if item["kind"] == "punctuation"
-        }
+        marks = {item["mark"]: item for item in diff["structuralChanges"] if item["kind"] == "punctuation"}
         self.assertEqual(marks["."]["before"], 0)
         self.assertEqual(marks["."]["after"], 1)
         self.assertEqual(diff["structuralChangeCount"], 1)
@@ -94,9 +90,7 @@ class LearnTests(unittest.TestCase):
         self.assertEqual(diff["paragraphsAfter"], 2)
         self.assertGreater(diff["movedTokens"], 0)
         self.assertGreater(diff["editRate"], 0.0)
-        moves = [
-            item for item in diff["structuralChanges"] if item.get("kind") == "paragraph"
-        ]
+        moves = [item for item in diff["structuralChanges"] if item.get("kind") == "paragraph"]
         self.assertEqual(len(moves), 1)
         self.assertEqual({moves[0]["from"], moves[0]["to"]}, {0, 1})
 
@@ -116,9 +110,7 @@ class LearnTests(unittest.TestCase):
                 origin="ai-first",
                 date="2026-01-03",
             )
-            meta = json.loads(
-                (project / "gold" / str(result["slug"]) / "meta.json").read_text(encoding="utf-8")
-            )
+            meta = json.loads((project / "gold" / str(result["slug"]) / "meta.json").read_text(encoding="utf-8"))
             self.assertEqual(meta["tokenEdits"], 0)
             self.assertEqual(meta["editRate"], 0.0)
             self.assertEqual(meta["structuralChanges"][0]["kind"], "punctuation")
@@ -132,8 +124,16 @@ class LearnTests(unittest.TestCase):
         diff = diff_texts(before, after)
         removed = {item["word"]: item["count"] for item in diff["removedWords"]}
         self.assertGreaterEqual(removed.get("delve", 0), 2)
-        self.assertLess(diff["medianSentenceLengthAfter"], diff["medianSentenceLengthBefore"])
-        self.assertGreater(diff["contractionsPer1kAfter"], diff["contractionsPer1kBefore"])
+        after_length = diff["medianSentenceLengthAfter"]
+        before_length = diff["medianSentenceLengthBefore"]
+        after_contractions = diff["contractionsPer1kAfter"]
+        before_contractions = diff["contractionsPer1kBefore"]
+        assert isinstance(after_length, int | float) and not isinstance(after_length, bool)
+        assert isinstance(before_length, int | float) and not isinstance(before_length, bool)
+        assert isinstance(after_contractions, int | float) and not isinstance(after_contractions, bool)
+        assert isinstance(before_contractions, int | float) and not isinstance(before_contractions, bool)
+        self.assertLess(after_length, before_length)
+        self.assertGreater(after_contractions, before_contractions)
 
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "voice"
@@ -150,7 +150,9 @@ class LearnTests(unittest.TestCase):
                 origin="ai-first",
                 date="2026-01-02",
             )
-            stored = project / "gold" / first["slug"]
+            slug = first["slug"]
+            assert isinstance(slug, str)
+            stored = project / "gold" / slug
             self.assertTrue((stored / "before.md").is_file())
             self.assertTrue((stored / "after.md").is_file())
             meta = json.loads((stored / "meta.json").read_text(encoding="utf-8"))

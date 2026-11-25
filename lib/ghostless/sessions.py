@@ -53,8 +53,7 @@ def _session_dir(root: Path, session: str | None) -> Path:
     )
     if len(active) != 1:
         raise ProjectError(
-            f"Found {len(active)} unfinished sessions. Pass --session with an ID "
-            "from `ghostless sessions`."
+            f"Found {len(active)} unfinished sessions. Pass --session with an ID from `ghostless sessions`."
         )
     return active[0]
 

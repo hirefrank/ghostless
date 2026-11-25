@@ -259,7 +259,8 @@ def launch_editor(
             command.extend(["--link-draft", str(link_draft)])
     else:
         raise ProjectError("Open the editor with a draft or a session id.")
-    completed = subprocess.run(_spawn_command(binary, command), check=False)
+    # binary was confirmed to be a file; argv is a list, not a shell string.
+    completed = subprocess.run(_spawn_command(binary, command), check=False)  # noqa: S603
     return int(completed.returncode or 0)
 
 

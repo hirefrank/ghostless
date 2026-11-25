@@ -129,7 +129,8 @@ def run_once(
 
 
 def fetch_latest_release(timeout: float = 3.0) -> tuple[bool, str | None]:
-    request = urllib.request.Request(
+    # RELEASE_URL is a fixed https GitHub API endpoint. No other scheme is used.
+    request = urllib.request.Request(  # noqa: S310
         RELEASE_URL,
         headers={
             "Accept": "application/vnd.github+json",
@@ -137,7 +138,7 @@ def fetch_latest_release(timeout: float = 3.0) -> tuple[bool, str | None]:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code == 404:

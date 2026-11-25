@@ -30,8 +30,10 @@ class NativeHarnessTests(unittest.TestCase):
             env = {"GHOSTLESS_SKILLS_DIR": str(skills), "GHOSTLESS_HOME": str(data)}
             with patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(main(["install-skills", "--copy", "--no-launcher"]), 0)
-                self.assertEqual((skills / "ghostless-draft" / ".ghostless-installed").read_text().strip(),
-                                 "ghostless:ghostless-draft")
+                self.assertEqual(
+                    (skills / "ghostless-draft" / ".ghostless-installed").read_text().strip(),
+                    "ghostless:ghostless-draft",
+                )
                 self.assertTrue((skills / "ghostless-edit" / "SKILL.md").is_file())
                 self.assertEqual(json.loads((data / "config.json").read_text())["updateCheck"], True)
                 self.assertEqual(main(["reset", "--yes"]), 0)
@@ -61,7 +63,11 @@ class NativeHarnessTests(unittest.TestCase):
         env["GHOSTLESS_NO_UPDATE"] = "1"
         completed = subprocess.run(
             ["node", str(ROOT / "bin" / "ghostless.cjs"), "--version"],
-            cwd=ROOT, env=env, check=False, capture_output=True, text=True,
+            cwd=ROOT,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("ghostless 0.1.0", completed.stdout)
@@ -78,12 +84,24 @@ class NativeHarnessTests(unittest.TestCase):
             before.write_text("I write.\n", encoding="utf-8")
             after.write_text("I wrote this.\n", encoding="utf-8")
             env = os.environ.copy()
-            env.update({"GHOSTLESS_PYTHON": sys.executable, "GHOSTLESS_NO_UPDATE": "1",
-                        "PYTHONIOENCODING": "ascii"})
+            env.update({"GHOSTLESS_PYTHON": sys.executable, "GHOSTLESS_NO_UPDATE": "1", "PYTHONIOENCODING": "ascii"})
             completed = subprocess.run(
-                ["node", str(ROOT / "bin" / "ghostless.cjs"), "learn", "--before", str(before),
-                 "--after", str(after), "--project", str(project)],
-                cwd=base, env=env, check=False, capture_output=True, text=True,
+                [
+                    "node",
+                    str(ROOT / "bin" / "ghostless.cjs"),
+                    "learn",
+                    "--before",
+                    str(before),
+                    "--after",
+                    str(after),
+                    "--project",
+                    str(project),
+                ],
+                cwd=base,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
 
@@ -129,6 +147,7 @@ class PathWarningTests(unittest.TestCase):
                 self.assertEqual(npm_global_bin_dir(), expected)
                 warning = npm_bin_path_warning()
                 self.assertIsNotNone(warning)
+                assert warning is not None
                 self.assertIn(str(expected), warning)
                 if os.name != "nt":
                     self.assertIn('export PATH="', warning)
@@ -141,10 +160,9 @@ class PathWarningTests(unittest.TestCase):
     def test_no_npm_means_no_warning(self) -> None:
         from ghostless.harness import npm_global_bin_dir
 
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"PATH": tmp}):
-                os.environ.pop("NPM_CONFIG_PREFIX", None)
-                self.assertIsNone(npm_global_bin_dir())
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"PATH": tmp}):
+            os.environ.pop("NPM_CONFIG_PREFIX", None)
+            self.assertIsNone(npm_global_bin_dir())
 
     def test_windows_npm_shim_runs_through_cmd(self) -> None:
         # Regression: launching npm.cmd directly fails on Windows
@@ -643,8 +661,14 @@ class SkillOwnershipTests(unittest.TestCase):
 
             for delete_legacy in (False, True):
                 legacy_suite = self._make_suite(
-                    base / "nvm" / "versions" / "node" / f"v24.22.2-{int(delete_legacy)}"
-                    / "lib" / "node_modules" / "ghostless"
+                    base
+                    / "nvm"
+                    / "versions"
+                    / "node"
+                    / f"v24.22.2-{int(delete_legacy)}"
+                    / "lib"
+                    / "node_modules"
+                    / "ghostless"
                 )
                 for skill in harness.SKILLS:
                     dest = skills_dir / skill
@@ -667,8 +691,7 @@ class SkillOwnershipTests(unittest.TestCase):
                 # Recreate the legacy pre-manifest state and verify reset --yes removes all 3.
                 if delete_legacy:
                     legacy_suite = self._make_suite(
-                        base / "nvm" / "versions" / "node" / "v24.22.2-reset"
-                        / "lib" / "node_modules" / "ghostless"
+                        base / "nvm" / "versions" / "node" / "v24.22.2-reset" / "lib" / "node_modules" / "ghostless"
                     )
                 for skill in harness.SKILLS:
                     (skills_dir / skill).unlink()

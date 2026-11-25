@@ -341,9 +341,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
     if args.command not in {"update", "bridge"}:
-        _maybe_check_for_update(
-            Path(args.project) if getattr(args, "project", None) else None
-        )
+        _maybe_check_for_update(Path(args.project) if getattr(args, "project", None) else None)
     try:
         return _dispatch(args)
     except ProjectError as exc:
@@ -558,8 +556,10 @@ def _cmd_learn(args: argparse.Namespace) -> int:
     print(f"gold/{result['slug']}")
     print(f"  origin {meta.get('origin')}  section {meta.get('section') or 'unsectioned'}")
     if result.get("model") or result.get("tool"):
-        print(f"  model/tool {result.get('model') or 'unnamed model'}"
-              f"{' via ' + str(result.get('tool')) if result.get('tool') else ''}")
+        print(
+            f"  model/tool {result.get('model') or 'unnamed model'}"
+            f"{' via ' + str(result.get('tool')) if result.get('tool') else ''}"
+        )
     print(
         f"  words {meta.get('wordsBefore')} → {meta.get('wordsAfter')} "
         f"(removed {meta.get('wordsRemoved')}, added {meta.get('wordsAdded')})"
@@ -570,14 +570,8 @@ def _cmd_learn(args: argparse.Namespace) -> int:
         f"{meta.get('movedTokens')} moved tokens, "
         f"{meta.get('structuralChangeCount')} structural changes"
     )
-    print(
-        f"  sentence length {meta.get('medianSentenceLengthBefore')} → "
-        f"{meta.get('medianSentenceLengthAfter')}"
-    )
-    print(
-        f"  contractions per 1k {meta.get('contractionsPer1kBefore')} → "
-        f"{meta.get('contractionsPer1kAfter')}"
-    )
+    print(f"  sentence length {meta.get('medianSentenceLengthBefore')} → {meta.get('medianSentenceLengthAfter')}")
+    print(f"  contractions per 1k {meta.get('contractionsPer1kBefore')} → {meta.get('contractionsPer1kAfter')}")
     print(f"  measured as {result.get('tier')} ({_placement_note(str(result.get('tier')))})")
     warning = result.get("warning")
     if isinstance(warning, str):
@@ -587,10 +581,7 @@ def _cmd_learn(args: argparse.Namespace) -> int:
     if result.get("tier") == "gold":
         print("  after.md is gold. Run ghostless build to fold it into the guide.")
     else:
-        print(
-            "  after.md is edited, not gold: it shapes paragraph length only and never the "
-            "ban list or rhythm."
-        )
+        print("  after.md is edited, not gold: it shapes paragraph length only and never the ban list or rhythm.")
         print(f"  To count it as gold later: ghostless promote {result.get('slug')}")
     return 0
 
@@ -608,10 +599,7 @@ def _cmd_promote(args: argparse.Namespace) -> int:
         print(f"  {result.get('previous')} → {tier}")
     else:
         print(f"  unchanged: already {tier}")
-    print(
-        f"  origin {result.get('origin') or 'unspecified'}, confirmation "
-        f"{result.get('confirmation')}"
-    )
+    print(f"  origin {result.get('origin') or 'unspecified'}, confirmation {result.get('confirmation')}")
     warning = result.get("warning")
     if isinstance(warning, str):
         print(f"  warning: {warning}")
@@ -622,10 +610,7 @@ def _cmd_promote(args: argparse.Namespace) -> int:
     if tier == "gold":
         print("  This final now counts at gold weight and toward goldVoiceMinimum.")
     else:
-        print(
-            "  This final is back in the edited tier. Its edit receipt and vocabulary "
-            "evidence stay in place."
-        )
+        print("  This final is back in the edited tier. Its edit receipt and vocabulary evidence stay in place.")
     print("Run ghostless build to fold the change into the guide.")
     return 0
 
@@ -700,9 +685,7 @@ def _cmd_sessions(args: argparse.Namespace) -> int:
     if args.open:
         match = next((item for item in found if str(item.get("id")) == args.open), None)
         if match is None:
-            raise ProjectError(
-                f"No edit session {args.open}. Run `ghostless sessions` to list them."
-            )
+            raise ProjectError(f"No edit session {args.open}. Run `ghostless sessions` to list them.")
         if args.json:
             print(json.dumps(match, indent=2, ensure_ascii=False))
         else:
@@ -830,9 +813,7 @@ def _cmd_rules(args: argparse.Namespace) -> int:
             print(_format_rules(summary))
         return 0
     if not args.rule_id:
-        raise ProjectError(
-            f"`ghostless rules {action}` needs a rule id, for example cut:delve."
-        )
+        raise ProjectError(f"`ghostless rules {action}` needs a rule id, for example cut:delve.")
     if action != "confirm" and args.make_global:
         raise ProjectError("--global only applies to confirm.")
     if action in ("reject", "retire") and args.section:
@@ -1020,7 +1001,7 @@ def _format_rules(summary: Mapping[str, object]) -> str:
                     continue
                 before = str(example.get("before_snippet") or "").strip()
                 after = str(example.get("after_snippet") or "").strip()
-                lines.append(f"    {example.get('slug')}: \"{before}\" -> \"{after}\"")
+                lines.append(f'    {example.get("slug")}: "{before}" -> "{after}"')
                 if example.get("receipt"):
                     lines.append(f"      receipt: {example.get('receipt')}")
         counterexamples = item.get("counterexamples")
@@ -1028,7 +1009,7 @@ def _format_rules(summary: Mapping[str, object]) -> str:
             lines.append(f"    counterexamples: {len(counterexamples)}")
             for example in counterexamples[:2]:
                 if isinstance(example, dict):
-                    lines.append(f"      {example.get('slug')}: \"{example.get('snippet')}\"")
+                    lines.append(f'      {example.get("slug")}: "{example.get("snippet")}"')
     lines.append("")
 
     for key in ("rejected", "retired"):
@@ -1044,10 +1025,7 @@ def _format_rules(summary: Mapping[str, object]) -> str:
         lines.append("")
 
     if not confirmed and not hypotheses:
-        lines.append(
-            "No candidates yet. A word has to recur in enough distinct finished edits "
-            "before it appears here."
-        )
+        lines.append("No candidates yet. A word has to recur in enough distinct finished edits before it appears here.")
         lines.append("")
     else:
         lines.append("Decide one with: ghostless rules confirm|reject <id> [--section NAME]")
@@ -1086,9 +1064,7 @@ def _cmd_which(args: argparse.Namespace) -> int:
     print(f"data={data_home()}")
     print(f"version={version()}")
     try:
-        project, source = (
-            find_project_with_source(Path(args.project)) if args.project else find_project_with_source()
-        )
+        project, source = find_project_with_source(Path(args.project)) if args.project else find_project_with_source()
     except ProjectError:
         print("project=none")
         return 0
@@ -1148,10 +1124,7 @@ def _format_build(root: Path, stats: CompiledStats) -> str:
             f"spoken {spoken_total}"
         ),
         f"bronze format-only: {'yes' if stats['bronzeFormatOnly'] else 'no'}",
-        (
-            "gold prose pieces: "
-            f"{stats['goldPieces']} of {stats['goldVoiceMinimum']} to drop bronze from voice"
-        ),
+        (f"gold prose pieces: {stats['goldPieces']} of {stats['goldVoiceMinimum']} to drop bronze from voice"),
         (
             "median sentence: "
             f"{weighted['medianSentenceLength']} words "

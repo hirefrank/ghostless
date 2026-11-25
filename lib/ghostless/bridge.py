@@ -53,7 +53,9 @@ def _resolve_project(params: dict[str, object]) -> dict[str, object]:
     candidates: list[Path | None] = [None]
     if workspace is not None:
         workspace = workspace.resolve()
-        candidates = [candidate for ancestor in (workspace, *workspace.parents) for candidate in (ancestor, ancestor / "voice")]
+        candidates = [
+            candidate for ancestor in (workspace, *workspace.parents) for candidate in (ancestor, ancestor / "voice")
+        ]
     for candidate in candidates:
         try:
             root, source = find_project_with_source(candidate)
@@ -73,14 +75,16 @@ def _confirmed_checks(root: Path, text: str, section: str | None) -> list[dict[s
         polarity = check.get("polarity")
         if not isinstance(span, str) or not isinstance(polarity, str):
             raise ProjectError(f"Confirmed check {check['id']} needs a span and polarity.")
-        results.append({
-            "id": check["id"],
-            "text": check.get("text"),
-            "span": span,
-            "polarity": polarity,
-            "section": scope,
-            "pass": checks.passes_check(text, polarity, span),
-        })
+        results.append(
+            {
+                "id": check["id"],
+                "text": check.get("text"),
+                "span": span,
+                "polarity": polarity,
+                "section": scope,
+                "pass": checks.passes_check(text, polarity, span),
+            }
+        )
     return results
 
 
@@ -220,7 +224,9 @@ class _Worker:
                 return _decide_check(root(), params)
             case "save_note":
                 saved = project.save_note(
-                    root(), kind=_required_text(params, "kind"), text=_required_text(params, "text"),
+                    root(),
+                    kind=_required_text(params, "kind"),
+                    text=_required_text(params, "text"),
                 )
                 return {**saved, "path": str(saved["path"])}
             case "promote":
@@ -249,8 +255,12 @@ class _Worker:
         stats = cached[1]
         manifest = project.load_manifest(root)
         report = judge.judge_text(
-            text, stats, section=section,
-            fail_under=manifest["failUnder"], overrides=manifest["overrides"], placeholder=manifest["placeholder"],
+            text,
+            stats,
+            section=section,
+            fail_under=manifest["failUnder"],
+            overrides=manifest["overrides"],
+            placeholder=manifest["placeholder"],
         )
         stale = build.stale_inputs(root)
         sections = stats.get("sections")

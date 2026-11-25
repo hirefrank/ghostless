@@ -10,6 +10,7 @@ import re
 import sys
 import unittest
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +21,7 @@ sys.path.insert(0, str(ROOT / "lib"))
 from ghostless import cli  # noqa: E402
 from ghostless.guide import render_guide, render_paste  # noqa: E402
 from ghostless.project import discover, load_manifest  # noqa: E402
+from ghostless.schema import CompiledStats  # noqa: E402
 from ghostless.stats import DEFAULT_WEIGHTS, compile_stats  # noqa: E402
 
 
@@ -38,15 +40,17 @@ def _cli_top_level_commands() -> set[str]:
     orig_add_subparsers = argparse.ArgumentParser.add_subparsers
 
     def capture_subparsers(
-        self: argparse.ArgumentParser, *args: object, **kwargs: object
+        self: argparse.ArgumentParser, *args: Any, **kwargs: Any
     ) -> argparse._SubParsersAction[argparse.ArgumentParser]:
         action = orig_add_subparsers(self, *args, **kwargs)
         recorded.append(action)
         return action
 
-    with patch.object(argparse.ArgumentParser, "add_subparsers", capture_subparsers):
-        with contextlib.redirect_stdout(io.StringIO()):
-            rc = cli.main([])
+    with (
+        patch.object(argparse.ArgumentParser, "add_subparsers", capture_subparsers),
+        contextlib.redirect_stdout(io.StringIO()),
+    ):
+        rc = cli.main([])
     if rc != 0:
         raise AssertionError(f"ghostless.cli.main([]) returned {rc}")
     if len(recorded) != 1:
@@ -93,9 +97,10 @@ class DocsSyncTests(unittest.TestCase):
             self.assertIn("paragraph length only, capped at 25%", weights_section)
 
         minimal = compile_stats([], weights=dict(DEFAULT_WEIGHTS), gold_voice_minimum=10)
-        minimal.pop("edited", None)
+        without_edited = dict(minimal)
+        without_edited.pop("edited", None)
         minimal_weights = (
-            render_guide(minimal).split("## Weights\n", 1)[1].split("\n## ", 1)[0]
+            render_guide(cast(CompiledStats, without_edited)).split("## Weights\n", 1)[1].split("\n## ", 1)[0]
         )
         self.assertIn("edited 0.5 (paragraph length only)", minimal_weights)
 

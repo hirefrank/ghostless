@@ -160,9 +160,7 @@ class ConfirmedRulesJudgeTests(unittest.TestCase):
         self._learn_three_cuts("actually")
         self._learn_three_adds("honestly")
 
-        draft_with_both = (
-            self._closer_text() + "\n\nI actually keep it short. I honestly keep it plain."
-        )
+        draft_with_both = self._closer_text() + "\n\nI actually keep it short. I honestly keep it plain."
         draft_without_add = self._closer_text() + "\n\nI actually keep it short."
 
         # Baseline with no rules confirmed (both are hypotheses).

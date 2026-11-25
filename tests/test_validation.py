@@ -303,9 +303,7 @@ class PathContainmentTests(unittest.TestCase):
 
         escaped_dir = self.base / "outside-pair"
         escaped_dir.mkdir()
-        (escaped_dir / "meta.json").write_text(
-            json.dumps({"origin": "ai-first"}) + "\n", encoding="utf-8"
-        )
+        (escaped_dir / "meta.json").write_text(json.dumps({"origin": "ai-first"}) + "\n", encoding="utf-8")
         (self.project / "gold" / "link-pair").symlink_to(escaped_dir)
         with self.assertRaisesRegex(ProjectError, "escapes"):
             promote_final(self.project, "link-pair")
@@ -319,9 +317,7 @@ class PathContainmentTests(unittest.TestCase):
         escaped_dir.mkdir()
         (escaped_dir / "before.md").write_text("Before.\n", encoding="utf-8")
         (escaped_dir / "after.md").write_text("After.\n", encoding="utf-8")
-        (escaped_dir / "meta.json").write_text(
-            json.dumps({"origin": "ai-first"}) + "\n", encoding="utf-8"
-        )
+        (escaped_dir / "meta.json").write_text(json.dumps({"origin": "ai-first"}) + "\n", encoding="utf-8")
         (self.project / "gold" / "2026-01-04-link").symlink_to(escaped_dir)
 
         pairs, notes = load_edit_pairs(self.project)
@@ -342,8 +338,13 @@ class PathContainmentTests(unittest.TestCase):
         report = evaluate(self.project, holdout=1, seed=0)
         self.assertTrue(report["ok"])
         self.assertEqual(report["totalCount"], 1)
+        notes = report["notes"]
+        assert isinstance(notes, list)
         self.assertTrue(
-            any("2026-01-02-escape-before" in note and "escapes pair directory" in note for note in report["notes"])
+            any(
+                isinstance(note, str) and "2026-01-02-escape-before" in note and "escapes pair directory" in note
+                for note in notes
+            )
         )
 
 

@@ -15,12 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def run(args: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> str:
-    completed = subprocess.run(args, cwd=cwd, env=env, check=False, text=True,
-                               capture_output=True)
+    completed = subprocess.run(args, cwd=cwd, env=env, check=False, text=True, capture_output=True)
     if completed.returncode:
-        raise RuntimeError(
-            f"{args!r} exited {completed.returncode}\n{completed.stdout}\n{completed.stderr}"
-        )
+        raise RuntimeError(f"{args!r} exited {completed.returncode}\n{completed.stdout}\n{completed.stderr}")
     return completed.stdout
 
 
@@ -49,7 +46,7 @@ def main() -> int:
         forbidden = sorted(
             path
             for path in files
-            if path.startswith("tests/")
+            if path.startswith(("tests/", "scripts/", ".github/"))
             or ".egg-info" in path
             or "__pycache__" in path
             or ".ruff_cache" in path
@@ -61,7 +58,11 @@ def main() -> int:
         archive = base / pack[0]["filename"]
         with tarfile.open(archive, "r:gz") as tar:
             for member in tar.getmembers():
-                if not member.isfile() or not member.name.startswith("package/docs/") or not member.name.endswith(".md"):
+                if (
+                    not member.isfile()
+                    or not member.name.startswith("package/docs/")
+                    or not member.name.endswith(".md")
+                ):
                     continue
                 extracted = tar.extractfile(member)
                 if extracted is None:
@@ -91,16 +92,20 @@ def main() -> int:
         home = base / "home"
         home.mkdir()
         env = os.environ.copy()
-        env.update({
-            "GHOSTLESS_PYTHON": sys.executable,
-            "GHOSTLESS_NO_UPDATE": "1",
-            "GHOSTLESS_HOME": str(home / ".ghostless"),
-            "GHOSTLESS_SKILLS_DIR": str(base / "skills"),
-            "HOME": str(home),
-            "USERPROFILE": str(home),
-        })
+        env.update(
+            {
+                "GHOSTLESS_PYTHON": sys.executable,
+                "GHOSTLESS_NO_UPDATE": "1",
+                "GHOSTLESS_HOME": str(home / ".ghostless"),
+                "GHOSTLESS_SKILLS_DIR": str(base / "skills"),
+                "HOME": str(home),
+                "USERPROFILE": str(home),
+            }
+        )
+
         def cli(*args: str) -> str:
             return run([str(executable), *args], cwd=base, env=env)
+
         assert "ghostless 0.1.0" in cli("--version")
         cli("install-skills")
         launcher_name = "ghostless.cmd" if os.name == "nt" else "ghostless"
@@ -125,22 +130,32 @@ def main() -> int:
         cli("learn", "--before", str(draft), "--after", str(final), "--project", str(project))
         cli("build", "--project", str(project))
         # A mechanical mismatch may return 1; inspect the report rather than its verdict.
-        judged = subprocess.run([str(executable), "judge", str(draft), "--project", str(project)],
-                                cwd=base, env=env, check=False, text=True, capture_output=True)
+        judged = subprocess.run(
+            [str(executable), "judge", str(draft), "--project", str(project)],
+            cwd=base,
+            env=env,
+            check=False,
+            text=True,
+            capture_output=True,
+        )
         if judged.returncode not in (0, 1) or "ghostless mechanical check" not in judged.stdout:
             raise RuntimeError(f"Installed judge failed: {judged.stdout}\n{judged.stderr}")
         # Edit sessions (from #8): start, snapshot, and finish through the
         # installed CLI, then learn once into gold/.
-        session = json.loads(cli("start", str(draft), "--project", str(project), "--json",
-                                 "--source", "https://example.org/reference"))
+        session = json.loads(
+            cli("start", str(draft), "--project", str(project), "--json", "--source", "https://example.org/reference")
+        )
         session_dir = project / session["path"]
         if (session_dir / "before.md").read_text(encoding="utf-8") != draft.read_text(encoding="utf-8"):
             raise RuntimeError("The session baseline differs from the draft")
         snap = subprocess.run(
             [str(executable), "snapshot", "--session", session["id"], "--project", str(project)],
-            cwd=base, env=env,
+            cwd=base,
+            env=env,
             input=json.dumps({"after": "A better line.\n", "notes": "Cut the filler."}),
-            text=True, capture_output=True, check=False,
+            text=True,
+            capture_output=True,
+            check=False,
         )
         if snap.returncode:
             raise RuntimeError(f"Installed snapshot failed: {snap.stdout}\n{snap.stderr}")

@@ -32,6 +32,8 @@ from ghostless.schema import ChecksState, ChecksSummary
 from ghostless.tells import AI_TELLS
 from ghostless.text import STOPWORDS, WORD_RE, normalize, strip_non_prose, word_tokens
 
+_Bucket = Literal["confirmed", "rejected"]
+
 MAX_CHECK_CHARS = 400
 MAX_SPAN_CHARS = 120
 MAX_SPAN_TOKENS = 12
@@ -102,10 +104,7 @@ def default_checks() -> ChecksState:
 
 
 def _records_dict(raw: dict[object, object]) -> dict[str, dict[str, object]]:
-    return {
-        str(key): dict(value) if isinstance(value, dict) else {}
-        for key, value in raw.items()
-    }
+    return {str(key): dict(value) if isinstance(value, dict) else {} for key, value in raw.items()}
 
 
 def load_checks(root: Path) -> ChecksState:
@@ -175,14 +174,11 @@ def prepare_checks(
         if not cleaned:
             raise ProjectError("A check cannot be empty.")
         if "\n" in cleaned or len(cleaned) > MAX_CHECK_CHARS:
-            raise ProjectError(
-                "A check is one sentence from the edit, not a draft and not a list."
-            )
+            raise ProjectError("A check is one sentence from the edit, not a draft and not a list.")
         overlap = mechanical_overlap(cleaned)
         if overlap:
             raise ProjectError(
-                f"This check restates {overlap!r}, which judge already scores. "
-                "Save a judgment those counts cannot see."
+                f"This check restates {overlap!r}, which judge already scores. Save a judgment those counts cannot see."
             )
         identifier = check_id(cleaned)
         if identifier in seen:
@@ -190,10 +186,7 @@ def prepare_checks(
         seen.add(identifier)
         rejected = _record(state, "rejected", identifier)
         if rejected is not None:
-            raise ProjectError(
-                f"{identifier} was rejected and stays rejected. "
-                "A later edit does not bring it back."
-            )
+            raise ProjectError(f"{identifier} was rejected and stays rejected. A later edit does not bring it back.")
         confirmed = _record(state, "confirmed", identifier)
         if confirmed is not None:
             prepared.append({**confirmed, "id": identifier, "status": "confirmed", "reused": True})
@@ -228,11 +221,7 @@ def stored_check(item: dict[str, object]) -> dict[str, object]:
 
 def new_pair_checks(prepared: list[dict[str, object]]) -> list[dict[str, object]]:
     """Checks this edit establishes. Reused and already-confirmed ones stay put."""
-    return [
-        stored_check(item)
-        for item in prepared
-        if item.get("status") == "pending" and not item.get("reused")
-    ]
+    return [stored_check(item) for item in prepared if item.get("status") == "pending" and not item.get("reused")]
 
 
 def write_pair_checks(root: Path, slug: str, texts: list[str]) -> list[dict[str, object]]:
@@ -315,9 +304,7 @@ def reject_check(root: Path, token: str) -> dict[str, object]:
     identifier = resolve_check_id(root, token)
     proposal = _proposal(root, state, identifier)
     if proposal is None:
-        raise ProjectError(
-            f"No check {token}. Save one from an edit before rejecting it."
-        )
+        raise ProjectError(f"No check {token}. Save one from an edit before rejecting it.")
     state["rejected"][identifier] = {
         "at": utc_now_iso(),
         "text": proposal["text"],
@@ -368,14 +355,9 @@ def checks_summary(root: Path) -> ChecksSummary:
         seen.add(identifier)
         pending.append(item)
     confirmed = [
-        {"id": identifier, **record}
-        for identifier, record in _items(state, "confirmed")
-        if identifier in confirmed_ids
+        {"id": identifier, **record} for identifier, record in _items(state, "confirmed") if identifier in confirmed_ids
     ]
-    rejected = [
-        {"id": identifier, "status": "rejected", **record}
-        for identifier, record in _items(state, "rejected")
-    ]
+    rejected = [{"id": identifier, "status": "rejected", **record} for identifier, record in _items(state, "rejected")]
     confirmed.sort(key=lambda item: str(item["id"]))
     pending.sort(key=lambda item: str(item["id"]))
     rejected.sort(key=lambda item: str(item["id"]))
@@ -411,9 +393,7 @@ def witness_for(text: str, before: str, after: str) -> dict[str, str]:
                 f"is about, in double quotes. Candidates: {preview}."
             )
     if not passes_check(after, polarity, span):
-        raise ProjectError(
-            "The after file would fail this check, so it cannot be the case that already passes."
-        )
+        raise ProjectError("The after file would fail this check, so it cannot be the case that already passes.")
     return {"span": span, "polarity": polarity}
 
 
@@ -479,8 +459,7 @@ def grade_confirmed(
         for item in held
     ]
     after_hashes = {
-        str(item["pair"]): _text_sha256(_read_after(root, str(item["pair"])))
-        for item in confirmed if item.get("pair")
+        str(item["pair"]): _text_sha256(_read_after(root, str(item["pair"]))) for item in confirmed if item.get("pair")
     }
     fingerprint = _fingerprint(skill_sha, guide_sha, seed, cases, after_hashes, confirmed)
     items, skipped, missing_afters = _grade_items(root, confirmed, held)
@@ -729,13 +708,9 @@ def _polarity_for_quote(span: str, before: str, after: str) -> str:
     if not _usable_span(span, quoted=True):
         if _judge_already_sees(span):
             raise ProjectError(
-                f"{span!r} is a tell judge already scores. "
-                "A check is for a judgment those counts cannot see."
+                f"{span!r} is a tell judge already scores. A check is for a judgment those counts cannot see."
             )
-        raise ProjectError(
-            f"{span!r} is not a span this check can grade. "
-            "Quote a short phrase the edit added or cut."
-        )
+        raise ProjectError(f"{span!r} is not a span this check can grade. Quote a short phrase the edit added or cut.")
     in_before = _contains(before, span)
     in_after = _contains(after, span)
     if in_before and not in_after:
@@ -743,12 +718,8 @@ def _polarity_for_quote(span: str, before: str, after: str) -> str:
     if in_after and not in_before:
         return "require"
     if in_before and in_after:
-        raise ProjectError(
-            f"{span!r} is in both the before and the after, so the edit did not decide it."
-        )
-    raise ProjectError(
-        f"{span!r} is not in this edit. Quote a span from the before or the after."
-    )
+        raise ProjectError(f"{span!r} is in both the before and the after, so the edit did not decide it.")
+    raise ProjectError(f"{span!r} is not in this edit. Quote a span from the before or the after.")
 
 
 def _candidate_spans(before: str, after: str) -> list[tuple[str, str]]:
@@ -783,11 +754,7 @@ def _candidate_spans(before: str, after: str) -> list[tuple[str, str]]:
 def _surface(text: str, tokens: list[str]) -> str | None:
     if not tokens:
         return None
-    pattern = (
-        rf"(?i)(?<!{_WORD_EDGE})"
-        + r"\W+".join(re.escape(token) for token in tokens)
-        + rf"(?!{_WORD_EDGE})"
-    )
+    pattern = rf"(?i)(?<!{_WORD_EDGE})" + r"\W+".join(re.escape(token) for token in tokens) + rf"(?!{_WORD_EDGE})"
     match = re.search(pattern, _body(text))
     if match is None:
         return " ".join(tokens)
@@ -803,8 +770,7 @@ def _usable_span(span: str, *, quoted: bool) -> bool:
     content = [
         token
         for token in tokens
-        if any(character.isdigit() for character in token)
-        or (token not in STOPWORDS and len(token) >= 3)
+        if any(character.isdigit() for character in token) or (token not in STOPWORDS and len(token) >= 3)
     ]
     if not content:
         return False
@@ -913,7 +879,8 @@ def _find_pending(root: Path, identifier: str) -> dict[str, object] | None:
 
 
 def _proposal(root: Path, state: ChecksState, identifier: str) -> dict[str, object] | None:
-    for key in ("confirmed", "rejected"):
+    buckets: tuple[_Bucket, ...] = ("confirmed", "rejected")
+    for key in buckets:
         record = _record(state, key, identifier)
         if record is not None and isinstance(record.get("text"), str) and isinstance(record.get("span"), str):
             # A rejection remembers the sentence, not the scope. Copying the
@@ -934,7 +901,8 @@ def _proposal(root: Path, state: ChecksState, identifier: str) -> dict[str, obje
 
 
 def _known(root: Path, state: ChecksState, identifier: str) -> bool:
-    if any(_record(state, key, identifier) is not None for key in ("confirmed", "rejected")):
+    buckets: tuple[_Bucket, ...] = ("confirmed", "rejected")
+    if any(_record(state, key, identifier) is not None for key in buckets):
         return True
     return _find_pending(root, identifier) is not None
 

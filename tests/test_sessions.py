@@ -46,8 +46,10 @@ class SessionTests(unittest.TestCase):
 
     def test_start_uses_the_learn_slug_and_preserves_the_original(self) -> None:
         session = self.start()
+        session_id = session["id"]
+        assert isinstance(session_id, str)
         folder = self.project / str(session["path"])
-        self.assertRegex(session["id"], r"^\d{4}-\d{2}-\d{2}-notes$")
+        self.assertRegex(session_id, r"^\d{4}-\d{2}-\d{2}-notes$")
         self.assertEqual((folder / "before.md").read_text(), "A first thought.\n")
         self.assertEqual((folder / "after.md").read_text(), "A first thought.\n")
         self.draft.write_text("Changed outside the session.\n")
@@ -81,9 +83,7 @@ class SessionTests(unittest.TestCase):
             start_session(self.project, self.draft, section=None, origin="ai-first", sources=[str(self.draft)])
         for absolute in ("/home/user/ref", r"C:\Users\me\ref", "C:/Users/me/ref"):
             with self.assertRaisesRegex(ProjectError, "portable reference"):
-                start_session(
-                    self.project, self.draft, section=None, origin="ai-first", sources=[absolute]
-                )
+                start_session(self.project, self.draft, section=None, origin="ai-first", sources=[absolute])
         session = self.start()
         folder = self.project / str(session["path"])
         with self.assertRaisesRegex(ProjectError, "identical"):
@@ -122,7 +122,9 @@ class SessionTests(unittest.TestCase):
         folder = self.project / str(session["path"])
         self.assertEqual((folder / "after.md").read_text(), "From another editor.\n")
         self.assertEqual((folder / "notes.md").read_text(), "Typed elsewhere.")
-        self.assertEqual(receipt["learnedPath"].split("/", 1)[0], "gold")
+        learned = receipt["learnedPath"]
+        assert isinstance(learned, str)
+        self.assertEqual(learned.split("/", 1)[0], "gold")
 
     def test_start_help_does_not_claim_to_open_the_editor(self) -> None:
         with contextlib.redirect_stdout(io.StringIO()) as stdout:

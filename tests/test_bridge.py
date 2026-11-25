@@ -54,9 +54,7 @@ class BridgeTests(unittest.TestCase):
                 self.assertFalse(response["ok"])
                 self.assertNotIn("AttributeError", str(response["error"]))
                 self.assertIn("Not a ghostless project", str(response["error"]))
-                resolved = handle_request(
-                    {"id": 2, "method": "resolve_project", "params": {"path": str(self.voice)}}
-                )
+                resolved = handle_request({"id": 2, "method": "resolve_project", "params": {"path": str(self.voice)}})
                 self.assertTrue(resolved["ok"])
                 self.assertEqual(resolved["result"], {"project": None, "source": None})
 
@@ -69,7 +67,9 @@ class BridgeTests(unittest.TestCase):
         response = handle_request({"id": 1, "method": "resolve_project", "params": {"path": str(unrelated)}})
         self.assertEqual(response["result"], {"project": None, "source": None})
         with contextlib.chdir(self.base):
-            self.assertEqual(handle_request({"method": "resolve_project"})["result"]["project"], str(self.voice))
+            resolved = handle_request({"method": "resolve_project"})["result"]
+            assert isinstance(resolved, dict)
+            self.assertEqual(resolved["project"], str(self.voice))
 
     def test_methods_via_handle_request(self) -> None:
         with contextlib.chdir(self.base):
@@ -107,7 +107,7 @@ class BridgeTests(unittest.TestCase):
             def invoke(request: dict[str, object]) -> dict[str, object]:
                 return round_trip(json.dumps(request, ensure_ascii=False))[1]
 
-            for invalid in ('{"id":', '[]', '{"method":"ping","id": NaN}'):
+            for invalid in ('{"id":', "[]", '{"method":"ping","id": NaN}'):
                 with self.subTest(invalid=invalid):
                     _, response = round_trip(invalid)
                     self.assertIsNone(response["id"])
@@ -126,7 +126,7 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(process.stderr.read(), "")
 
     def exercise_cache(self, invoke: Callable[[dict[str, object]], dict[str, object]]) -> None:
-        request = {
+        request: dict[str, object] = {
             "id": "cache",
             "method": "judge_text",
             "params": {"project": str(self.voice), "text": "The correction."},
@@ -180,7 +180,11 @@ class BridgeTests(unittest.TestCase):
         source = self.workspace / "draft.md"
         source.write_text("Level 9: starts the note. Then we stop.\n", encoding="utf-8")
         started = ask(
-            "session_start", project=root, draft=str(source), section="notes", sources=["source.md"],
+            "session_start",
+            project=root,
+            draft=str(source),
+            section="notes",
+            sources=["source.md"],
         )
         session = started["id"]
         self.assertEqual(started["origin"], "ai-first")
@@ -204,8 +208,14 @@ class BridgeTests(unittest.TestCase):
         final = self.workspace / "final.md"
         final.write_text(after, encoding="utf-8")
         receipt = ask(
-            "session_finish", project=root, session=session, final=str(final), note="Changed opening",
-            checks=[CHECK], rebuild=True, promote=True,
+            "session_finish",
+            project=root,
+            session=session,
+            final=str(final),
+            note="Changed opening",
+            checks=[CHECK],
+            rebuild=True,
+            promote=True,
         )
         self.assertTrue(receipt["rebuilt"])
         self.assertEqual(receipt["promotion"]["tier"], "gold")
@@ -247,13 +257,17 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(judged["availableSections"], sorted(judged["availableSections"]))
         self.assertTrue(judged["stale"])
         self.assertIn("checks.json", judged["staleSources"])
-        self.assertEqual({item["id"]: item["pass"] for item in judged["confirmedChecks"]}, {
-            first_id: False,
-            second_id: True,
-        })
+        self.assertEqual(
+            {item["id"]: item["pass"] for item in judged["confirmedChecks"]},
+            {
+                first_id: False,
+                second_id: True,
+            },
+        )
         self.assertFalse(ask("judge_text", project=root, text=judged_text)["confirmedChecks"])
         self.assertEqual(
-            ask("checks_decide", project=root, action="reject", target=second_id)["status"], "rejected",
+            ask("checks_decide", project=root, action="reject", target=second_id)["status"],
+            "rejected",
         )
 
         for kind in ("style", "audience"):
@@ -269,8 +283,11 @@ class BridgeTests(unittest.TestCase):
             source.write_text(f"I actually keep note {index} short. I stop here.\n", encoding="utf-8")
             edit = ask("session_start", project=root, draft=str(source), origin="writer-first")
             ask(
-                "session_snapshot", project=root, session=edit["id"],
-                after=f"I keep note {index} short. I stop here.\n", notes="",
+                "session_snapshot",
+                project=root,
+                session=edit["id"],
+                after=f"I keep note {index} short. I stop here.\n",
+                notes="",
             )
             ask("session_finish", project=root, session=edit["id"])
 
@@ -343,7 +360,9 @@ class BridgeTests(unittest.TestCase):
             }
         )
         self.assertTrue(ruled["ok"], ruled.get("error"))
-        self.assertIsNone(ruled["result"]["scope"])
+        ruled_result = ruled["result"]
+        assert isinstance(ruled_result, dict)
+        self.assertIsNone(ruled_result["scope"])
         checked = handle_request(
             {
                 "id": 2,
@@ -357,7 +376,9 @@ class BridgeTests(unittest.TestCase):
             }
         )
         self.assertTrue(checked["ok"], checked.get("error"))
-        self.assertIsNone(checked["result"]["section"])
+        checked_result = checked["result"]
+        assert isinstance(checked_result, dict)
+        self.assertIsNone(checked_result["section"])
         conflict = handle_request(
             {
                 "id": 3,

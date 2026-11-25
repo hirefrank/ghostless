@@ -229,10 +229,10 @@ def _signature_phrases(
 def _keep_gram(gram: tuple[str, ...]) -> bool:
     if gram[0] in STOPWORDS or gram[-1] in STOPWORDS:
         return False
-    if all(token in STOPWORDS for token in gram):
+    if all(token in STOPWORDS for token in gram):  # token is a word, not a credential
         return False
     return all(
-        (token.isalpha() and len(token) >= 3) or token == "i" or is_contraction(token)
+        (token.isalpha() and len(token) >= 3) or token == "i" or is_contraction(token)  # noqa: S105
         for token in gram
     )
 
@@ -380,16 +380,8 @@ def _edited_weights(pieces: list[Piece]) -> tuple[float, float, float]:
     Only writer-authored prose can cap the pool. With no writer-authored prose
     there is nothing to protect, so the configured weight is used as written.
     """
-    writer = sum(
-        piece.weight
-        for piece in pieces
-        if piece.tier != "edited" and piece.kind == "prose"
-    )
-    edited = sum(
-        piece.weight
-        for piece in pieces
-        if piece.tier == "edited" and piece.kind == "prose"
-    )
+    writer = sum(piece.weight for piece in pieces if piece.tier != "edited" and piece.kind == "prose")
+    edited = sum(piece.weight for piece in pieces if piece.tier == "edited" and piece.kind == "prose")
     if edited <= 0 or writer <= 0:
         return 1.0, edited, edited
     allowed = EDITED_MAX_SHARE * writer
@@ -430,18 +422,11 @@ def compile_stats(
     # count toward the threshold: ten gold transcripts would otherwise push
     # the only written prose out of the voice pool. Edited AI-first finals do
     # not count either; they are model prose until the writer promotes them.
-    gold_pieces = sum(
-        1 for piece in pieces if piece.tier == "gold" and piece.kind == "prose"
-    )
+    gold_pieces = sum(1 for piece in pieces if piece.tier == "gold" and piece.kind == "prose")
     format_only = gold_pieces >= gold_voice_minimum
     scale, edited_configured, edited_counted = _edited_weights(pieces)
     counted = (
-        [
-            replace(piece, weight=piece.weight * scale)
-            if piece.tier == "edited"
-            else piece
-            for piece in pieces
-        ]
+        [replace(piece, weight=piece.weight * scale) if piece.tier == "edited" else piece for piece in pieces]
         if scale != 1.0
         else pieces
     )
@@ -470,16 +455,13 @@ def compile_stats(
             "unweighted": summarize(subset, bronze_format_only=format_only, use_weights=False),
         }
 
-    edited_pieces = sum(
-        1 for piece in pieces if piece.tier == "edited" and piece.kind == "prose"
-    )
+    edited_pieces = sum(1 for piece in pieces if piece.tier == "edited" and piece.kind == "prose")
     warnings: list[str] = []
     if not pieces:
         warnings.append("No sources yet. Add markdown files under corpus/ and run build again.")
     elif weighted["dictionEmpty"]:
         warnings.append(
-            "No written prose in the voice pool, so the ban list was left empty. "
-            "Spoken lines do not decide bans."
+            "No written prose in the voice pool, so the ban list was left empty. Spoken lines do not decide bans."
         )
     diction_words = weighted["metrics"]["dictionWords"]
     if 0 < diction_words < 1500:
@@ -622,4 +604,4 @@ def _piece_count(stats: Mapping[str, object], section: str | None) -> int:
 def _count(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0
-    return int(round(float(value)))
+    return round(float(value))
