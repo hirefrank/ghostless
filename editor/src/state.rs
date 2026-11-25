@@ -124,6 +124,11 @@ pub(crate) struct Editor {
     judge_inflight: Option<(DocId, u64)>,
     pub(crate) latest_judge: Option<crate::bridge::JudgeReport>,
     judge_cache: HashMap<String, crate::bridge::JudgeReport>,
+    pub(crate) inspector_tab: usize,
+    pub(crate) section_menu_open: bool,
+    pub(crate) rule_draft: TextEdit,
+    pub(crate) toast: Option<String>,
+    pub(crate) pending_document_focus: bool,
     pub(crate) bridge: crate::bridge::BridgeClient,
     pub(crate) worker: Worker,
 }
@@ -252,6 +257,11 @@ impl Editor {
             judge_inflight: None,
             latest_judge: None,
             judge_cache: HashMap::new(),
+            inspector_tab: 0,
+            section_menu_open: false,
+            rule_draft: TextEdit::new(""),
+            toast: None,
+            pending_document_focus: false,
             bridge,
             worker,
         }
@@ -317,6 +327,11 @@ impl Editor {
             judge_inflight: None,
             latest_judge: None,
             judge_cache: HashMap::new(),
+            inspector_tab: 0,
+            section_menu_open: false,
+            rule_draft: TextEdit::new(""),
+            toast: None,
+            pending_document_focus: false,
             bridge,
             worker,
         }
@@ -1610,11 +1625,190 @@ impl Editor {
         })
     }
 
-    #[allow(dead_code)]
     pub(crate) fn set_judge_section(&mut self, section: String, clock: f64) {
         let Some(doc) = self.active_doc_mut() else { return };
         doc.section_override = Some(section);
         self.request_judge(clock);
+    }
+
+    pub(crate) fn choose_judge_section(&mut self, section: String, tx: &mut Tx) {
+        self.set_judge_section(section, tx.clock());
+        tx.wake_after(JUDGE_DELAY);
+    }
+
+    pub(crate) fn toggle_voice_lens(&mut self) {
+        self.store.ui.voice_lens = !self.store.ui.voice_lens;
+        let _ = prefs::save_store(&self.store);
+    }
+
+    pub(crate) fn jump_next_placeholder(&mut self, tx: &mut Tx) {
+        let Some(doc) = self.active_doc_ref() else {
+            self.status = "No placeholders".into();
+            return;
+        };
+        let caret = doc.edit.range().1;
+        let ranges = crate::markdown_decor::find_placeholder_ranges(&doc.edit.text, self.placeholder_token.as_deref());
+        if ranges.is_empty() {
+            self.status = "No placeholders".into();
+            self.focus_document(tx);
+            return;
+        }
+        let index = ranges.iter().position(|range| range.start > caret).unwrap_or(0);
+        let range = ranges[index].clone();
+        let total = ranges.len();
+        if self.jump_to_range(range.start, range.end, tx) {
+            self.status = format!("Placeholder {} of {total}", index + 1);
+        }
+    }
+
+    /// Selects a source range without changing the text. Preview and Compare
+    /// return to Write so the selection is on the draft, except a voice guide,
+    /// which stays on its rendered page.
+    pub(crate) fn jump_to_range(&mut self, start: usize, end: usize, tx: &mut Tx) -> bool {
+        if self.active_doc_ref().is_none() {
+            return false;
+        }
+        if self.find.open {
+            self.find.close();
+        }
+        if self.view_mode != ViewMode::Write {
+            self.set_view_mode(ViewMode::Write, tx);
+        }
+        let Some(doc) = self.active_doc_mut() else { return false };
+        let len = doc.edit.text.len();
+        let start = start.min(len);
+        let end = end.min(len);
+        if start > end || !doc.edit.text.is_char_boundary(start) || !doc.edit.text.is_char_boundary(end) {
+            return false;
+        }
+        let before = doc.edit.text.clone();
+        doc.edit.set_selection(start, end);
+        if doc.edit.text != before {
+            doc.edit.replace_text(&before);
+            return false;
+        }
+        self.focus_document(tx);
+        true
+    }
+
+    pub(crate) fn jump_to_query(&mut self, query: &str, tx: &mut Tx) {
+        let query = query.trim();
+        if query.is_empty() || self.active_doc.is_none() {
+            self.status = "Nothing to select".into();
+            return;
+        }
+        let before = self.active_working_edit().text.clone();
+        if self.view_mode != ViewMode::Write {
+            self.set_view_mode(ViewMode::Write, tx);
+        }
+        self.find.query.replace_text(query);
+        self.find.replacement.replace_text("");
+        self.find.case_sensitive = false;
+        self.find.whole_word = !query.chars().any(char::is_whitespace);
+        self.find.open = true;
+        self.find.show_replace = false;
+        self.refresh_find();
+        if self.find.matches.is_empty() {
+            self.find.close();
+            self.status = format!("No matches for {query}");
+            self.focus_document(tx);
+        } else if let Some(range) = self.find.current_range().cloned() {
+            if let Some(doc) = self.active_doc_mut() {
+                doc.edit.set_selection(range.start, range.end);
+            }
+            self.focus_document(tx);
+        }
+        if self.active_working_edit().text != before {
+            self.active_working_edit_mut().replace_text(&before);
+        }
+    }
+
+    pub(crate) fn jump_to_excerpt(&mut self, excerpt: &str, tx: &mut Tx) {
+        let excerpt = excerpt.trim();
+        let Some(text) = self.active_doc_ref().map(|doc| doc.edit.text.clone()) else {
+            return;
+        };
+        if let Some(start) = text.find(excerpt) {
+            self.jump_to_range(start, start + excerpt.len(), tx);
+        } else if !excerpt.is_empty() {
+            self.jump_to_query(excerpt, tx);
+        }
+    }
+
+    pub(crate) fn show_live_check(&mut self, query: &str, detail: &str, tx: &mut Tx) {
+        let before = self.active_working_edit().text.clone();
+        self.jump_to_query(query, tx);
+        if self.find.matches.is_empty() {
+            self.status = if detail.is_empty() { query.to_owned() } else { detail.to_owned() };
+        }
+        if self.active_working_edit().text != before {
+            self.active_working_edit_mut().replace_text(&before);
+        }
+    }
+
+    pub(crate) fn request_voice_build(&mut self) {
+        let Some(project) = self.voice_project.clone() else {
+            self.status = "Open a voice project before building".into();
+            return;
+        };
+        let doc_id = self.active_doc_ref().map(|doc| doc.id.clone());
+        let generation = self.active_doc_ref().map(|doc| doc.generation).unwrap_or(0);
+        if let Err(error) = self.bridge.request(doc_id, generation, crate::bridge::BridgeOp::Build { project }) {
+            self.status = error;
+            return;
+        }
+        self.status = "Building voice guide…".into();
+    }
+
+    pub(crate) fn save_durable_rule(&mut self, kind: &str) {
+        let text = self.rule_draft.text.trim().to_owned();
+        if text.is_empty() {
+            self.status = "Write a rule before saving it".into();
+            return;
+        }
+        let Some(project) = self.voice_project.clone() else {
+            self.status = "Open a voice project before saving a rule".into();
+            return;
+        };
+        let doc_id = self.active_doc_ref().map(|doc| doc.id.clone());
+        let generation = self.active_doc_ref().map(|doc| doc.generation).unwrap_or(0);
+        if let Err(error) = self.bridge.request(
+            doc_id,
+            generation,
+            crate::bridge::BridgeOp::SaveNote { project, kind: kind.to_owned(), text },
+        ) {
+            self.status = error;
+            return;
+        }
+        self.rule_draft = TextEdit::new("");
+        self.status = "Saving note…".into();
+    }
+
+    pub(crate) fn open_voice_note(&mut self, name: &str) {
+        if name != "STYLE.md" && name != "AUDIENCE.md" {
+            return;
+        }
+        let Some(voice) = self.voice_project.clone() else {
+            self.status = "Open a voice project first".into();
+            return;
+        };
+        if !voice.is_dir() {
+            self.status = "Voice project is not available".into();
+            return;
+        }
+        let path = voice.join(name);
+        if !fs_io::is_contained_in(&voice, &path) || workspace_tree::is_protected_voice_path(&path) {
+            self.status = format!("Protected voice data is read-only: {}", path.display());
+            return;
+        }
+        if !path.is_file() {
+            let stub = format!("# {name}\n\n");
+            if let Err(error) = fs_io::atomic_write_text(&path, &stub) {
+                self.status = error;
+                return;
+            }
+        }
+        self.open_workspace_file(path, true);
     }
 
     fn request_judge(&mut self, clock: f64) {
@@ -1689,12 +1883,16 @@ impl Editor {
                 }
                 Err(error) => self.status = format!("Build failed: {error}"),
             },
-            BridgeReply::SaveNote { result, .. } => {
-                self.status = match result {
-                    Ok(saved) => format!("Saved note to {}", saved.path),
-                    Err(error) => format!("Could not save note: {error}"),
-                };
-            }
+            BridgeReply::SaveNote { result, .. } => match result {
+                Ok(saved) => {
+                    self.status = format!("Saved note to {}", saved.path);
+                    self.toast = Some(format!("Saved a note in {}", saved.path));
+                }
+                Err(error) => {
+                    self.status = format!("Could not save note: {error}");
+                    self.toast = Some(self.status.clone());
+                }
+            },
             BridgeReply::SessionStart { doc_id, result } => {
                 if let Err(error) = result {
                     self.status = format!("Could not start session: {error}");
@@ -2434,6 +2632,12 @@ pub(crate) fn poll(editor: &mut Editor, clock: f64, tx: &mut Tx) -> bool {
         }
     }
 
+    if editor.pending_document_focus {
+        editor.pending_document_focus = false;
+        editor.focus_document(tx);
+        changed = true;
+    }
+
     editor.sync_window_title(tx);
     changed
 }
@@ -2491,6 +2695,19 @@ pub(crate) fn on_key(editor: &mut Editor, key: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if key.is_command('j') && !key.mods.shift && !key.mods.alt {
         editor.toggle_inspector();
+        return true;
+    }
+    if editor.section_menu_open && key.key == Key::Escape {
+        editor.section_menu_open = false;
+        editor.focus_document(tx);
+        return true;
+    }
+    if key.key == Key::Function(8) || (key.is_command('.') && key.mods.shift) {
+        editor.jump_next_placeholder(tx);
+        return true;
+    }
+    if key.is_command('l') && !key.mods.shift && !key.mods.alt {
+        editor.toggle_voice_lens();
         return true;
     }
     if key.is_command('n') && !key.mods.shift && editor.workspace.is_some() {
@@ -4140,5 +4357,128 @@ mod tests {
         }
         assert!(editor.latest_judge.is_none());
         assert!(editor.judge_due.is_some());
+    }
+
+    #[test]
+    fn voice_navigation_keeps_text_and_returns_focus_in_every_mode() {
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let home = std::env::temp_dir().join(format!("ghostless-lens-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        let previous = std::env::var_os("GHOSTLESS_HOME");
+        unsafe { std::env::set_var("GHOSTLESS_HOME", &home); }
+
+        let draft = "# Opening\n\nKeep [PLACEHOLDER: one] then [PLACEHOLDER: two].\n\nPlease delve here.\n";
+        let cases = [
+            (ViewMode::Write, false, false, false),
+            (ViewMode::Preview, false, false, false),
+            (ViewMode::Compare, false, false, false),
+            (ViewMode::Write, true, false, false),
+            (ViewMode::Preview, true, false, false),
+            (ViewMode::Compare, true, false, false),
+            (ViewMode::Write, false, true, false),
+            (ViewMode::Preview, false, true, false),
+            (ViewMode::Compare, false, true, false),
+            (ViewMode::Write, true, false, true),
+            (ViewMode::Preview, true, false, true),
+            (ViewMode::Compare, true, false, true),
+        ];
+        for (mode, read_only, locked, voice_guide) in cases {
+            let mut session = test_session();
+            session.after = draft.into();
+            session.original = draft.into();
+            let mut editor = Editor::with_handlers(
+                session, prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake(),
+            );
+            {
+                let doc = editor.active_doc_mut().unwrap();
+                doc.read_only = read_only || voice_guide;
+                doc.lockable = locked;
+                doc.user_locked = locked;
+                if voice_guide {
+                    doc.path.set_file_name("voice-guide.md");
+                    doc.title = "voice-guide.md".into();
+                }
+            }
+            editor.view_mode = mode;
+            editor.store.ui.voice_lens = false;
+            let generation = editor.active_doc_ref().unwrap().generation;
+            let focus = if voice_guide {
+                "preview-body"
+            } else if read_only || locked {
+                "working-body"
+            } else {
+                "prose-input"
+            };
+
+            let mut rt = rune::Runtime::new(editor, crate::ui::view, (1120.0, 800.0), rune::Env::new(false, 1.0));
+            rt.on_key = Some(on_key);
+            rt.poll = Some(poll);
+            rt.frame(0.0);
+            if mode == ViewMode::Write && !read_only && !locked && !voice_guide {
+                assert!(rt.elements().iter().any(|element| element.key.as_deref() == Some("next-placeholder")));
+            }
+            rt.key(KeyEvent { key: Key::Function(8), mods: rune::Mods::default() });
+            rt.frame(0.0);
+            assert_eq!(rt.state.active_working_edit().text, draft, "{mode:?} read_only={read_only} locked={locked} guide={voice_guide}");
+            assert_eq!(rt.state.active_doc_ref().unwrap().generation, generation);
+            assert_eq!(rt.state.active_working_edit().selected(), "[PLACEHOLDER: one]");
+            assert_eq!(rt.state.view_mode, ViewMode::Write);
+            assert_surface(&rt, focus);
+            rt.key(KeyEvent { key: Key::Command('l'), mods: rune::Mods::default() });
+            rt.frame(0.0);
+            assert!(rt.state.store.ui.voice_lens);
+            assert_eq!(rt.state.active_working_edit().text, draft);
+            assert_surface(&rt, focus);
+            rt.update(|editor, tx| editor.jump_to_query("delve", tx));
+            rt.frame(0.0);
+            assert_eq!(rt.state.active_working_edit().selected(), "delve");
+            assert_eq!(rt.state.active_working_edit().text, draft);
+            assert_eq!(rt.state.active_doc_ref().unwrap().generation, generation);
+            let focused = rt.elements().iter().find(|element| element.focused).and_then(|element| element.key.clone());
+            assert_eq!(focused.as_deref(), Some(focus), "{mode:?} read_only={read_only} locked={locked} guide={voice_guide}");
+        }
+
+        let mut session = test_session();
+        session.after = draft.into();
+        let editor = Editor::with_handlers(
+            session, prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake(),
+        );
+        let mut rt = rune::Runtime::new(editor, crate::ui::view, (1120.0, 800.0), rune::Env::new(false, 1.0));
+        rt.on_key = Some(on_key);
+        rt.poll = Some(poll);
+        rt.frame(0.0);
+        rt.update(|editor, tx| editor.jump_next_placeholder(tx));
+        rt.frame(0.0);
+        assert_eq!(rt.state.active_working_edit().selected(), "[PLACEHOLDER: one]");
+        rt.key(KeyEvent { key: Key::Command('.'), mods: rune::Mods { shift: true, ..rune::Mods::default() } });
+        rt.frame(0.0);
+        assert_eq!(rt.state.active_working_edit().selected(), "[PLACEHOLDER: two]");
+        rt.key(KeyEvent { key: Key::Function(8), mods: rune::Mods::default() });
+        rt.frame(0.0);
+        assert_eq!(rt.state.active_working_edit().selected(), "[PLACEHOLDER: one]");
+        assert_eq!(rt.state.active_working_edit().text, draft);
+
+        unsafe {
+            if let Some(value) = previous { std::env::set_var("GHOSTLESS_HOME", value); }
+            else { std::env::remove_var("GHOSTLESS_HOME"); }
+        }
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    fn assert_surface(rt: &rune::Runtime<Editor>, focus: &str) {
+        let elements = rt.elements();
+        let focused = elements.iter().find(|element| element.focused).unwrap_or_else(|| {
+            panic!("nothing focused; wanted {focus}");
+        });
+        assert_eq!(focused.key.as_deref(), Some(focus));
+        let rect = focused.rect;
+        assert!(rect[2] > 1.0 && rect[3] > 1.0, "focus {focus} has no area {rect:?}");
+        assert!(rect[0] >= -1.0 && rect[1] >= -1.0 && rect[0] + rect[2] <= 1121.0 && rect[1] + rect[3] <= 801.0, "{focus} {:?} is outside the window", rect);
+        if let Some(parent) = elements.iter().find(|element| element.key.as_deref() == Some("working-body")) {
+            assert!(rect[1] >= parent.rect[1] - 1.0 && rect[1] + rect[3] <= parent.rect[1] + parent.rect[3] + 1.0, "{focus} {:?} outside working body {:?}", rect, parent.rect);
+        }
+        for stray in ["find-source-match", "find-source-anchor", "preview-find-anchor"] {
+            assert!(elements.iter().all(|element| element.key.as_deref() != Some(stray)), "{stray} left behind");
+        }
     }
 }

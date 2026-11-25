@@ -1,12 +1,13 @@
-use rune::{Cx, El, Tx, col, icon, row, text};
+use rune::{Cx, El, col, icon, row, text};
 use rune_kit::{
-    Button, ButtonVariant, ControlSize, Dialog, Divider, Kit, TextArea, TextInput,
+    Button, ButtonVariant, ControlSize, Dialog, Divider, Kit, TextInput,
     diff::DiffView, glyphs, shell::SplitView,
 };
 use crate::state::{DialogKind, Editor, ViewMode};
 
 mod canvas;
 mod find_bar;
+mod inspector;
 pub(crate) mod folder_search;
 pub(crate) mod quick_switcher;
 mod preview;
@@ -37,7 +38,7 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
 
     let tb = toolbar::build(editor, &kit, &mut overlays);
     let sb = sidebar::build(editor, &kit, &mut overlays);
-    let insp = build_inspector(editor, cx, &kit);
+    let insp = build_inspector(editor, cx, &kit, &mut overlays);
 
     let stage = build_stage(editor, cx, &kit);
     let stage = if editor.reference.open && editor.view_mode != ViewMode::Compare {
@@ -80,6 +81,18 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
         .build(&kit);
 
     mount_dialogs(editor, &kit, &mut overlays);
+    if let Some(message) = editor.toast.clone() {
+        overlays.push(
+            rune_kit::ToastRegion::new()
+                .toast(
+                    rune_kit::Toast::new("note-toast", "Voice note")
+                        .description(message)
+                        .on_close(|editor: &mut Editor| editor.toast = None)
+                        .build(&kit),
+                )
+                .build(&kit),
+        );
+    }
     quick_switcher::mount(editor, &kit, &mut overlays);
     folder_search::mount(editor, &kit, &mut overlays);
     rune_kit::root(shell, overlays)
@@ -188,58 +201,8 @@ fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
     }
 }
 
-fn build_inspector(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
-    if !editor.active_is_session() {
-        return col()
-            .key("inspector-empty")
-            .w_full()
-            .h_full()
-            .padding(16.0)
-            .gap(8.0)
-            .child(text("INSPECTOR").font(kit.ty.text_xsmall_medium).color(kit.c.text_muted))
-            .child(
-                text("Open or start an edit session to record writer notes here.")
-                    .font(kit.ty.ui)
-                    .color(kit.c.text_faint)
-                    .wrap(),
-            );
-    }
-    let locked = editor.active_is_locked();
-    let max_h = cx
-        .layout_size("inspector-notes")
-        .map(|s| (s[1] - 64.0).max(120.0))
-        .unwrap_or(220.0);
-    col()
-        .key("inspector-notes")
-        .w_full()
-        .h_full()
-        .min_h(0.0)
-        .padding(14.0)
-        .gap(8.0)
-        .child(
-            text("NOTES · WHY DID YOU CHANGE IT?")
-                .font(kit.ty.text_xsmall_medium)
-                .color(kit.c.text_muted),
-        )
-        .child(
-            TextArea::new(editor.active_notes_edit())
-                .label("Edit notes")
-                .placeholder("Optional context for your future self")
-                .width(None)
-                .rows(6)
-                .max_height(max_h)
-                .disabled(locked)
-                .on_edit(|e: &mut Editor| e.active_notes_edit_mut())
-                .on_change(|e: &mut Editor, tx: &mut Tx| e.changed_active(tx))
-                .build(kit),
-        )
-        .child(row().grow(1.0))
-        .child(
-            text(editor.status.clone())
-                .font(kit.ty.small)
-                .color(kit.c.text_faint)
-                .wrap(),
-        )
+fn build_inspector(editor: &Editor, cx: &Cx<Editor>, kit: &Kit, overlays: &mut Vec<El>) -> El {
+    inspector::build(editor, cx, kit, overlays)
 }
 
 fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {

@@ -14,6 +14,7 @@ mod state;
 mod theme;
 mod ui;
 mod ui_welcome;
+mod voice_lens;
 mod worker;
 mod workspace_tree;
 
