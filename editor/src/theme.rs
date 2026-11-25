@@ -44,8 +44,10 @@ mod tests {
     use super::*;
     #[test]
     fn preferences_produce_valid_styles() {
-        let mut prefs = UiPrefs::default();
-        prefs.font_size = 99.0;
+        let prefs = UiPrefs {
+            font_size: 99.0,
+            ..UiPrefs::default()
+        };
         assert_eq!(prose_text_style(&prefs).size, 24.0);
         assert_eq!(measure_max_width(MeasurePreset::Medium), Some(720.0));
         assert_eq!(measure_max_width(MeasurePreset::Full), None);
