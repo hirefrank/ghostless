@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import cast
 
 from ghostless.checks import prepare_checks, write_pair_checks
 from ghostless.io import atomic_write_json, atomic_write_text, sha256_text, utc_now_iso, utc_today
@@ -21,6 +22,15 @@ from ghostless.project import (
     parse_origin,
     placement_for,
     read_provenance,
+)
+from ghostless.schema import (
+    CheckItem,
+    SessionChangesSummary,
+    SessionListEntry,
+    SessionMeta,
+    SessionReceipt,
+    SessionSnapshotResult,
+    SessionStartResult,
 )
 
 # Session ids are `YYYY-MM-DD[-section][-N]`. The section and counter are
@@ -74,7 +84,7 @@ def start_session(
     section: str | None,
     origin: str,
     sources: list[str],
-) -> dict[str, object]:
+) -> SessionStartResult:
     if not draft.is_file():
         raise ProjectError(f"Draft file not found: {draft}")
     text = draft.read_text(encoding="utf-8")
@@ -94,7 +104,7 @@ def start_session(
         raise ProjectError(f"Session {session_id} already exists. Start again.") from exc
     atomic_write_text(folder / "before.md", text)
     atomic_write_text(folder / "after.md", text)
-    metadata: dict[str, object] = {
+    metadata: SessionMeta = {
         "kind": "ghostless-edit-session",
         "version": 1,
         "id": session_id,
@@ -112,13 +122,14 @@ def start_session(
         "beforeSha256": sha256_text(text),
     }
     atomic_write_json(folder / "session.json", metadata, ensure_ascii=False)
-    return {"id": session_id, "path": folder.relative_to(root).as_posix(), **metadata}
+    started: SessionStartResult = {**metadata, "path": folder.relative_to(root).as_posix()}
+    return started
 
 
-def list_sessions(root: Path) -> list[dict[str, object]]:
-    found: list[dict[str, object]] = []
+def list_sessions(root: Path) -> list[SessionListEntry]:
+    found: list[SessionListEntry] = []
     for path in sorted((root / "sessions").glob("*/session.json")):
-        metadata = _load_json(path)
+        metadata = cast(SessionMeta, _load_json(path))
         found.append(
             {
                 "id": metadata.get("id"),
@@ -131,7 +142,7 @@ def list_sessions(root: Path) -> list[dict[str, object]]:
     return found
 
 
-def snapshot_session(root: Path, *, session: str, after: str, notes: str) -> dict[str, object]:
+def snapshot_session(root: Path, *, session: str, after: str, notes: str) -> SessionSnapshotResult:
     folder = _session_dir(root, session)
     if (folder / "receipt.json").exists():
         raise ProjectError("This session is already finished. Start a new session to edit again.")
@@ -150,9 +161,9 @@ def finish_session(
     session: str | None,
     note: str | None = None,
     checks: list[str] | None = None,
-) -> dict[str, object]:
+) -> SessionReceipt:
     folder = _session_dir(root, session)
-    metadata = _load_json(folder / "session.json")
+    metadata = cast(SessionMeta, _load_json(folder / "session.json"))
     if metadata.get("kind") != "ghostless-edit-session" or metadata.get("version") != 1:
         raise ProjectError(f"Unsupported session format in {folder}.")
     before = (folder / "before.md").read_text(encoding="utf-8")
@@ -166,7 +177,7 @@ def finish_session(
         raise ProjectError(f"Final file is empty: {source}")
     receipt_path = folder / "receipt.json"
     if receipt_path.is_file():
-        receipt = _load_json(receipt_path)
+        receipt = cast(SessionReceipt, _load_json(receipt_path))
         # A crash between the receipt write and the status write leaves
         # session.json open. The receipt is the source of truth on retry.
         if metadata.get("status") != "final":
@@ -192,14 +203,14 @@ def finish_session(
     atomic_write_text(folder / "after.md", after)
     existing_dir = find_existing_learn_pair(root, before, after)
     existing = existing_dir.relative_to(root).as_posix() if existing_dir is not None else None
-    prepared: list[dict[str, object]] | None = None
-    tier: object = None
-    confirmation: object = None
-    changes: dict[str, object]
+    prepared: list[CheckItem] | None = None
+    tier: str | None = None
+    confirmation: str | None = None
+    changes: SessionChangesSummary
     if existing:
         learned_path = existing
         tier, confirmation = _existing_placement(root, existing)
-        changes = dict(diff_texts(before, after))
+        changes = cast(SessionChangesSummary, dict(diff_texts(before, after)))
         if checks:
             prepared = write_pair_checks(root, _slug_from_learned(existing), checks)
     else:
@@ -220,11 +231,12 @@ def finish_session(
         tier = result.get("tier")
         confirmation = result.get("confirmation")
         result_meta = result["meta"]
-        changes = (
+        raw_changes: dict[str, object] = (
             {key: result_meta[key] for key in DIFF_SUMMARY_KEYS}
             if isinstance(result_meta, dict)
             else dict(diff_texts(before, after))
         )
+        changes = cast(SessionChangesSummary, raw_changes)
         saved = result.get("checks")
         if isinstance(saved, list):
             prepared = [item for item in saved if isinstance(item, dict)]
@@ -256,7 +268,7 @@ def finish_session(
     return receipt
 
 
-def _attach_checks(root: Path, receipt: dict[str, object], checks: list[str]) -> None:
+def _attach_checks(root: Path, receipt: SessionReceipt, checks: list[str]) -> None:
     """Add checks to a finished session without dropping ones already recorded."""
     learned = receipt.get("learnedPath")
     if not isinstance(learned, str):
@@ -264,7 +276,7 @@ def _attach_checks(root: Path, receipt: dict[str, object], checks: list[str]) ->
     prepared = write_pair_checks(root, _slug_from_learned(learned), checks)
     fresh_ids = {item.get("id") for item in prepared if isinstance(item, dict)}
     previous = receipt.get("checks")
-    kept: list[dict[str, object]] = []
+    kept: list[CheckItem] = []
     if isinstance(previous, list):
         for item in previous:
             if isinstance(item, dict) and item.get("id") not in fresh_ids:

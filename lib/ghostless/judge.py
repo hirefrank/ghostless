@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Literal
+from typing import Literal, cast
 
 from ghostless.paths import ProjectError
 from ghostless.schema import (
@@ -22,6 +22,7 @@ from ghostless.schema import (
     JudgeCheck,
     JudgeReport,
     MetricBlock,
+    MetricMap,
     StructureHitDict,
 )
 from ghostless.stats import (
@@ -224,7 +225,7 @@ def judge_text(
         "confirmedRules": confirmed_hits,
         "structure": structure,
         "placeholders": placeholders,
-        "draft": dict(draft_metrics),
+        "draft": cast(MetricMap, dict(draft_metrics)),
         "targets": target_metrics,
         "confidence": confidence,
         "lowConfidence": not confidence["trustworthy"],

@@ -14,6 +14,7 @@ import re
 from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 from ghostless.checks import new_pair_checks, prepare_checks
 from ghostless.io import atomic_write_json, atomic_write_text, sha256_text, text_preview, utc_today
@@ -34,7 +35,9 @@ from ghostless.schema import (
     DiffSummary,
     EditLearnEntry,
     EditSummary,
+    LearnResult,
     MovedSpan,
+    StructuralChange,
     TokenAlignment,
     WordCount,
 )
@@ -301,14 +304,14 @@ def _match_moved_spans(
     return spans
 
 
-def _structural_changes(before: str, after: str) -> tuple[list[dict[str, object]], int, int]:
+def _structural_changes(before: str, after: str) -> tuple[list[StructuralChange], int, int]:
     before_text = normalize(before)
     after_text = normalize(after)
     before_sequence = PUNCTUATION_RE.findall(before_text)
     after_sequence = PUNCTUATION_RE.findall(after_text)
     before_marks = Counter(before_sequence)
     after_marks = Counter(after_sequence)
-    changes: list[dict[str, object]] = []
+    changes: list[StructuralChange] = []
     for mark in sorted(set(before_marks) | set(after_marks)):
         delta = after_marks[mark] - before_marks[mark]
         if delta:
@@ -348,7 +351,7 @@ def _structural_changes(before: str, after: str) -> tuple[list[dict[str, object]
     return changes, len(before_paragraphs), len(after_paragraphs)
 
 
-def _paragraph_moves(before_paragraphs: list[str], after_paragraphs: list[str]) -> list[dict[str, object]]:
+def _paragraph_moves(before_paragraphs: list[str], after_paragraphs: list[str]) -> list[StructuralChange]:
     """Report paragraphs that appear on both sides but in a new position."""
     before_keys = [" ".join(block.split()).casefold() for block in before_paragraphs]
     after_keys = [" ".join(block.split()).casefold() for block in after_paragraphs]
@@ -362,7 +365,7 @@ def _paragraph_moves(before_paragraphs: list[str], after_paragraphs: list[str]) 
     deleted = [(index, before_keys[index]) for index in range(len(before_keys)) if index not in matched_before]
     inserted = [(index, after_keys[index]) for index in range(len(after_keys)) if index not in matched_after]
     used: set[int] = set()
-    moves: list[dict[str, object]] = []
+    moves: list[StructuralChange] = []
     for from_index, key in deleted:
         for to_index, candidate in inserted:
             if to_index in used or candidate != key:
@@ -414,7 +417,7 @@ def learn_edit(
     tool: str | None = None,
     promote: bool = False,
     checks: list[str] | None = None,
-) -> dict[str, object]:
+) -> LearnResult:
     if not before.is_file():
         raise ProjectError(f"Before file not found: {before}")
     if not after.is_file():
@@ -486,7 +489,7 @@ def learn_edit(
     }
 
 
-def promote_final(root: Path, slug: str, *, gold: bool = True) -> dict[str, object]:
+def promote_final(root: Path, slug: str, *, gold: bool = True) -> LearnResult:
     """Deliberately move a learned final into (or back out of) gold.
 
     Only provenance changes: `before.md`, `after.md`, and the edit receipt are
@@ -632,14 +635,14 @@ def _cached_moved_spans(value: object) -> list[MovedSpan] | None:
     return spans
 
 
-def _cached_structural_changes(value: object) -> list[dict[str, object]] | None:
+def _cached_structural_changes(value: object) -> list[StructuralChange] | None:
     if not isinstance(value, list):
         return None
-    items: list[dict[str, object]] = []
+    items: list[StructuralChange] = []
     for entry in value:
         if not isinstance(entry, dict):
             return None
-        items.append({str(key): item for key, item in entry.items()})
+        items.append(cast(StructuralChange, {str(key): item for key, item in entry.items()}))
     return items
 
 
@@ -819,7 +822,7 @@ def refresh_edit_summary(root: Path) -> EditSummary:
     return payload
 
 
-def load_edit_summary(root: Path) -> dict[str, object]:
+def load_edit_summary(root: Path) -> EditSummary:
     path = root / "edits-summary.json"
     if not path.is_file():
         return {"learns": [], "repeatedRemovals": {}, "repeatedAdditions": {}}
@@ -829,7 +832,7 @@ def load_edit_summary(root: Path) -> dict[str, object]:
         return {"learns": [], "repeatedRemovals": {}, "repeatedAdditions": {}}
     if not isinstance(data, dict):
         return {"learns": [], "repeatedRemovals": {}, "repeatedAdditions": {}}
-    return data
+    return cast(EditSummary, data)
 
 
 def render_edits_markdown(payload: Mapping[str, object]) -> str:

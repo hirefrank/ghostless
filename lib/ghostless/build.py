@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 from ghostless.checks import checks_summary
@@ -116,7 +117,7 @@ def _read_stats(path: Path) -> dict[str, object] | None:
     return data
 
 
-def _recorded_paths(stats: dict[str, object]) -> list[str]:
+def _recorded_paths(stats: Mapping[str, object]) -> list[str]:
     files = stats.get("files")
     if not isinstance(files, list):
         return []

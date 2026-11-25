@@ -22,7 +22,7 @@ from ghostless.learn import (  # noqa: E402
     refresh_edit_summary,
 )
 from ghostless.project import init_project  # noqa: E402
-from ghostless.schema import DiffSummary  # noqa: E402
+from ghostless.schema import DiffSummary, LearnResult  # noqa: E402
 from ghostless.sessions import finish_session, snapshot_session, start_session  # noqa: E402
 
 
@@ -77,7 +77,7 @@ class DiffCacheTests(unittest.TestCase):
         *,
         date: str = "2026-01-05",
         section: str = "notes",
-    ) -> dict[str, object]:
+    ) -> LearnResult:
         before_path = self.base / "before.md"
         after_path = self.base / "after.md"
         before_path.write_text(before, encoding="utf-8")

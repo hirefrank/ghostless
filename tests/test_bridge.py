@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / "lib"))
 
 from ghostless.bridge import handle_request  # noqa: E402
 from ghostless.paths import version  # noqa: E402
+from ghostless.schema import BridgeRequest, BridgeResponse  # noqa: E402
 
 CHECK = 'The opening avoids "Level 9:".'
 SECOND_CHECK = 'The opening uses "The correction".'
@@ -104,8 +105,8 @@ class BridgeTests(unittest.TestCase):
                 self.assertTrue(reply, "Bridge exited before replying.")
                 return reply, json.loads(reply)
 
-            def invoke(request: dict[str, object]) -> dict[str, object]:
-                return round_trip(json.dumps(request, ensure_ascii=False))[1]
+            def invoke(request: BridgeRequest) -> BridgeResponse:
+                return cast(BridgeResponse, round_trip(json.dumps(request, ensure_ascii=False))[1])
 
             for invalid in ('{"id":', "[]", '{"method":"ping","id": NaN}'):
                 with self.subTest(invalid=invalid):
@@ -125,8 +126,8 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(stdout.read(), "")
             self.assertEqual(process.stderr.read(), "")
 
-    def exercise_cache(self, invoke: Callable[[dict[str, object]], dict[str, object]]) -> None:
-        request: dict[str, object] = {
+    def exercise_cache(self, invoke: Callable[[BridgeRequest], BridgeResponse]) -> None:
+        request: BridgeRequest = {
             "id": "cache",
             "method": "judge_text",
             "params": {"project": str(self.voice), "text": "The correction."},
@@ -145,13 +146,13 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse(changed["ok"])
         self.assertIn("must contain a JSON object", str(changed["error"]))
 
-    def exercise_methods(self, invoke: Callable[[dict[str, object]], dict[str, object]]) -> None:
+    def exercise_methods(self, invoke: Callable[[BridgeRequest], BridgeResponse]) -> None:
         counter = 0
 
         def ask(method: str, **params: object) -> Any:
             nonlocal counter
             counter += 1
-            response = invoke({"id": counter, "method": method, "params": params})
+            response = invoke(cast(BridgeRequest, {"id": counter, "method": method, "params": params}))
             self.assertEqual(response["id"], counter)
             self.assertIs(response["ok"], True, response.get("error"))
             return response["result"]
@@ -306,7 +307,7 @@ class BridgeTests(unittest.TestCase):
             ("build", {"project": str(self.base / "missing")}, "Not a ghostless project"),
             ("session_start", {"project": root, "draft": str(self.base)}, "Draft file not found"),
         ):
-            response = invoke({"id": method, "method": method, "params": params})
+            response = invoke(cast(BridgeRequest, {"id": method, "method": method, "params": params}))
             self.assertEqual(response["id"], method)
             self.assertIs(response["ok"], False)
             self.assertIn(error, str(response["error"]))

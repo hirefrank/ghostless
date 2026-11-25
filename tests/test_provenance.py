@@ -17,6 +17,7 @@ from ghostless.build import build_voice  # noqa: E402
 from ghostless.cli import main  # noqa: E402
 from ghostless.learn import learn_edit  # noqa: E402
 from ghostless.project import discover, init_project, load_manifest  # noqa: E402
+from ghostless.schema import LearnResult  # noqa: E402
 
 
 class ProvenanceTests(unittest.TestCase):
@@ -305,7 +306,7 @@ def _learn_pair(
     model: str | None = None,
     tool: str | None = None,
     promote: bool = False,
-) -> dict[str, object]:
+) -> LearnResult:
     source = workdir / "src"
     source.mkdir(exist_ok=True)
     count = len(list(source.glob("before-*.md")))

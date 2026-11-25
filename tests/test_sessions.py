@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT / "lib"))
 from ghostless.cli import main  # noqa: E402
 from ghostless.paths import ProjectError  # noqa: E402
 from ghostless.project import init_project  # noqa: E402
+from ghostless.schema import SessionStartResult  # noqa: E402
 from ghostless.sessions import (  # noqa: E402
     finish_session,
     list_sessions,
@@ -35,7 +36,7 @@ class SessionTests(unittest.TestCase):
         self.draft = self.base / "draft.md"
         self.draft.write_text("A first thought.\n", encoding="utf-8")
 
-    def start(self) -> dict[str, object]:
+    def start(self) -> SessionStartResult:
         return start_session(
             self.project,
             self.draft,

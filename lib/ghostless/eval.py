@@ -27,7 +27,7 @@ import random
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeVar
+from typing import TypeVar, cast
 
 from ghostless.checks import empty_confirmed_checks, grade_confirmed
 from ghostless.judge import judge_text
@@ -41,7 +41,17 @@ from ghostless.project import (
     pair_file_path,
     require_contained_path,
 )
-from ghostless.schema import CorpusConfidence, HoldoutEval, Manifest
+from ghostless.schema import (
+    AcceptanceSummary,
+    CorpusConfidence,
+    EvalItem,
+    EvalReport,
+    EvalSummary,
+    HoldoutCase,
+    HoldoutEval,
+    HoldoutSummary,
+    Manifest,
+)
 from ghostless.stats import Piece, compile_stats, corpus_confidence
 from ghostless.text import split_frontmatter, words
 
@@ -216,7 +226,7 @@ def evaluate(
     holdout: int | None = None,
     seed: int = 0,
     cv: bool | None = None,
-) -> dict[str, object]:
+) -> EvalReport:
     """Run the held-out evaluation for one voice project."""
     if cv is True and holdout is not None:
         raise ProjectError("Pass either --cv or --holdout, not both.")
@@ -273,7 +283,7 @@ def evaluate(
             )
             _, held_pairs = split_items(pairs, holdout, seed)
         report["holdouts"] = holdout_eval
-        held_payload: list[dict[str, object]] = [
+        held_payload: list[HoldoutCase] = [
             {"slug": pair.slug, "section": pair.section, "before": pair.before} for pair in held_pairs
         ]
         report["confirmedChecks"] = grade_confirmed(root, held_payload, seed=seed)
@@ -362,7 +372,7 @@ def _evaluate_edits(
     holdout: int | None,
     seed: int,
     notes: list[str],
-) -> dict[str, object]:
+) -> EvalReport:
     _, held = split_items(pairs, holdout, seed)
     held_paths = {pair.after_path for pair in held}
     train_pieces = [piece for piece in pieces if piece.path not in held_paths]
@@ -410,9 +420,9 @@ def _evaluate_edits_cv(
     placeholder: str | None,
     seed: int,
     notes: list[str],
-) -> dict[str, object]:
+) -> EvalReport:
     """Leave-one-out cross-validation across all edit pairs."""
-    items: list[dict[str, object]] = []
+    items: list[EvalItem] = []
     fold_trains: list[tuple[list[Piece], CorpusConfidence]] = []
     for pair in pairs:
         train_pieces = [piece for piece in pieces if piece.path != pair.after_path]
@@ -468,8 +478,8 @@ def _edit_item(
     score: int | None,
     ok: bool,
     error: object = None,
-) -> dict[str, object]:
-    item: dict[str, object] = {
+) -> EvalItem:
+    item: EvalItem = {
         "kind": "edit",
         "slug": pair.slug,
         "section": pair.section,
@@ -492,7 +502,7 @@ def _judge_edit_pair(
     fail_under: int,
     overrides: Mapping[str, object] | None,
     placeholder: str | None,
-) -> dict[str, object]:
+) -> EvalItem:
     section = pair.section if _section_exists(stats, pair.section) else None
     report = judge_text(
         pair.before,
@@ -515,11 +525,11 @@ def _finalize_edits_report(
     pairs: list[EditPair],
     train_pieces: list[Piece],
     confidence: Mapping[str, object],
-    items: list[dict[str, object]],
+    items: list[EvalItem],
     seed: int,
     notes: list[str],
     cv: bool,
-) -> dict[str, object]:
+) -> EvalReport:
     scored = [item for item in items if isinstance(item.get("score"), int) and not isinstance(item.get("score"), bool)]
     n = len(scored)
     pairs_for_stats: list[tuple[float, float]] = []
@@ -562,7 +572,7 @@ def _finalize_edits_report(
         "train": _train_block(train_pieces, confidence),
         "holdout": _holdout_block(items),
         "correlation": {"pearson": pearson, "spearman": spearman, "n": n},
-        "acceptance": acceptance,
+        "acceptance": cast(AcceptanceSummary, acceptance),
         "direction": direction,
         "verdict": _verdict(n, direction, spearman if spearman is not None else pearson),
         "items": items,
@@ -581,7 +591,7 @@ def _evaluate_prose(
     holdout: int | None,
     seed: int,
     notes: list[str],
-) -> dict[str, object]:
+) -> EvalReport:
     gold = [piece for piece in pieces if piece.tier == "gold" and piece.kind == "prose"]
     if len(gold) < 2:
         return _failure(
@@ -648,7 +658,7 @@ def _judge_prose_piece(
     fail_under: int,
     overrides: Mapping[str, object] | None,
     placeholder: str | None,
-) -> dict[str, object]:
+) -> EvalItem:
     section = piece.section if _section_exists(stats, piece.section) else None
     report = judge_text(
         piece.text,
@@ -658,7 +668,7 @@ def _judge_prose_piece(
         overrides=overrides,
         placeholder=placeholder,
     )
-    item: dict[str, object] = {
+    item: EvalItem = {
         "kind": "piece",
         "path": piece.path,
         "section": piece.section,
@@ -679,7 +689,7 @@ def _failure(
     seed: int,
     *,
     cv: bool = False,
-) -> dict[str, object]:
+) -> EvalReport:
     return {
         "ok": False,
         "mode": mode,
@@ -715,17 +725,20 @@ def _score(report: Mapping[str, object]) -> int | None:
     return score
 
 
-def _train_block(pieces: list[Piece], confidence: Mapping[str, object]) -> dict[str, object]:
-    return {
-        "pieces": len(pieces),
-        "words": confidence.get("words"),
-        "writtenWords": confidence.get("writtenWords"),
-        "sentences": confidence.get("sentences"),
-        "confidence": confidence.get("level"),
-    }
+def _train_block(pieces: list[Piece], confidence: Mapping[str, object]) -> EvalSummary:
+    return cast(
+        EvalSummary,
+        {
+            "pieces": len(pieces),
+            "words": confidence.get("words"),
+            "writtenWords": confidence.get("writtenWords"),
+            "sentences": confidence.get("sentences"),
+            "confidence": confidence.get("level"),
+        },
+    )
 
 
-def _holdout_block(items: list[dict[str, object]]) -> dict[str, object]:
+def _holdout_block(items: list[EvalItem]) -> HoldoutSummary:
     scores = _scores(items)
     rates: list[float] = []
     for item in items:
@@ -749,7 +762,7 @@ def _holdout_block(items: list[dict[str, object]]) -> dict[str, object]:
     }
 
 
-def _scores(items: list[dict[str, object]]) -> list[float]:
+def _scores(items: list[EvalItem]) -> list[float]:
     values: list[float] = []
     for item in items:
         score = item.get("score")
@@ -836,7 +849,7 @@ def _verdict(n: int, direction: str, value: float | None) -> str:
     return "There is not enough variation to judge the score."
 
 
-def format_eval(report: dict[str, object]) -> str:
+def format_eval(report: EvalReport) -> str:
     """Human-readable evaluation report."""
     if not report.get("ok"):
         lines = [f"ghostless eval: {report.get('error') or 'evaluation could not run'}"]
@@ -898,8 +911,6 @@ def format_eval(report: dict[str, object]) -> str:
         lines.append("")
         lines.append("items:")
         for item in items[:MAX_ITEMS_IN_REPORT]:
-            if not isinstance(item, dict):
-                continue
             label = item.get("slug") or item.get("path") or "?"
             line = f"  {label}  score {_number(item.get('score'))}"
             if mode == "edits":
@@ -920,7 +931,7 @@ def format_eval(report: dict[str, object]) -> str:
 
 def _summary_line(
     prefix: str,
-    block: dict[str, object],
+    block: EvalSummary,
     *,
     include_edit_rate: bool = False,
 ) -> str:
@@ -934,7 +945,7 @@ def _summary_line(
     return line
 
 
-def _format_checks(report: dict[str, object]) -> list[str]:
+def _format_checks(report: EvalReport) -> list[str]:
     """Passes over confirmed checks. Separate from the mechanical score."""
     block = report.get("confirmedChecks")
     if not isinstance(block, dict):
@@ -964,7 +975,7 @@ def _format_checks(report: dict[str, object]) -> list[str]:
     return lines
 
 
-def _notes(report: dict[str, object]) -> list[str]:
+def _notes(report: EvalReport) -> list[str]:
     raw = report.get("notes")
     if not isinstance(raw, list):
         return []

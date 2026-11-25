@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import Never
+from typing import Never, cast
 
 from ghostless.schema import (
     OVERRIDABLE_METRICS,
@@ -32,6 +32,7 @@ from ghostless.schema import (
     FileRow,
     Kind,
     MetricBlock,
+    MetricMap,
     Metrics,
     OpenerRates,
     PieceCounts,
@@ -101,7 +102,7 @@ def metrics_of(block: object) -> Mapping[str, object]:
 def apply_overrides(
     targets: Mapping[str, object],
     overrides: Mapping[str, object] | None,
-) -> dict[str, object]:
+) -> MetricMap:
     """Return `targets` with manifest override values pinned on top.
 
     An override replaces the measured target (e.g. `emDashesPer1k: 0` bans
@@ -109,12 +110,12 @@ def apply_overrides(
     `load_manifest` is the place that rejects them.
     """
     if not overrides:
-        return dict(targets)
+        return cast(MetricMap, dict(targets))
     pinned = dict(targets)
     for key, value in overrides.items():
         if key in OVERRIDABLE_METRICS and isinstance(value, (int, float)) and not isinstance(value, bool):
             pinned[key] = value
-    return pinned
+    return cast(MetricMap, pinned)
 
 
 def pools_for(piece: Piece, *, bronze_format_only: bool) -> frozenset[Pool]:

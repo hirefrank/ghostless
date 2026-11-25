@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from typing import cast
 
-from ghostless.schema import METRIC_LABELS, STRUCTURAL_RULE_LABELS
+from ghostless.schema import METRIC_LABELS, STRUCTURAL_RULE_LABELS, CheckItem, ConfirmedRule, SuppressedRule
 from ghostless.stats import apply_overrides, as_mapping, corpus_confidence, metrics_of
 
 
@@ -168,7 +169,7 @@ def _voice_rules(stats: Mapping[str, object]) -> list[str]:
     if confirmed:
         for item in confirmed:
             if isinstance(item, dict):
-                lines.append(_rule_line(item, confirmed=True))
+                lines.append(_rule_line(cast(ConfirmedRule, item), confirmed=True))
     else:
         lines.append("None yet. Review a hypothesis, then run `ghostless rules confirm <id>`.")
     lines.append("")
@@ -181,7 +182,7 @@ def _voice_rules(stats: Mapping[str, object]) -> list[str]:
         for item in hypotheses:
             if not isinstance(item, dict):
                 continue
-            lines.append(_rule_line(item, confirmed=False))
+            lines.append(_rule_line(cast(ConfirmedRule, item), confirmed=False))
             examples = item.get("examples")
             if isinstance(examples, list):
                 for example in examples[:1]:
@@ -202,11 +203,11 @@ def _voice_rules(stats: Mapping[str, object]) -> list[str]:
         lines.append("None yet. A pattern needs repeated support before it appears here.")
     lines.append("")
 
-    suppressed: list[dict[str, object]] = []
+    suppressed: list[SuppressedRule] = []
     for key in ("rejected", "retired"):
         raw_group = block.get(key)
         if isinstance(raw_group, list):
-            suppressed.extend(item for item in raw_group if isinstance(item, dict))
+            suppressed.extend(cast(SuppressedRule, item) for item in raw_group if isinstance(item, dict))
     if suppressed:
         parts = [f"{item.get('id')} ({item.get('status')})" for item in suppressed if item.get("id")]
         lines.append("Rejected or retired (not active): " + ", ".join(parts) + ".")
@@ -214,7 +215,7 @@ def _voice_rules(stats: Mapping[str, object]) -> list[str]:
     return lines
 
 
-def _rule_line(item: dict[str, object], *, confirmed: bool) -> str:
+def _rule_line(item: ConfirmedRule, *, confirmed: bool) -> str:
     kind = str(item.get("kind") or "cut")
     word = str(item.get("word") or item.get("id") or "?")
     support = item.get("support")
@@ -267,7 +268,7 @@ def _confirmed_checks(stats: Mapping[str, object]) -> list[str]:
     if confirmed:
         for item in confirmed:
             if isinstance(item, dict):
-                lines.append(_check_line(item, active=True))
+                lines.append(_check_line(cast(CheckItem, item), active=True))
     else:
         lines.append(
             "None yet. Save one with `ghostless learn --check` or `ghostless finish --check`, "
@@ -281,7 +282,7 @@ def _confirmed_checks(stats: Mapping[str, object]) -> list[str]:
     if pending:
         for item in pending:
             if isinstance(item, dict):
-                lines.append(_check_line(item, active=False))
+                lines.append(_check_line(cast(CheckItem, item), active=False))
     else:
         lines.append("None.")
     lines.append("")
@@ -295,7 +296,7 @@ def _confirmed_checks(stats: Mapping[str, object]) -> list[str]:
     return lines
 
 
-def _check_line(item: dict[str, object], *, active: bool) -> str:
+def _check_line(item: CheckItem, *, active: bool) -> str:
     text = item.get("text") or item.get("id") or "?"
     section = item.get("section")
     pair = item.get("pair")

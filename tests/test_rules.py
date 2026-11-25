@@ -34,7 +34,7 @@ from ghostless.rules import (  # noqa: E402
     save_rules,
     scope_rule,
 )
-from ghostless.schema import RuleCandidate  # noqa: E402
+from ghostless.schema import RuleCandidate, RuleDecisionRecord  # noqa: E402
 from ghostless.sessions import finish_session, snapshot_session, start_session  # noqa: E402
 
 
@@ -554,11 +554,11 @@ class RuleDecisionTests(unittest.TestCase):
 
     def test_overlapping_buckets_keep_rejected_then_retired(self) -> None:
         state = default_rules()
-        record = {"at": "2026-01-02T00:00:00Z", "receipts": [], "pieces": []}
+        record: RuleDecisionRecord = {"at": "2026-01-02T00:00:00Z", "receipts": [], "pieces": []}
         state["confirmed"] = {
-            "cut:delve": dict(record),
-            "add:honestly": dict(record),
-            "struct:keep": dict(record),
+            "cut:delve": record,
+            "add:honestly": record,
+            "struct:keep": record,
         }
         state["rejected"] = {
             "cut:delve": {"at": "2026-01-03T00:00:00Z"},

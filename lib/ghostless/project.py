@@ -19,6 +19,7 @@ from ghostless.schema import (
     Confirmation,
     Kind,
     Manifest,
+    ManifestFile,
     MigrationResult,
     NoteSaveResult,
     Origin,
@@ -171,7 +172,7 @@ def parse_confirmation(value: str, *, path: str) -> Confirmation:
             )
 
 
-def read_provenance(meta: dict[str, object], *, path: str) -> Provenance:
+def read_provenance(meta: Mapping[str, object], *, path: str) -> Provenance:
     """Read provenance from a learn `meta.json`, with v0.1 defaults.
 
     v0.1 wrote only a top-level `origin`. A missing `origin` is left unknown:
@@ -247,7 +248,7 @@ def _never(value: Never) -> Never:
     raise RuntimeError(f"unhandled variant: {value!r}")
 
 
-def default_manifest() -> dict[str, object]:
+def default_manifest() -> ManifestFile:
     return {
         "kind": "ghostless",
         "version": 1,
@@ -591,7 +592,7 @@ def require_contained_path(base: Path, candidate: Path, *, label: str) -> Path:
 
 
 def pair_file_path(
-    meta: dict[str, object],
+    meta: Mapping[str, object],
     meta_path: Path,
     field: str,
     default: str,

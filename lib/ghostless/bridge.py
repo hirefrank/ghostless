@@ -4,33 +4,45 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Never
+from typing import Never, cast
 
 from ghostless import build, checks, judge, learn, project, rules, sessions
 from ghostless.paths import ProjectError, find_project_with_source, version
-from ghostless.schema import CompiledStats
+from ghostless.schema import (
+    BridgeJudgeResult,
+    BridgeParams,
+    BridgeRequest,
+    BridgeResponse,
+    BridgeSessionItem,
+    CompiledStats,
+    ConfirmedCheckView,
+    ProjectResolveResult,
+    RuleDecisionResult,
+    SessionReceipt,
+)
 
 
-def _required_text(params: dict[str, object], name: str, *, default: str | None = None) -> str:
+def _required_text(params: Mapping[str, object], name: str, *, default: str | None = None) -> str:
     value = params.get(name, default)
     if not isinstance(value, str):
         raise ProjectError(f"Parameter {name!r} must be a string.")
     return value
 
 
-def _optional_text(params: dict[str, object], name: str) -> str | None:
+def _optional_text(params: Mapping[str, object], name: str) -> str | None:
     return None if params.get(name) is None else _required_text(params, name)
 
 
-def _strings(params: dict[str, object], name: str) -> list[str]:
+def _strings(params: Mapping[str, object], name: str) -> list[str]:
     value = params.get(name, [])
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ProjectError(f"Parameter {name!r} must be a list of strings.")
     return list(value)
 
 
-def _flag(params: dict[str, object], name: str) -> bool:
+def _flag(params: Mapping[str, object], name: str) -> bool:
     value = params.get(name, False)
     if not isinstance(value, bool):
         raise ProjectError(f"Parameter {name!r} must be a boolean.")
@@ -47,7 +59,7 @@ def _read_object(path: Path) -> dict[str, object]:
     return data
 
 
-def _resolve_project(params: dict[str, object]) -> dict[str, object]:
+def _resolve_project(params: BridgeParams) -> ProjectResolveResult:
     path = _optional_text(params, "path")
     workspace = Path(path).expanduser() if path else None
     candidates: list[Path | None] = [None]
@@ -65,8 +77,8 @@ def _resolve_project(params: dict[str, object]) -> dict[str, object]:
     return {"project": None, "source": None}
 
 
-def _confirmed_checks(root: Path, text: str, section: str | None) -> list[dict[str, object]]:
-    results: list[dict[str, object]] = []
+def _confirmed_checks(root: Path, text: str, section: str | None) -> list[ConfirmedCheckView]:
+    results: list[ConfirmedCheckView] = []
     for check in checks.checks_summary(root)["confirmed"]:
         scope = check.get("section")
         if scope is not None and scope != section:
@@ -88,26 +100,29 @@ def _confirmed_checks(root: Path, text: str, section: str | None) -> list[dict[s
     return results
 
 
-def _list_sessions(root: Path) -> list[dict[str, object]]:
-    items = sessions.list_sessions(root)
+def _list_sessions(root: Path) -> list[BridgeSessionItem]:
+    items = [cast(BridgeSessionItem, dict(item)) for item in sessions.list_sessions(root)]
     for item in items:
         folder = root / str(item["path"])
         metadata = _read_object(folder / "session.json")
-        item.update(section=metadata.get("section"), origin=metadata.get("origin"))
+        section = metadata.get("section")
+        origin = metadata.get("origin")
+        item["section"] = section if isinstance(section, str) else None
+        item["origin"] = origin if isinstance(origin, str) else None
         try:
             receipt = _read_object(folder / "receipt.json")
         except (OSError, ProjectError):
             # A damaged or unreadable receipt should not hide other sessions.
             continue
         changes = receipt.get("changes")
-        item.update(
-            editRate=changes.get("editRate") if isinstance(changes, dict) else None,
-            learnedPath=receipt.get("learnedPath"),
-        )
+        rate = changes.get("editRate") if isinstance(changes, dict) else None
+        learned = receipt.get("learnedPath")
+        item["editRate"] = float(rate) if isinstance(rate, int | float) and not isinstance(rate, bool) else None
+        item["learnedPath"] = learned if isinstance(learned, str) else None
     return items
 
 
-def _confirm_section(params: dict[str, object]) -> tuple[str | None, bool]:
+def _confirm_section(params: BridgeParams) -> tuple[str | None, bool]:
     """Section for a confirm, and whether the caller asked for every section.
 
     The flag is how a check leaves a previous section. A rule treats a missing
@@ -120,7 +135,7 @@ def _confirm_section(params: dict[str, object]) -> tuple[str | None, bool]:
     return (None, True) if make_global else (section, False)
 
 
-def _decide_rule(root: Path, params: dict[str, object]) -> dict[str, object]:
+def _decide_rule(root: Path, params: BridgeParams) -> RuleDecisionResult:
     action = _required_text(params, "action")
     identifier = _required_text(params, "ruleId")
     section = _optional_text(params, "section")
@@ -137,7 +152,7 @@ def _decide_rule(root: Path, params: dict[str, object]) -> dict[str, object]:
     raise ProjectError(f"Unknown rule action {action!r}.")
 
 
-def _decide_check(root: Path, params: dict[str, object]) -> object:
+def _decide_check(root: Path, params: BridgeParams) -> object:
     action = _required_text(params, "action")
     target = _required_text(params, "target")
     section = _optional_text(params, "section")
@@ -160,9 +175,9 @@ def _decide_check(root: Path, params: dict[str, object]) -> object:
 
 class _Worker:
     def __init__(self) -> None:
-        self._stats: dict[Path, tuple[int, dict[str, object]]] = {}
+        self._stats: dict[Path, tuple[int, CompiledStats]] = {}
 
-    def handle(self, request: dict[str, object]) -> dict[str, object]:
+    def handle(self, request: BridgeRequest) -> BridgeResponse:
         identifier = request.get("id")
         try:
             method = _required_text(request, "method")
@@ -174,7 +189,7 @@ class _Worker:
             return {"id": identifier, "ok": False, "error": str(exc)}
         return {"id": identifier, "ok": True, "result": result}
 
-    def _dispatch(self, method: str, params: dict[str, object]) -> object:
+    def _dispatch(self, method: str, params: BridgeParams) -> object:
         def root() -> Path:
             path = Path(_required_text(params, "project"))
             return find_project_with_source(path)[0]
@@ -238,7 +253,7 @@ class _Worker:
         self._stats.pop(root, None)
         return build.build_voice(root)
 
-    def _judge(self, root: Path, params: dict[str, object]) -> dict[str, object]:
+    def _judge(self, root: Path, params: BridgeParams) -> BridgeJudgeResult:
         text = _required_text(params, "text")
         section = _optional_text(params, "section")
         path = root / "voice-stats.json"
@@ -246,7 +261,7 @@ class _Worker:
             mtime = path.stat().st_mtime_ns
             cached = self._stats.get(root)
             if cached is None or cached[0] != mtime:
-                cached = (mtime, _read_object(path))
+                cached = (mtime, cast(CompiledStats, _read_object(path)))
                 self._stats[root] = cached
         except FileNotFoundError:
             self._stats.pop(root, None)
@@ -264,15 +279,18 @@ class _Worker:
         )
         stale = build.stale_inputs(root)
         sections = stats.get("sections")
-        return {
-            **report,
-            "stale": bool(stale),
-            "staleSources": stale,
-            "availableSections": sorted(sections) if isinstance(sections, dict) else [],
-            "confirmedChecks": _confirmed_checks(root, text, section),
-        }
+        return cast(
+            BridgeJudgeResult,
+            {
+                **report,
+                "stale": bool(stale),
+                "staleSources": stale,
+                "availableSections": sorted(sections) if isinstance(sections, dict) else [],
+                "confirmedChecks": _confirmed_checks(root, text, section),
+            },
+        )
 
-    def _finish(self, root: Path, params: dict[str, object]) -> dict[str, object]:
+    def _finish(self, root: Path, params: BridgeParams) -> SessionReceipt:
         final = _optional_text(params, "final")
         rebuild = _flag(params, "rebuild")
         promote = _flag(params, "promote")
@@ -283,7 +301,7 @@ class _Worker:
             note=_optional_text(params, "note"),
             checks=_strings(params, "checks"),
         )
-        result = dict(receipt)
+        result = cast(SessionReceipt, dict(receipt))
         learned = receipt.get("learnedPath")
         if promote and receipt.get("origin") == "ai-first" and isinstance(learned, str) and learned.startswith("gold/"):
             result["promotion"] = learn.promote_final(root, learned.removeprefix("gold/"), gold=True)
@@ -293,7 +311,7 @@ class _Worker:
         return result
 
 
-def handle_request(request: dict[str, object]) -> dict[str, object]:
+def handle_request(request: BridgeRequest) -> BridgeResponse:
     """Process one decoded request without retaining state across calls."""
     return _Worker().handle(request)
 
@@ -306,11 +324,12 @@ def serve_stdio() -> int:
     """Read UTF-8 requests until EOF and flush each UTF-8 response."""
     worker = _Worker()
     for line in sys.stdin.buffer:
-        response: dict[str, object]
+        response: BridgeResponse
         try:
-            request = json.loads(line.decode("utf-8"), parse_constant=_reject_constant)
-            if not isinstance(request, dict):
+            payload = json.loads(line.decode("utf-8"), parse_constant=_reject_constant)
+            if not isinstance(payload, dict):
                 raise ValueError("Request must be a JSON object.")
+            request = cast(BridgeRequest, payload)
         except (ValueError, RecursionError) as exc:
             response = {"id": None, "ok": False, "error": str(exc)}
         else:
