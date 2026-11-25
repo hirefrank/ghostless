@@ -30,9 +30,7 @@ fn find_scroll_target(source: &str, find: &FindState) -> Option<(&'static str, S
     if let Some(index) = find.current {
         return Some((find_scope(end, anchor), Markdown::highlight_key(index)));
     }
-    if let Some(range) = anchor_range(source, end, anchor)
-        && (range.start < end || has_rendered_anchor(source, end, &range))
-    {
+    if let Some(range) = rendered_anchor_range(source, end, find) {
         return Some((find_scope(end, range.start), PREVIEW_FIND_ANCHOR.to_owned()));
     }
 
@@ -67,6 +65,20 @@ fn find_scroll_target(source: &str, find: &FindState) -> Option<(&'static str, S
         })
         .min_by_key(|(_, hit)| hit.start.abs_diff(anchor))?;
     Some((find_scope(end, hit.start), Markdown::highlight_key(index)))
+}
+
+fn rendered_anchor_range(
+    source: &str,
+    frontmatter_end: usize,
+    find: &FindState,
+) -> Option<Range<usize>> {
+    if find.current.is_some() {
+        return None;
+    }
+    let anchor = find.navigation_anchor()?;
+    let range = anchor_range(source, frontmatter_end, anchor)?;
+    (range.start < frontmatter_end || has_rendered_anchor(source, frontmatter_end, &range))
+        .then_some(range)
 }
 
 fn has_rendered_anchor(source: &str, body_start: usize, range: &Range<usize>) -> bool {
@@ -105,10 +117,7 @@ pub(crate) fn build(source: &str, prefs: &UiPrefs, kit: &Kit, find: Option<&Find
     let (frontmatter, body) = source.split_at(end);
     let is_active = find.is_some();
     let find = find.filter(|find| find.open);
-    let anchor = find
-        .filter(|find| find.current.is_none())
-        .and_then(FindState::navigation_anchor)
-        .and_then(|anchor| anchor_range(source, end, anchor));
+    let anchor = find.and_then(|find| rendered_anchor_range(source, end, find));
     let yaml_anchor = anchor
         .as_ref()
         .and_then(|range| section_range(range, 0..end));
@@ -276,6 +285,41 @@ mod tests {
             let (scope, key) = find_scroll_target(after, &find).unwrap();
             assert_eq!(scope, PREVIEW_BODY);
             assert_eq!(key, target);
+        }
+    }
+
+    #[test]
+    fn rendered_anchor_range_excludes_hidden_html_comment_anchors() {
+        for (before, after, expected) in [
+            (
+                "First Café.\n\n<!-- Café Café -->\n\nLast Café.",
+                "First Café.\n\n<!-- Café tea -->\n\nLast Café.",
+                None,
+            ),
+            (
+                "First Café.\n\nMiddle Café.\n\nLast Café.",
+                "First Café.\n\nMiddle tea.\n\nLast Café.",
+                Some("t"),
+            ),
+            (
+                "---\nstage: Café\n---\n# Preview",
+                "---\nstage: tea\n---\n# Preview",
+                Some("t"),
+            ),
+        ] {
+            let anchor = before.rfind("Café").unwrap();
+            let anchor = if before.contains("<!--") || before.contains("Middle") {
+                before[..anchor].rfind("Café").unwrap()
+            } else {
+                anchor
+            };
+            let mut find = FindState::default();
+            find.query.replace_text("café");
+            find.refresh(before, anchor);
+            find.document_changed(after, anchor + 3);
+            let end = markdown_decor::frontmatter_end(after).unwrap_or(0);
+            let range = rendered_anchor_range(after, end, &find);
+            assert_eq!(range.as_ref().map(|r| &after[r.clone()]), expected);
         }
     }
 

@@ -2558,6 +2558,67 @@ mod tests {
     }
 
     #[test]
+    fn preview_suppresses_hidden_comment_find_anchor_and_scrolls_to_visible_fallback() {
+        let prose_padding = "A paragraph above or below the edit.\n\n".repeat(70);
+        let mut session = test_session();
+        session.after = format!(
+            "First Café with more text here.\n\n{prose_padding}<!-- Café Café -->\n\n{prose_padding}Last Café."
+        );
+        let mut editor = Editor::with_handlers(
+            session,
+            prefs::EditorStateStore::default(),
+            ok_runner(),
+            ok_writer(),
+            noop_wake(),
+        );
+        let mut tx = Tx::default();
+        editor.find.query.replace_text("café");
+        editor.open_find(false, &mut tx);
+        editor.step_find(true, &mut tx);
+        editor.step_find(true, &mut tx);
+        assert_eq!(editor.find.current, Some(2));
+        let start = editor.find.current_range().unwrap().start;
+        editor.active_working_edit_mut().insert("tea");
+        editor.changed_active(&mut tx);
+        assert_eq!(editor.find.current, None);
+        assert_eq!(editor.find.navigation_anchor(), Some(start));
+        assert_eq!(editor.find.matches.len(), 3);
+
+        let mut rt = rune::Runtime::new(
+            editor,
+            crate::ui::view,
+            (1120.0, 800.0),
+            rune::Env::new(false, 1.0),
+        );
+        rt.frame(0.0);
+        rt.update(|editor, tx| editor.set_view_mode(ViewMode::Preview, tx));
+        rt.frame(0.0);
+
+        let elements = rt.elements();
+        assert!(
+            elements
+                .iter()
+                .all(|e| e.key.as_deref() != Some("preview-find-anchor"))
+        );
+        let viewport = elements
+            .iter()
+            .find(|e| e.key.as_deref() == Some("preview-body"))
+            .unwrap()
+            .rect;
+        let fallback = elements
+            .iter()
+            .find(|e| e.key.as_deref() == Some("md-mark-2"))
+            .unwrap();
+        assert_eq!(fallback.text.as_deref(), Some("Café"));
+        assert!(
+            fallback.rect[1] >= viewport[1]
+                && fallback.rect[1] + fallback.rect[3] <= viewport[1] + viewport[3],
+            "fallback {:?} is outside preview {viewport:?}",
+            fallback.rect,
+        );
+    }
+
+    #[test]
     fn closing_find_focuses_the_document_surface_that_is_mounted() {
         for (mode, read_only, title, expected) in [
             (ViewMode::Write, false, "draft.md", "prose-input"),
