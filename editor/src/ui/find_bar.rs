@@ -28,6 +28,7 @@ pub(crate) fn build(editor: &Editor, kit: &Kit) -> El {
         })
         .build(kit)
         .key("find-query");
+    let can_replace = editor.can_replace_find();
     let mut bar = col()
         .key("find-bar")
         .padding(8.0)
@@ -76,18 +77,18 @@ pub(crate) fn build(editor: &Editor, kit: &Kit) -> El {
                         .on_press_tx(|e: &mut Editor, tx| e.step_find(true, tx))
                         .build(kit),
                 )
-                .child(
+                .children(can_replace.then(|| {
                     Button::new("Replace")
                         .on_press(|e: &mut Editor| e.find.show_replace = !e.find.show_replace)
-                        .build(kit),
-                )
+                        .build(kit)
+                }))
                 .child(
                     Button::new("×")
                         .on_press_tx(|e: &mut Editor, tx| e.close_find(tx))
                         .build(kit),
                 ),
         );
-    if editor.find.show_replace {
+    if can_replace && editor.find.show_replace {
         bar = bar.child(
             row()
                 .gap(4.0)
@@ -110,13 +111,13 @@ pub(crate) fn build(editor: &Editor, kit: &Kit) -> El {
                 )
                 .child(
                     Button::new("Replace")
-                        .disabled(editor.active_is_locked() || editor.find.current.is_none())
+                        .disabled(editor.find.current.is_none())
                         .on_press_tx(|e: &mut Editor, tx| e.replace_find(false, tx))
                         .build(kit),
                 )
                 .child(
                     Button::new("Replace All")
-                        .disabled(editor.active_is_locked() || editor.find.matches.is_empty())
+                        .disabled(editor.find.matches.is_empty())
                         .on_press_tx(|e: &mut Editor, tx| e.replace_find(true, tx))
                         .build(kit),
                 ),

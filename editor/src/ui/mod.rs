@@ -10,6 +10,7 @@ mod find_bar;
 pub(crate) mod folder_search;
 pub(crate) mod quick_switcher;
 mod preview;
+pub(crate) use preview::reveal_find_match;
 pub(crate) mod reference;
 mod sidebar;
 mod status_bar;
@@ -102,8 +103,11 @@ fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
             );
     };
 
+    if editor.active_uses_rendered_preview() {
+        return preview::build(&doc.edit.text, &editor.store.ui, kit, Some(&editor.find));
+    }
+
     match editor.view_mode {
-        ViewMode::Preview => preview::build(&doc.edit.text, &editor.store.ui, kit, Some(&editor.find)),
         ViewMode::Compare if editor.active_has_baseline() => col()
             .key("compare-body")
             .grow(1.0)
@@ -113,8 +117,7 @@ fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
                 DiffView::new(|e: &Editor| &e.diff, |e: &mut Editor| &mut e.diff)
                     .build(editor, kit),
             ),
-        ViewMode::Compare | ViewMode::Write if doc.read_only && doc.path.file_name().is_some_and(|name| name == "voice-guide.md") => preview::build(&doc.edit.text, &editor.store.ui, kit, Some(&editor.find)),
-        ViewMode::Compare | ViewMode::Write => {
+        _ => {
             let locked = editor.active_is_locked();
             let body = canvas::build(editor, cx, kit, locked);
             let mut pane = col()

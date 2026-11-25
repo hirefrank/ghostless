@@ -3,6 +3,7 @@ use std::ops::Range;
 use rune::TextEdit;
 
 pub(crate) const SOURCE_MATCH_KEY: &str = "find-source-match";
+pub(crate) const SOURCE_CARET_KEY: &str = "find-source-caret";
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct FindState {
@@ -153,6 +154,11 @@ impl FindState {
         });
     }
 
+    pub(crate) fn select_after_replace_all(&mut self, caret: usize) {
+        self.select_at_or_after(caret);
+        self.resume_at = self.current.is_none().then_some(caret);
+    }
+
     pub(crate) fn select_after_replacement(&mut self, replaced: Range<usize>) {
         let next = self
             .matches
@@ -260,8 +266,20 @@ pub(crate) fn replace_all(
     });
     edit.undo_group(|edit| {
         let mut changed = 0;
+        let mut caret = edit.focus;
         for range in ranges.into_iter().rev() {
-            changed += usize::from(replace_one(edit, range, replacement));
+            let (start, end) = (range.start, range.end);
+            if replace_one(edit, range, replacement) {
+                changed += 1;
+                if caret >= start {
+                    // Later ranges have already been applied. Shift the saved caret
+                    // only for replacements before it or covering it.
+                    caret = edit.focus + caret.saturating_sub(end);
+                }
+            }
+        }
+        if changed > 0 {
+            edit.set_caret(caret);
         }
         changed
     })

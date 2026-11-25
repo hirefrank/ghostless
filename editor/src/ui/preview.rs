@@ -1,9 +1,24 @@
 use std::ops::Range;
 
-use rune::{El, ScrollSpec, TextHighlight, col, row, text};
+use rune::{El, ScrollSpec, TextHighlight, Tx, col, row, text};
 use rune_kit::{Badge, Kit, Markdown, markdown::Highlight};
 
 use crate::{markdown_decor, prefs::UiPrefs, search::FindState, state::Editor, theme};
+
+const PREVIEW_BODY: &str = "preview-body";
+const PREVIEW_FRONTMATTER: &str = "preview-frontmatter";
+
+pub(crate) fn reveal_find_match(source: &str, start: usize, index: usize, tx: &mut Tx) {
+    tx.scroll_into_view_in(find_scope(source, start), Markdown::highlight_key(index));
+}
+
+fn find_scope(source: &str, start: usize) -> &'static str {
+    if markdown_decor::frontmatter_end(source).is_some_and(|end| start < end) {
+        PREVIEW_FRONTMATTER
+    } else {
+        PREVIEW_BODY
+    }
+}
 
 pub(crate) fn build(source: &str, prefs: &UiPrefs, kit: &Kit, find: Option<&FindState>) -> El {
     let end = markdown_decor::frontmatter_end(source).unwrap_or(0);
@@ -31,7 +46,7 @@ pub(crate) fn build(source: &str, prefs: &UiPrefs, kit: &Kit, find: Option<&Find
         });
         column = column.child(
             col()
-                .key("preview-frontmatter")
+                .key(PREVIEW_FRONTMATTER)
                 .w_full()
                 .min_w(0.0)
                 .padding(12.0)
@@ -99,7 +114,7 @@ pub(crate) fn build(source: &str, prefs: &UiPrefs, kit: &Kit, find: Option<&Find
         column = column.max_w(width);
     }
     col()
-        .key("preview-body")
+        .key(PREVIEW_BODY)
         .grow(1.0)
         .w_full()
         .min_h(0.0)
@@ -131,6 +146,7 @@ mod tests {
         let hits = find_matches(source, "café", false, false);
         assert_eq!(hits.len(), 3);
         for hit in &hits[..2] {
+            assert_eq!(find_scope(source, hit.start), PREVIEW_FRONTMATTER);
             assert_eq!(&frontmatter[section_range(hit, 0..end).unwrap()], "Café");
             assert_eq!(section_range(hit, end..source.len()), None);
         }
@@ -139,6 +155,9 @@ mod tests {
             "Café"
         );
         assert_eq!(section_range(&hits[2], 0..end), None);
+        assert_eq!(find_scope(source, hits[2].start), PREVIEW_BODY);
+        assert_eq!(find_scope(source, end), PREVIEW_BODY);
+        assert_eq!(find_scope("# Plain Markdown", 0), PREVIEW_BODY);
 
         let across = end - 1..end + 1;
         assert_eq!(section_range(&across, 0..end), Some(end - 1..end));

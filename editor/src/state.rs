@@ -329,6 +329,20 @@ impl Editor {
             .is_some_and(|d| d.original.is_some())
     }
 
+    pub(crate) fn active_uses_rendered_preview(&self) -> bool {
+        match self.view_mode {
+            ViewMode::Preview => true,
+            ViewMode::Compare if self.active_has_baseline() => false,
+            _ => self.active_doc_ref().is_some_and(|doc| {
+                doc.read_only && doc.path.file_name().is_some_and(|name| name == "voice-guide.md")
+            }),
+        }
+    }
+
+    pub(crate) fn can_replace_find(&self) -> bool {
+        self.view_mode == ViewMode::Write && !self.active_is_locked()
+    }
+
     pub(crate) fn active_is_locked(&self) -> bool {
         match self.active_doc_ref() {
             Some(doc) => {
@@ -1379,6 +1393,9 @@ impl Editor {
             self.refresh_diff();
         }
         self.view_mode = mode;
+        if !self.can_replace_find() {
+            self.find.show_replace = false;
+        }
         if self.find.open {
             self.select_find_match(tx);
         }
@@ -1386,8 +1403,10 @@ impl Editor {
 
     pub(crate) fn open_find(&mut self, replace: bool, tx: &mut Tx) {
         let Some(index) = self.active_doc else { return };
-        if self.view_mode == ViewMode::Compare {
-            self.view_mode = ViewMode::Write;
+        if self.view_mode == ViewMode::Compare
+            || (replace && self.view_mode == ViewMode::Preview && !self.active_is_locked())
+        {
+            self.set_view_mode(ViewMode::Write, tx);
         }
         if !self.find.open {
             let doc = &self.documents[index];
@@ -1399,7 +1418,7 @@ impl Editor {
             self.refresh_find();
             self.select_find_match(tx);
         }
-        self.find.show_replace = replace;
+        self.find.show_replace = replace && self.can_replace_find();
         tx.focus("find-query", false);
     }
 
@@ -1429,13 +1448,23 @@ impl Editor {
     }
 
     fn select_find_match(&mut self, tx: &mut Tx) {
-        let Some(range) = self.find.current_range().cloned() else { return };
-        if let Some(doc) = self.active_doc_mut() {
-            doc.edit.set_selection(range.start, range.end);
+        let Some(index) = self.find.current else { return };
+        let Some(range) = self.find.matches.get(index).cloned() else { return };
+        let preview = self.active_uses_rendered_preview();
+        let Some(doc) = self.active_doc_mut() else { return };
+        doc.edit.set_selection(range.start, range.end);
+        if preview {
+            crate::ui::reveal_find_match(&doc.edit.text, range.start, index, tx);
+        } else {
+            tx.scroll_into_view_in("working-body", crate::search::SOURCE_MATCH_KEY);
         }
-        tx.scroll_into_view_in("working-body", crate::search::SOURCE_MATCH_KEY);
-        if let Some(index) = self.find.current {
-            tx.scroll_into_view_in("preview-body", rune_kit::Markdown::highlight_key(index));
+    }
+
+    fn reveal_replacement(&mut self, tx: &mut Tx) {
+        if self.find.current.is_some() {
+            self.select_find_match(tx);
+        } else {
+            tx.scroll_into_view_in("working-body", crate::search::SOURCE_CARET_KEY);
         }
     }
 
@@ -1453,7 +1482,7 @@ impl Editor {
     }
 
     pub(crate) fn replace_find(&mut self, all: bool, tx: &mut Tx) {
-        if !self.find.open || self.view_mode == ViewMode::Compare || self.active_is_locked() {
+        if !self.find.open || !self.can_replace_find() {
             return;
         }
         let Some(index) = self.active_doc else { return };
@@ -1461,7 +1490,10 @@ impl Editor {
         let replacement = &self.find.replacement.text;
         if all {
             if crate::search::replace_all(edit, &self.find.matches, replacement) > 0 {
+                let caret = edit.focus;
                 self.changed_active(tx);
+                self.find.select_after_replace_all(caret);
+                self.reveal_replacement(tx);
             }
             return;
         }
@@ -1471,7 +1503,7 @@ impl Editor {
             let inserted = start..edit.range().1;
             self.changed_active(tx);
             self.find.select_after_replacement(inserted);
-            self.select_find_match(tx);
+            self.reveal_replacement(tx);
         }
     }
 
@@ -2373,6 +2405,72 @@ mod tests {
         assert_eq!(editor.active_working_edit().range(), selection);
         assert_eq!(editor.active_doc_ref().unwrap().generation, generation);
         assert_eq!(editor.active_working_edit().text, "Café / Café");
+    }
+
+    #[test]
+    fn replace_all_reconciles_selection_with_remaining_matches_and_caret() {
+        let mut session = test_session();
+        session.after = "Café / Café / Café.".into();
+        let mut editor = Editor::with_handlers(
+            session, prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake(),
+        );
+        let mut tx = Tx::default();
+        editor.find.query.replace_text("café");
+        editor.open_find(true, &mut tx);
+        editor.step_find(true, &mut tx);
+
+        editor.find.replacement.replace_text("✨ CAFÉ");
+        editor.replace_find(true, &mut tx);
+        let replaced = "✨ CAFÉ / ✨ CAFÉ / ✨ CAFÉ.";
+        assert_eq!(editor.active_working_edit().text, replaced);
+        assert_eq!(editor.find.current, Some(2));
+        let range = editor.find.current_range().unwrap();
+        assert_eq!(editor.active_working_edit().range(), (range.start, range.end));
+        assert_eq!(editor.active_working_edit().selected(), "CAFÉ");
+
+        editor.find.replacement.replace_text("tea");
+        editor.replace_find(true, &mut tx);
+        assert_eq!(editor.active_working_edit().text, "✨ tea / ✨ tea / ✨ tea.");
+        assert!(editor.find.matches.is_empty());
+        assert_eq!(editor.find.current, None);
+        let caret = "✨ tea / ✨ tea / ✨ tea".len();
+        assert_eq!(editor.find.navigation_anchor(), Some(caret));
+        assert_eq!(editor.active_working_edit().range(), (caret, caret));
+
+        editor.active_working_edit_mut().undo();
+        editor.changed_active(&mut tx);
+        assert_eq!(editor.active_working_edit().text, replaced);
+    }
+
+    #[test]
+    fn preview_blocks_replacement_and_replace_shortcut_opens_write() {
+        let mut editor = Editor::with_handlers(
+            test_session(), prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake(),
+        );
+        let mut tx = Tx::default();
+        editor.find.query.replace_text("Original");
+        editor.find.replacement.replace_text("Revised");
+        editor.open_find(true, &mut tx);
+        editor.set_view_mode(ViewMode::Preview, &mut tx);
+        assert!(editor.find.open);
+        assert!(!editor.find.show_replace);
+
+        editor.replace_find(false, &mut tx);
+        editor.replace_find(true, &mut tx);
+        assert_eq!(editor.active_working_edit().text, "Original text.");
+        assert_eq!(editor.active_doc_ref().unwrap().generation, 0);
+
+        let shortcut = KeyEvent { key: Key::Command('h'), mods: rune::Mods::default() };
+        assert!(on_key(&mut editor, &shortcut, &mut tx));
+        assert_eq!(editor.view_mode, ViewMode::Write);
+        assert!(editor.find.show_replace);
+        assert_eq!(editor.active_working_edit().text, "Original text.");
+
+        editor.set_view_mode(ViewMode::Preview, &mut tx);
+        editor.active_doc_mut().unwrap().read_only = true;
+        assert!(on_key(&mut editor, &shortcut, &mut tx));
+        assert_eq!(editor.view_mode, ViewMode::Preview);
+        assert!(!editor.find.show_replace);
     }
 
     #[test]
