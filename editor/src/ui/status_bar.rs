@@ -6,6 +6,12 @@ pub(crate) fn build(editor: &Editor, kit: &Kit) -> El {
     let active = editor.active_doc_ref();
 
     let save_label = match active {
+        _ if editor.status.starts_with("Could not close:")
+            || editor.status.starts_with("Saved locally.")
+            || editor.status.starts_with("Finished locally.") =>
+        {
+            editor.status.clone()
+        }
         None => "Ready".to_owned(),
         Some(doc) if doc.read_only && !doc.finished => "Read-only".to_owned(),
         Some(doc) if doc.user_locked => "Locked".to_owned(),
