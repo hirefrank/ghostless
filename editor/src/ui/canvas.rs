@@ -1,5 +1,3 @@
-use std::ops::Range;
-
 use rune::{col, text_input, Cx, El, ScrollSpec, Tx};
 use rune_kit::Kit;
 use crate::{state::Editor, theme};
@@ -42,7 +40,7 @@ pub(crate) fn build(editor: &Editor, cx: &Cx<Editor>, kit: &Kit, locked: bool) -
         let target = editor.find.current_range().cloned()
             .map(|range| (range, crate::search::SOURCE_MATCH_KEY))
             .or_else(|| {
-                caret_reveal_range(&doc.edit.text, doc.edit.focus)
+                crate::search::caret_reveal_range(&doc.edit.text, doc.edit.focus)
                     .map(|range| (range, crate::search::SOURCE_CARET_KEY))
             });
         if let Some((range, key)) = target {
@@ -63,23 +61,11 @@ pub(crate) fn build(editor: &Editor, cx: &Cx<Editor>, kit: &Kit, locked: bool) -
     }
     let mut inner = col().w_full().child(field);
     if let Some(width) = theme::measure_max_width(editor.store.ui.measure) { inner = inner.max_w(width); }
-    col().key("working-body").grow(1.0).w_full().min_h(0.0)
-        .scroll(ScrollSpec { stick_bottom: false }).items_center().px(32.0).py(16.0).child(inner)
-}
-
-fn caret_reveal_range(source: &str, caret: usize) -> Option<Range<usize>> {
-    let (before, after) = source.split_at_checked(caret)?;
-    let before = before.char_indices().rev().find(|(_, ch)| !matches!(ch, '\r' | '\n'));
-    let after = after.char_indices()
-        .find(|(_, ch)| !matches!(ch, '\r' | '\n'))
-        .map(|(offset, ch)| (caret + offset, ch));
-
-    let (start, ch) = match (before, after) {
-        (Some(before), Some(after))
-            if caret - before.0 - before.1.len_utf8() < after.0 - caret => before,
-        (_, Some(after)) => after,
-        (Some(before), None) => before,
-        (None, None) => return None,
-    };
-    Some(start..start + ch.len_utf8())
+    let body = col().key("working-body").grow(1.0).w_full().min_h(0.0)
+        .scroll(ScrollSpec { stick_bottom: false }).items_center().px(32.0).py(16.0).child(inner);
+    if locked {
+        body.focusable(true).role("region").label("Draft canvas")
+    } else {
+        body
+    }
 }

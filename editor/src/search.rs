@@ -20,6 +20,29 @@ pub(crate) struct FindState {
     resume_at: Option<usize>,
 }
 
+pub(crate) fn caret_reveal_range(source: &str, caret: usize) -> Option<Range<usize>> {
+    let caret = source.floor_char_boundary(caret.min(source.len()));
+    let (before, after) = source.split_at(caret);
+    let before = before
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !ch.is_whitespace());
+    let after = after
+        .char_indices()
+        .find(|(_, ch)| !ch.is_whitespace())
+        .map(|(offset, ch)| (caret + offset, ch));
+
+    let (start, ch) = match (before, after) {
+        (Some(before), Some(after)) if caret - before.0 - before.1.len_utf8() < after.0 - caret => {
+            before
+        }
+        (_, Some(after)) => after,
+        (Some(before), None) => before,
+        (None, None) => return None,
+    };
+    Some(start..start + ch.len_utf8())
+}
+
 fn word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '\''
 }

@@ -10,7 +10,7 @@ mod find_bar;
 pub(crate) mod folder_search;
 pub(crate) mod quick_switcher;
 mod preview;
-pub(crate) use preview::reveal_find_match;
+pub(crate) use preview::{PREVIEW_BODY, reveal_find_position};
 pub(crate) mod reference;
 mod sidebar;
 mod status_bar;
