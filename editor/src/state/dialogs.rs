@@ -50,8 +50,8 @@ impl Editor {
             doc.autosave_due = None;
             doc.recovery_due = None;
             doc.pending_recovery = false;
+            doc.close_after_save = true;
         }
-        self.chrome.pending_close = Some(doc_id);
         self.dispatch_next();
     }
     pub(crate) fn confirm_close_discard(&mut self, tx: &mut Tx) {
@@ -64,9 +64,7 @@ impl Editor {
             doc.pending_recovery = false;
             doc.autosave_due = None;
             doc.recovery_due = None;
-        }
-        if self.chrome.pending_close.as_ref() == Some(&doc_id) {
-            self.chrome.pending_close = None;
+            doc.close_after_save = false;
         }
         if self
             .worker_busy

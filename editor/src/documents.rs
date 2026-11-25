@@ -72,7 +72,10 @@ pub(crate) struct DocumentBuffer {
     pub recovery_due: Option<f64>,
     pub pending_save: bool,
     pub pending_recovery: bool,
+    pub close_after_save: bool,
     pub finish_requested: bool,
+    pub finish_error: Option<String>,
+    pub recovery_error: Option<String>,
     pub last_saved_label: Option<String>,
     pub save_error: Option<String>,
     pub last_disk_sha256: String,
@@ -122,7 +125,10 @@ impl DocumentBuffer {
             recovery_due: None,
             pending_save: false,
             pending_recovery: false,
+            close_after_save: false,
             finish_requested: false,
+            finish_error: None,
+            recovery_error: None,
             last_saved_label: if read_only {
                 Some("Read-only".into())
             } else {
@@ -177,7 +183,10 @@ impl DocumentBuffer {
             recovery_due: None,
             pending_save: false,
             pending_recovery: false,
+            close_after_save: false,
             finish_requested: false,
+            finish_error: None,
+            recovery_error: None,
             last_saved_label: session.finished.then(|| "Finished".into()),
             save_error: None,
             last_disk_sha256: sha,

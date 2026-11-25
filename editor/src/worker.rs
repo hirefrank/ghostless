@@ -38,6 +38,7 @@ pub(crate) enum WriteOp {
         path: PathBuf,
         content: String,
         clear_recovery: Option<PathBuf>,
+        expected_sha256: Option<String>,
     },
     Recovery {
         recovery_path: PathBuf,
@@ -62,6 +63,7 @@ pub(crate) enum WorkerRequest {
         path: PathBuf,
         content: String,
         clear_recovery: Option<PathBuf>,
+        expected_sha256: Option<String>,
     },
     WriteRecovery {
         doc_id: DocId,
@@ -89,6 +91,7 @@ pub(crate) enum WorkerRequest {
         snapshot: Option<(String, String)>,
         mirror_path: Option<PathBuf>,
         mirror_expected_sha256: Option<String>,
+        mirror_force: bool,
     },
 }
 
@@ -288,12 +291,14 @@ impl Worker {
                         path,
                         content,
                         clear_recovery,
+                        expected_sha256,
                     } => {
                         let sha256 = fs_io::sha256_text(&content);
                         let result = writer(&WriteOp::File {
                             path,
                             content,
                             clear_recovery,
+                            expected_sha256,
                         });
                         WorkerReply::Saved {
                             doc_id,
@@ -352,6 +357,7 @@ impl Worker {
                         snapshot,
                         mirror_path,
                         mirror_expected_sha256,
+                        mirror_force,
                     } => {
                         let mut saved_snapshot = None;
                         let result = if let Some((after, notes)) = snapshot {
@@ -364,7 +370,7 @@ impl Worker {
                                 notes,
                                 mirror_path,
                                 mirror_expected_sha256,
-                                mirror_force: false,
+                                mirror_force,
                             }) {
                                 Ok(outcome) => {
                                     saved_snapshot = Some((sha, outcome));
@@ -426,7 +432,18 @@ pub(crate) fn execute_write_op(op: &WriteOp) -> Result<WriteOutcome, EditorError
             path,
             content,
             clear_recovery,
+            expected_sha256,
         } => {
+            if let Some(expected) = expected_sha256.as_deref().filter(|hash| !hash.is_empty()) {
+                let current = if path.is_file() {
+                    fs_io::sha256_text(&fs_io::read_utf8(path)?)
+                } else {
+                    String::new()
+                };
+                if current != expected {
+                    return Err(EditorError::MirrorConflict);
+                }
+            }
             write_workspace_file(path, content)?;
             if let Some(recovery) = clear_recovery {
                 clear_recovery_copy(recovery)?;
@@ -652,6 +669,7 @@ mod tests {
                 path,
                 content: "draft".into(),
                 clear_recovery: None,
+                expected_sha256: None,
             })
             .unwrap();
         worker
@@ -664,6 +682,7 @@ mod tests {
                 snapshot: None,
                 mirror_path: None,
                 mirror_expected_sha256: None,
+                mirror_force: false,
             })
             .unwrap();
         let save = worker.rx.recv_timeout(wait);
@@ -825,6 +844,7 @@ mod tests {
                 path: protected.clone(),
                 content: "Attempted overwrite".into(),
                 clear_recovery: None,
+                expected_sha256: None,
             })
             .unwrap_err();
             assert!(error.to_string().contains("Protected voice data"));

@@ -1,6 +1,6 @@
 use super::{Editor, JUDGE_DELAY, JudgeInFlight, ViewMode};
 use crate::{
-    documents::{CachedJudge, DocumentBuffer},
+    documents::{CachedJudge, DocId, DocumentBuffer},
     fs_io, prefs,
     worker::InFlight,
     workspace_tree,
@@ -428,6 +428,33 @@ impl Editor {
         self.set_view_mode(ViewMode::Compare, tx);
         self.focus_document(tx);
     }
+    pub(in crate::state) fn refresh_mirrored_tabs(
+        &mut self,
+        saved_id: &DocId,
+        mirror: &std::path::Path,
+        text: &str,
+    ) {
+        let hash = fs_io::sha256_text(text);
+        let mut flagged = false;
+        for doc in &mut self.documents {
+            if &doc.id == saved_id || !doc.matches_workspace_file(mirror) {
+                continue;
+            }
+            if doc.is_dirty() {
+                doc.conflict = Some(crate::documents::SessionConflict {
+                    disk_text: text.to_owned(),
+                    session_text: doc.edit.text.clone(),
+                });
+                flagged = true;
+            } else if !doc.finished {
+                doc.edit = TextEdit::new(text);
+                doc.last_disk_sha256 = hash.clone();
+            }
+        }
+        if flagged {
+            self.status = "A linked workspace file changed on disk.".into();
+        }
+    }
     pub(in crate::state) fn reconcile_active_linked_doc(&mut self) {
         let Some(index) = self.active_doc else { return };
         let doc_id = self.documents[index].id.clone();
@@ -458,6 +485,9 @@ impl Editor {
             let sync = Self::mirror_sync_hash(&self.store, &self.documents[index]);
             let matches_sync = sync.as_deref() == Some(disk_hash.as_str());
             let matches_buffer = disk_hash == buffer_hash;
+            if matches_buffer && !matches_sync && sync.is_some() {
+                self.remember_link_hash(&disk_hash);
+            }
             if !matches_sync && !matches_buffer {
                 let session_text = self.documents[index].edit.text.clone();
                 self.documents[index].conflict = Some(crate::documents::SessionConflict {

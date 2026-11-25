@@ -81,7 +81,6 @@ pub(crate) struct WorkspaceChrome {
     pub(crate) active_dialog: Option<DialogKind>,
     pub(crate) dialog_input: TextEdit,
     pub(crate) dialog_error: Option<String>,
-    pub(crate) pending_close: Option<DocId>,
 }
 
 pub(crate) struct Editor {
@@ -722,9 +721,9 @@ pub(crate) fn on_window_close(editor: &mut Editor, tx: &mut Tx) {
 impl Drop for Editor {
     fn drop(&mut self) {
         if !self.flush_on_exit() {
-            if self.quit_recovery_needed {
-                self.write_quit_recovery();
-            }
+            // A cancelled quit can clear quit_recovery_needed before later edits.
+            // Drop still has to keep every dirty buffer recoverable.
+            self.write_quit_recovery();
             self.worker.shutdown();
         }
         self.bridge.shutdown();

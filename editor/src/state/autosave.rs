@@ -8,7 +8,7 @@ use crate::{
     workspace_tree,
 };
 use rune::Tx;
-use std::{collections::HashSet, time::Duration};
+use std::{collections::HashSet, path::PathBuf, time::Duration};
 
 impl Editor {
     pub(crate) fn toggle_autosave(&mut self) {
@@ -16,6 +16,16 @@ impl Editor {
         let _ = prefs::save_store(&self.store);
         if self.store.ui.autosave_workspace_files {
             self.flush_autosave_buffers();
+        } else {
+            for doc in &mut self.documents {
+                if doc.is_session() {
+                    continue;
+                }
+                doc.autosave_due = None;
+                if doc.is_dirty() {
+                    doc.recovery_due = Some(0.0);
+                }
+            }
         }
     }
     pub(crate) fn changed_active(&mut self, tx: &mut Tx) {
@@ -36,6 +46,7 @@ impl Editor {
         let doc = &mut self.documents[idx];
         doc.pinned = true;
         doc.generation += 1;
+        doc.close_after_save = false;
         doc.save_error = None;
         doc.last_saved_label = Some("Unsaved".into());
         let delay = if doc.is_session() {
@@ -77,7 +88,7 @@ impl Editor {
             return;
         };
         let doc = &mut self.documents[idx];
-        if !doc.is_editable() {
+        if !doc.can_save() {
             return;
         }
         if !doc.is_dirty() && !doc.recovery_path().is_file() {
@@ -194,7 +205,9 @@ impl Editor {
                 (doc.voice_project.clone(), doc.session_id.clone())
         {
             let doc_id = doc.id.clone();
-            let snapshot = doc.is_dirty().then(|| {
+            let mirror_force = std::mem::take(&mut doc.force_mirror);
+            doc.pending_save = false;
+            let snapshot = (doc.is_dirty() || mirror_force).then(|| {
                 let notes = doc
                     .notes
                     .as_ref()
@@ -210,6 +223,7 @@ impl Editor {
                 snapshot,
                 mirror_path: doc.mirror_path.clone(),
                 mirror_expected_sha256: Self::mirror_sync_hash(&self.store, doc),
+                mirror_force,
             }) {
                 Ok(()) => {
                     self.worker_busy = Some((doc_id, InFlight::Finish));
@@ -261,6 +275,7 @@ impl Editor {
                     path: doc.path.clone(),
                     content: doc.edit.text.clone(),
                     clear_recovery: Some(doc.recovery_path()),
+                    expected_sha256: Some(doc.last_disk_sha256.clone()),
                 }
             };
             match self.worker.send(req) {
@@ -311,12 +326,18 @@ impl Editor {
             } => {
                 let mut saved_ok = false;
                 let mut should_close = false;
+                let mut mirrored: Option<(PathBuf, String)> = None;
                 if let Some(doc) = self.documents.iter_mut().find(|d| d.id == doc_id) {
                     match result {
                         Ok(_) if generation < doc.saved_generation => {
                             // An older save finished after a newer one. Drop it so it cannot rewind the sync hash.
                         }
                         Ok(outcome) => {
+                            if let WriteOutcome::Mirrored = outcome
+                                && let Some(path) = doc.mirror_path.clone()
+                            {
+                                mirrored = Some((path, doc.edit.text.clone()));
+                            }
                             let warning = Self::saved_snapshot(
                                 &mut self.store,
                                 doc,
@@ -324,8 +345,14 @@ impl Editor {
                                 sha256,
                                 outcome,
                             );
-                            doc.save_error = None;
-                            if doc.is_dirty() {
+                            let stale_finish =
+                                doc.finish_error.is_some() && generation < doc.generation;
+                            if !stale_finish {
+                                doc.save_error = None;
+                            }
+                            if doc.finish_requested {
+                                doc.pending_save = false;
+                            } else if doc.is_dirty() {
                                 if doc.is_session() || self.store.ui.autosave_workspace_files {
                                     doc.pending_save = true;
                                 }
@@ -337,7 +364,7 @@ impl Editor {
                                     || "Saved locally".into(),
                                     |reason| format!("Saved locally. {reason}"),
                                 );
-                                if self.chrome.pending_close.as_ref() == Some(&doc_id) {
+                                if doc.close_after_save {
                                     should_close = true;
                                 }
                             }
@@ -348,12 +375,14 @@ impl Editor {
                         }
                         Err(error) => {
                             doc.autosave_due = None;
-                            doc.save_error = Some(error.to_string());
-                            if self.chrome.pending_close.as_ref() == Some(&doc_id) {
-                                self.chrome.pending_close = None;
+                            doc.close_after_save = false;
+                            if doc.finish_error.is_none() || generation >= doc.generation {
+                                doc.save_error = Some(error.to_string());
                             }
                             if doc.finish_requested {
                                 doc.finish_requested = false;
+                                doc.pending_save = false;
+                                doc.finish_error = Some(error.to_string());
                                 self.status = format!("Finish stopped: {error}");
                             } else if doc.pending_save && doc.generation > generation {
                                 // retry next newer edit
@@ -364,10 +393,13 @@ impl Editor {
                         }
                     }
                 }
+                if let Some((path, text)) = mirrored {
+                    self.refresh_mirrored_tabs(&doc_id, &path, &text);
+                }
                 if should_close
                     && let Some(pos) = self.documents.iter().position(|d| d.id == doc_id)
                 {
-                    self.chrome.pending_close = None;
+                    self.documents[pos].close_after_save = false;
                     self.remove_doc_at(pos);
                     if let Some(tx) = tx {
                         self.sync_window_title(tx);
@@ -378,13 +410,13 @@ impl Editor {
             WorkerReply::RecoveryWritten { doc_id, result } => match result {
                 Ok(_) => {
                     if let Some(doc) = self.documents.iter_mut().find(|d| d.id == doc_id) {
-                        doc.save_error = None;
+                        doc.recovery_error = None;
                     }
                     true
                 }
                 Err(error) => {
                     if let Some(doc) = self.documents.iter_mut().find(|d| d.id == doc_id) {
-                        doc.save_error = Some(error.to_string());
+                        doc.recovery_error = Some(error.to_string());
                     }
                     self.status = format!("Recovery failed: {error}");
                     false
@@ -440,6 +472,8 @@ impl Editor {
                             finished_ok = true;
                         }
                         Err(error) => {
+                            doc.pending_save = false;
+                            doc.finish_error = Some(error.to_string());
                             doc.save_error = Some(error.to_string());
                             self.status = format!("Finish stopped: {error}");
                         }
@@ -583,7 +617,7 @@ impl Editor {
             if let Some(error) = self
                 .documents
                 .iter()
-                .find_map(|doc| doc.save_error.as_ref())
+                .find_map(|doc| doc.save_error.as_ref().or(doc.recovery_error.as_ref()))
             {
                 self.status = format!("Workspace not changed: {error}");
             } else if !self.status.contains("worker stopped") {

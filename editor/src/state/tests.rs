@@ -3952,3 +3952,488 @@ fn linked_session_files_skips_finished_sessions_and_picks_newest_deterministical
     }
     let _ = fs::remove_dir_all(&base);
 }
+
+#[test]
+fn drop_writes_recovery_after_a_cancelled_quit_and_a_later_edit() {
+    let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = crate::test_util::TestDir::new("quit-cancel");
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let prev_home = std::env::var_os("GHOSTLESS_HOME");
+    unsafe {
+        std::env::set_var("GHOSTLESS_HOME", &home);
+    }
+    let file = root.join("draft.md");
+    fs::write(&file, "disk").unwrap();
+    let writer: WriteRunner = Box::new(|_| Err("save unavailable".into()));
+    let mut editor = Editor::empty_with_handlers(
+        prefs::EditorStateStore::default(),
+        ok_runner(),
+        writer,
+        noop_wake(),
+    );
+    editor.open_workspace_file(file, true);
+    editor.active_working_edit_mut().text = "first edit".into();
+    editor.changed_active(&mut Tx::default());
+    let recovery = editor.active_doc_ref().unwrap().recovery_path();
+    editor.on_application_quit();
+    assert!(recovery.is_file());
+    fs::remove_file(&recovery).unwrap();
+    editor.active_working_edit_mut().text = "edited after cancel".into();
+    editor.changed_active(&mut Tx::default());
+    drop(editor);
+    let restored = fs::read_to_string(recovery).unwrap();
+    assert!(restored.contains("edited after cancel"), "{restored}");
+    unsafe {
+        if let Some(value) = prev_home {
+            std::env::set_var("GHOSTLESS_HOME", value);
+        } else {
+            std::env::remove_var("GHOSTLESS_HOME");
+        }
+    }
+}
+
+#[test]
+fn back_to_back_close_saves_do_not_drop_a_tab_and_an_edit_cancels_close() {
+    let (writer, started, release) = block_first_write(Box::new(|op| {
+        if let WriteOp::File { content, .. } = op {
+            assert!(!content.is_empty());
+        }
+        Ok(WriteOutcome::Local)
+    }));
+    let mut store = prefs::EditorStateStore::default();
+    store.ui.autosave_workspace_files = false;
+    let mut editor = Editor::empty_with_handlers(store, ok_runner(), writer, noop_wake());
+    for name in ["a.md", "b.md"] {
+        editor.documents.push(DocumentBuffer::from_workspace_file(
+            PathBuf::from(format!("/tmp/{name}")),
+            name.into(),
+            "old".into(),
+            false,
+            false,
+            true,
+            None,
+        ));
+    }
+    editor.active_doc = Some(0);
+    let mut tx = Tx::default();
+    editor.active_working_edit_mut().text = "A".into();
+    editor.changed_active(&mut tx);
+    editor.chrome.active_dialog = Some(DialogKind::ConfirmClose {
+        doc_id: editor.documents[0].id.clone(),
+        title: "a.md".into(),
+    });
+    editor.confirm_close_save();
+    started.recv_timeout(Duration::from_secs(2)).unwrap();
+
+    editor.active_doc = Some(1);
+    editor.active_working_edit_mut().text = "B".into();
+    editor.changed_active(&mut tx);
+    editor.chrome.active_dialog = Some(DialogKind::ConfirmClose {
+        doc_id: editor.documents[1].id.clone(),
+        title: "b.md".into(),
+    });
+    editor.confirm_close_save();
+    assert!(editor.documents.iter().all(|doc| doc.close_after_save));
+    release.send(()).unwrap();
+    drain_until_idle(&mut editor);
+    assert!(editor.documents.is_empty());
+
+    let mut editor = Editor::empty_with_handlers(
+        {
+            let mut store = prefs::EditorStateStore::default();
+            store.ui.autosave_workspace_files = false;
+            store
+        },
+        ok_runner(),
+        ok_writer(),
+        noop_wake(),
+    );
+    editor.documents.push(DocumentBuffer::from_workspace_file(
+        "/tmp/stay.md".into(),
+        "stay.md".into(),
+        "old".into(),
+        false,
+        false,
+        true,
+        None,
+    ));
+    editor.active_doc = Some(0);
+    editor.active_working_edit_mut().text = "dirty".into();
+    editor.changed_active(&mut tx);
+    editor.chrome.active_dialog = Some(DialogKind::ConfirmClose {
+        doc_id: editor.documents[0].id.clone(),
+        title: "stay.md".into(),
+    });
+    editor.confirm_close_save();
+    editor.active_working_edit_mut().text = "still editing".into();
+    editor.changed_active(&mut tx);
+    assert!(!editor.documents[0].close_after_save);
+    editor.save_clicked();
+    drain_until_idle(&mut editor);
+    assert_eq!(editor.documents.len(), 1);
+}
+
+#[test]
+fn finish_failure_survives_a_stale_save_and_recovery_keeps_save_errors() {
+    let mut editor = Editor::empty_with_handlers(
+        prefs::EditorStateStore::default(),
+        ok_runner(),
+        ok_writer(),
+        noop_wake(),
+    );
+    let doc = DocumentBuffer::from_session(test_session(), true, None);
+    let doc_id = doc.id.clone();
+    editor.documents.push(doc);
+    editor.active_doc = Some(0);
+    editor.documents[0].generation = 2;
+    editor.documents[0].finish_requested = true;
+    editor.documents[0].pending_save = true;
+    editor.apply_reply(
+        crate::worker::WorkerReply::Finished {
+            doc_id: doc_id.clone(),
+            generation: 2,
+            snapshot: None,
+            result: Err(EditorError::AlreadyFinished(
+                "This session is already finished. Start a new session to edit again.".into(),
+            )),
+        },
+        None,
+    );
+    assert!(!editor.documents[0].pending_save);
+    let finish_error = editor.documents[0].finish_error.clone().unwrap();
+    editor.apply_reply(
+        crate::worker::WorkerReply::Saved {
+            doc_id: doc_id.clone(),
+            generation: 1,
+            sha256: "stale".into(),
+            result: Ok(WriteOutcome::Local),
+        },
+        None,
+    );
+    assert_eq!(
+        editor.documents[0].finish_error.as_deref(),
+        Some(finish_error.as_str())
+    );
+    assert_eq!(
+        editor.documents[0].save_error.as_deref(),
+        Some(finish_error.as_str())
+    );
+
+    editor.documents[0].save_error = Some("disk failed".into());
+    editor.apply_reply(
+        crate::worker::WorkerReply::RecoveryWritten {
+            doc_id: doc_id.clone(),
+            result: Ok(WriteOutcome::Local),
+        },
+        None,
+    );
+    assert_eq!(
+        editor.documents[0].save_error.as_deref(),
+        Some("disk failed")
+    );
+    assert!(editor.documents[0].recovery_error.is_none());
+    editor.apply_reply(
+        crate::worker::WorkerReply::RecoveryWritten {
+            doc_id,
+            result: Err("recovery disk full".into()),
+        },
+        None,
+    );
+    assert_eq!(
+        editor.documents[0].save_error.as_deref(),
+        Some("disk failed")
+    );
+    assert_eq!(
+        editor.documents[0].recovery_error.as_deref(),
+        Some("recovery disk full")
+    );
+}
+
+#[test]
+fn manual_save_writes_a_dirty_user_locked_file_and_rejects_a_stale_sha() {
+    let saved = Arc::new(Mutex::new(Vec::new()));
+    let recorded = saved.clone();
+    let writer: WriteRunner = Box::new(move |op| {
+        if let WriteOp::File { content, .. } = op {
+            recorded.lock().unwrap().push(content.clone());
+        }
+        Ok(WriteOutcome::Local)
+    });
+    let mut store = prefs::EditorStateStore::default();
+    store.ui.autosave_workspace_files = false;
+    let mut editor = Editor::empty_with_handlers(store, ok_runner(), writer, noop_wake());
+    editor.documents.push(DocumentBuffer::from_workspace_file(
+        "/tmp/locked.md".into(),
+        "locked.md".into(),
+        "old".into(),
+        false,
+        true,
+        true,
+        None,
+    ));
+    editor.active_doc = Some(0);
+    editor.documents[0].user_locked = true;
+    editor.documents[0].generation = 1;
+    editor.active_working_edit_mut().text = "locked save".into();
+    editor.save_clicked();
+    drain_until_idle(&mut editor);
+    assert_eq!(*saved.lock().unwrap(), ["locked save"]);
+
+    let root = crate::test_util::TestDir::new("sha-guard");
+    let file = root.join("draft.md");
+    fs::write(&file, "original\n").unwrap();
+    let mut editor = Editor::empty_with_handlers(
+        {
+            let mut store = prefs::EditorStateStore::default();
+            store.ui.autosave_workspace_files = false;
+            store
+        },
+        ok_runner(),
+        Box::new(crate::worker::execute_write_op),
+        noop_wake(),
+    );
+    editor.open_workspace_file(file.clone(), true);
+    fs::write(&file, "external\n").unwrap();
+    editor.active_working_edit_mut().text = "local\n".into();
+    editor.changed_active(&mut Tx::default());
+    editor.save_clicked();
+    drain_until_idle(&mut editor);
+    assert_eq!(fs::read_to_string(&file).unwrap(), "external\n");
+    assert!(
+        editor.status.contains("changed outside"),
+        "{}",
+        editor.status
+    );
+}
+
+#[test]
+fn toggling_autosave_off_arms_recovery_and_workspace_switch_clears_chrome() {
+    let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = crate::test_util::TestDir::new("autosave-off");
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let prev_home = std::env::var_os("GHOSTLESS_HOME");
+    unsafe {
+        std::env::set_var("GHOSTLESS_HOME", &home);
+    }
+    let mut store = prefs::EditorStateStore::default();
+    store.ui.autosave_workspace_files = true;
+    let mut editor = Editor::empty_with_handlers(store, ok_runner(), ok_writer(), noop_wake());
+    editor.documents.push(DocumentBuffer::from_workspace_file(
+        root.join("note.md"),
+        "note.md".into(),
+        "old".into(),
+        false,
+        false,
+        true,
+        None,
+    ));
+    editor.active_doc = Some(0);
+    editor.documents[0].generation = 1;
+    editor.documents[0].autosave_due = Some(50.0);
+    editor.toggle_autosave();
+    assert!(editor.documents[0].autosave_due.is_none());
+    assert_eq!(editor.documents[0].recovery_due, Some(0.0));
+
+    let file = root.join("clean.md");
+    fs::write(&file, "clean").unwrap();
+    editor.documents.clear();
+    editor.active_doc = None;
+    editor.open_workspace_file(file, true);
+    editor.chrome.focus_mode = true;
+    editor.chrome.view_settings_open = true;
+    editor.chrome.active_dialog = Some(DialogKind::StartSession);
+    editor.chrome.dialog_error = Some("stale".into());
+    let other = root.join("other");
+    fs::create_dir_all(&other).unwrap();
+    editor.open_workspace_with_voice(other, None, None);
+    assert!(editor.chrome.active_dialog.is_none());
+    assert!(editor.chrome.dialog_error.is_none());
+    assert!(!editor.chrome.focus_mode);
+    assert!(!editor.chrome.view_settings_open);
+    unsafe {
+        if let Some(value) = prev_home {
+            std::env::set_var("GHOSTLESS_HOME", value);
+        } else {
+            std::env::remove_var("GHOSTLESS_HOME");
+        }
+    }
+}
+
+#[test]
+fn keep_session_then_finish_mirrors_and_reconcile_refreshes_the_sync_hash() {
+    let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = crate::test_util::TestDir::new("keep-finish");
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let prev_home = std::env::var_os("GHOSTLESS_HOME");
+    unsafe {
+        std::env::set_var("GHOSTLESS_HOME", &home);
+    }
+    let project = root.join("voice");
+    fs::create_dir_all(&project).unwrap();
+    let draft = project.join("draft.md");
+    fs::write(&draft, "disk copy\n").unwrap();
+    let session_id = "2026-05-01-notes";
+    let body = "session copy\n";
+    let before_sha = write_test_session_dir(
+        &project,
+        session_id,
+        "draft.md",
+        "2026-05-01T00:00:00Z",
+        body,
+        body,
+        false,
+    );
+    let mut session = test_session();
+    session.project = project.clone();
+    session.id = session_id.into();
+    session.original = body.into();
+    session.after = body.into();
+    session.before_sha256 = before_sha;
+    let mut store = prefs::EditorStateStore::default();
+    let key = prefs::EditorStateStore::session_link_key(&project, session_id);
+    store.session_links.insert(
+        key.clone(),
+        prefs::SessionLink {
+            workspace_file: draft.clone(),
+            last_synced_sha256: "stale".into(),
+        },
+    );
+    let mut editor = Editor::with_handlers(
+        session,
+        store,
+        ok_runner(),
+        Box::new(crate::worker::execute_write_op),
+        noop_wake(),
+    );
+    {
+        let doc = editor.active_doc_mut().unwrap();
+        doc.mirror_path = Some(draft.clone());
+        doc.conflict = Some(crate::documents::SessionConflict {
+            disk_text: "disk copy\n".into(),
+            session_text: body.into(),
+        });
+        doc.force_mirror = true;
+    }
+    editor.finish();
+    drain_until_idle(&mut editor);
+    assert_eq!(fs::read_to_string(&draft).unwrap(), body);
+
+    fs::write(&draft, body).unwrap();
+    {
+        let doc = editor.active_doc_mut().unwrap();
+        doc.finished = false;
+        doc.read_only = false;
+        doc.mirror_path = Some(draft.clone());
+        doc.edit = rune::TextEdit::new(body);
+        doc.conflict = Some(crate::documents::SessionConflict {
+            disk_text: body.into(),
+            session_text: body.into(),
+        });
+        doc.saved_generation = doc.generation;
+    }
+    editor
+        .store
+        .session_links
+        .get_mut(&key)
+        .unwrap()
+        .last_synced_sha256 = "stale".into();
+    editor.reconcile_active_linked_doc();
+    assert!(editor.active_doc_ref().unwrap().conflict.is_none());
+    assert_eq!(
+        editor.store.session_links[&key].last_synced_sha256,
+        fs_io::sha256_text(body)
+    );
+
+    let clean = DocumentBuffer::from_workspace_file(
+        draft.clone(),
+        "draft.md".into(),
+        "old tab".into(),
+        false,
+        false,
+        true,
+        None,
+    );
+    let mut dirty = DocumentBuffer::from_workspace_file(
+        draft.clone(),
+        "draft.md".into(),
+        "dirty tab".into(),
+        false,
+        false,
+        true,
+        None,
+    );
+    dirty.generation = 1;
+    let saved_id = editor.documents[0].id.clone();
+    editor.documents.push(clean);
+    editor.documents.push(dirty);
+    editor.documents[0].mirror_path = Some(draft);
+    editor.documents[0].edit = rune::TextEdit::new("mirrored body\n");
+    editor.apply_reply(
+        crate::worker::WorkerReply::Saved {
+            doc_id: saved_id,
+            generation: editor.documents[0].generation,
+            sha256: fs_io::sha256_text("mirrored body\n"),
+            result: Ok(WriteOutcome::Mirrored),
+        },
+        None,
+    );
+    assert_eq!(editor.documents[1].edit.text, "mirrored body\n");
+    assert!(editor.documents[2].conflict.is_some());
+    unsafe {
+        if let Some(value) = prev_home {
+            std::env::set_var("GHOSTLESS_HOME", value);
+        } else {
+            std::env::remove_var("GHOSTLESS_HOME");
+        }
+    }
+}
+
+#[test]
+fn finish_after_an_inflight_save_still_mirrors_a_kept_session() {
+    let root = crate::test_util::TestDir::new("finish-inflight");
+    let project = root.join("voice");
+    fs::create_dir_all(&project).unwrap();
+    let draft = project.join("draft.md");
+    fs::write(&draft, "disk copy\n").unwrap();
+    let session_id = "2026-05-02-notes";
+    let body = "session copy\n";
+    let before_sha = write_test_session_dir(
+        &project,
+        session_id,
+        "draft.md",
+        "2026-05-02T00:00:00Z",
+        body,
+        body,
+        false,
+    );
+    let mut session = test_session();
+    session.project = project;
+    session.id = session_id.into();
+    session.original = body.into();
+    session.after = body.into();
+    session.before_sha256 = before_sha;
+    let (writer, started, release) = block_first_write(Box::new(crate::worker::execute_write_op));
+    let mut editor = Editor::with_handlers(
+        session,
+        prefs::EditorStateStore::default(),
+        ok_runner(),
+        writer,
+        noop_wake(),
+    );
+    {
+        let doc = editor.active_doc_mut().unwrap();
+        doc.mirror_path = Some(draft.clone());
+        doc.edit = rune::TextEdit::new("session copy\n");
+        doc.generation = doc.saved_generation + 1;
+    }
+    editor.save_clicked();
+    started.recv_timeout(Duration::from_secs(2)).unwrap();
+    editor.active_doc_mut().unwrap().force_mirror = true;
+    editor.finish();
+    release.send(()).unwrap();
+    drain_until_idle(&mut editor);
+    assert_eq!(fs::read_to_string(&draft).unwrap(), body);
+}
