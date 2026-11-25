@@ -163,5 +163,7 @@ def _manifest_kind(path: Path) -> str | None:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    if not isinstance(data, dict):
+        return None
     kind = data.get("kind")
     return kind if isinstance(kind, str) else None

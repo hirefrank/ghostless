@@ -3,18 +3,21 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
 
 from ghostless.eval import evaluate, load_edit_pairs  # noqa: E402
 from ghostless.learn import learn_edit, promote_final, refresh_edit_summary  # noqa: E402
-from ghostless.paths import ProjectError  # noqa: E402
+from ghostless.paths import ProjectError, find_project_with_source  # noqa: E402
 from ghostless.project import (  # noqa: E402
     discover,
     init_project,
@@ -129,6 +132,29 @@ class ManifestAndDateValidationTests(unittest.TestCase):
         data = json.loads(path.read_text(encoding="utf-8"))
         data.update(updates)
         path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    def test_non_object_manifest_fails_as_project_error(self) -> None:
+        for payload in ("[]", '"x"', "123", "true"):
+            with self.subTest(payload=payload):
+                (self.project / "manifest.json").write_text(payload + "\n", encoding="utf-8")
+                with self.assertRaises(ProjectError) as caught:
+                    find_project_with_source(self.project)
+                self.assertNotIsInstance(caught.exception.__cause__, AttributeError)
+                self.assertIn("Not a ghostless project", str(caught.exception))
+
+    def test_non_object_manifest_is_ignored_while_walking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp)
+            (bad / "manifest.json").write_text("[]\n", encoding="utf-8")
+            nested = bad / "voice"
+            nested.mkdir()
+            (nested / "manifest.json").write_text("123\n", encoding="utf-8")
+            home = bad / "home"
+            home.mkdir()
+            with contextlib.chdir(bad), patch.dict(os.environ, {"GHOSTLESS_HOME": str(home)}):
+                os.environ.pop("GHOSTLESS_PROJECT", None)
+                with self.assertRaisesRegex(ProjectError, "No ghostless project"):
+                    find_project_with_source()
 
     def test_manifest_rejects_boolean_weights(self) -> None:
         for tier in ("gold", "silver", "bronze", "edited"):

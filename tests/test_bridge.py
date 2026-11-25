@@ -40,6 +40,26 @@ class BridgeTests(unittest.TestCase):
         self.addCleanup(env.stop)
         os.environ.pop("GHOSTLESS_PROJECT", None)
 
+    def test_non_object_manifest_is_a_clean_project_error(self) -> None:
+        for payload in ("[]", '"x"', "123"):
+            with self.subTest(payload=payload):
+                (self.voice / "manifest.json").write_text(payload + "\n", encoding="utf-8")
+                response = handle_request(
+                    {
+                        "id": 1,
+                        "method": "judge_text",
+                        "params": {"project": str(self.voice), "text": "Hello."},
+                    }
+                )
+                self.assertFalse(response["ok"])
+                self.assertNotIn("AttributeError", str(response["error"]))
+                self.assertIn("Not a ghostless project", str(response["error"]))
+                resolved = handle_request(
+                    {"id": 2, "method": "resolve_project", "params": {"path": str(self.voice)}}
+                )
+                self.assertTrue(resolved["ok"])
+                self.assertEqual(resolved["result"], {"project": None, "source": None})
+
     def test_explicit_unrelated_workspace_does_not_use_default(self) -> None:
         home = self.base / "home"
         home.mkdir(parents=True, exist_ok=True)

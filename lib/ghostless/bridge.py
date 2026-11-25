@@ -57,8 +57,7 @@ def _resolve_project(params: dict[str, object]) -> dict[str, object]:
     for candidate in candidates:
         try:
             root, source = find_project_with_source(candidate)
-        except (ProjectError, AttributeError):
-            # A non-object manifest also cannot identify a ghostless project.
+        except ProjectError:
             continue
         return {"project": str(root), "source": source}
     return {"project": None, "source": None}
@@ -157,10 +156,7 @@ class _Worker:
     def _dispatch(self, method: str, params: dict[str, object]) -> object:
         def root() -> Path:
             path = Path(_required_text(params, "project"))
-            try:
-                return find_project_with_source(path)[0]
-            except AttributeError as exc:
-                raise ProjectError(f"Invalid project manifest at {path / 'manifest.json'}.") from exc
+            return find_project_with_source(path)[0]
 
         match method:
             case "ping":

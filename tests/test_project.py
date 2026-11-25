@@ -609,13 +609,20 @@ class DefaultProjectTests(unittest.TestCase):
 class VersionFileTests(unittest.TestCase):
     def test_versions_match(self) -> None:
         package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        version = package["version"]
+        self.assertIsInstance(version, str)
+        self.assertTrue(version)
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        cargo = (ROOT / "editor" / "Cargo.toml").read_text(encoding="utf-8")
 
         self.assertEqual(package["name"], "ghostless")
-        self.assertEqual(package["version"], "0.1.0")
-        self.assertEqual(__version__, "0.1.0")
-        self.assertIn('version = "0.1.0"', pyproject)
+        self.assertEqual(__version__, version)
+        self.assertIn(f'version = "{version}"', pyproject)
         self.assertIn('name = "ghostless"', pyproject)
+        self.assertEqual(_cargo_package_version(cargo), version)
+        for skill in ("ghostless-draft", "ghostless-edit", "ghostless-learn"):
+            text = (ROOT / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
+            self.assertEqual(_skill_metadata_version(text), version, skill)
 
     def test_changelog_and_publish_workflow_guards(self) -> None:
         package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
@@ -630,17 +637,9 @@ class VersionFileTests(unittest.TestCase):
             workflow.index("npm publish"),
         )
 
-        # Ensure Unreleased contains zero bullets and the current version section holds shipped items.
+        # Unreleased bullets are allowed between tags. The publish workflow
+        # rejects them at tag time; that awk guard is checked on fixtures below.
         lines = changelog.splitlines()
-        unreleased_idx = next(i for i, line in enumerate(lines) if line.startswith("## Unreleased"))
-        next_heading_idx = next(
-            i for i in range(unreleased_idx + 1, len(lines)) if lines[i].startswith("## ")
-        )
-        unreleased_bullets = [
-            line for line in lines[unreleased_idx + 1 : next_heading_idx] if line.startswith("- ")
-        ]
-        self.assertEqual(unreleased_bullets, [])
-
         version_idx = next(
             i for i, line in enumerate(lines) if line.startswith(f"## v{version}")
         )
@@ -667,14 +666,6 @@ class VersionFileTests(unittest.TestCase):
             "inside && /^## / { exit }\n"
             "inside { print }"
         )
-        guard_real = subprocess.run(
-            [awk, unreleased_awk, str(ROOT / "CHANGELOG.md")],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(guard_real.returncode, 1)
-
         extracted = subprocess.run(
             [awk, "-v", f"ver={version}", extract_awk, str(ROOT / "CHANGELOG.md")],
             check=False,
@@ -686,18 +677,76 @@ class VersionFileTests(unittest.TestCase):
         self.assertIn("ghostless rules", extracted.stdout)
 
         with tempfile.TemporaryDirectory() as tmp:
-            synthetic = Path(tmp) / "CHANGELOG.md"
-            synthetic.write_text(
+            base = Path(tmp)
+            stranded = base / "stranded.md"
+            stranded.write_text(
                 f"# Changelog\n\n## Unreleased\n\n- Stranded item.\n\n## v{version} — 2026-11-23\n\n- Shipped.\n",
                 encoding="utf-8",
             )
-            guard_synthetic = subprocess.run(
-                [awk, unreleased_awk, str(synthetic)],
+            guard_stranded = subprocess.run(
+                [awk, unreleased_awk, str(stranded)],
                 check=False,
                 capture_output=True,
                 text=True,
             )
-            self.assertEqual(guard_synthetic.returncode, 0)
+            self.assertEqual(guard_stranded.returncode, 0)
+
+            clear = base / "clear.md"
+            clear.write_text(
+                f"# Changelog\n\n## Unreleased\n\n## v{version} — 2026-11-23\n\n- Shipped.\n",
+                encoding="utf-8",
+            )
+            guard_clear = subprocess.run(
+                [awk, unreleased_awk, str(clear)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(guard_clear.returncode, 1)
+
+            missing = base / "missing.md"
+            missing.write_text(
+                "# Changelog\n\n## Unreleased\n\n## v0.0.0 — 2026-11-23\n\n- Other.\n",
+                encoding="utf-8",
+            )
+            extracted_missing = subprocess.run(
+                [awk, "-v", f"ver={version}", extract_awk, str(missing)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(extracted_missing.returncode, 0, extracted_missing.stderr)
+            self.assertEqual(extracted_missing.stdout.strip(), "")
+
+
+def _cargo_package_version(cargo: str) -> str:
+    in_package = False
+    for line in cargo.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_package = stripped == "[package]"
+            continue
+        if in_package and stripped.startswith("version"):
+            return stripped.split("=", 1)[1].strip().strip('"')
+    raise AssertionError("editor/Cargo.toml has no [package] version")
+
+
+def _skill_metadata_version(text: str) -> str:
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise AssertionError("SKILL.md is missing frontmatter")
+    in_metadata = False
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if line.startswith("metadata:"):
+            in_metadata = True
+            continue
+        if in_metadata and line.startswith("  version:"):
+            return line.split(":", 1)[1].strip().strip('"')
+        if in_metadata and line and not line.startswith((" ", "\t")):
+            in_metadata = False
+    raise AssertionError("SKILL.md is missing metadata.version")
 
 
 def _require_git(test: unittest.TestCase) -> None:
