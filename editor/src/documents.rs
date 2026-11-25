@@ -191,6 +191,35 @@ impl DocumentBuffer {
         self.session_id.is_some()
     }
 
+    pub(crate) fn matches_session(&self, project: &Path, session_id: &str) -> bool {
+        match &self.id {
+            DocId::Session {
+                project: doc_project,
+                id,
+            } => id == session_id && same_canonical_path(doc_project, project),
+            DocId::File(_) => {
+                self.session_id.as_deref() == Some(session_id)
+                    && self
+                        .voice_project
+                        .as_deref()
+                        .is_some_and(|doc_project| same_canonical_path(doc_project, project))
+            }
+        }
+    }
+
+    pub(crate) fn matches_workspace_file(&self, canon: &Path) -> bool {
+        match &self.id {
+            DocId::File(path) => same_canonical_path(path, canon),
+            DocId::Session { .. } => {
+                !self.finished
+                    && self
+                        .mirror_path
+                        .as_deref()
+                        .is_some_and(|path| same_canonical_path(path, canon))
+            }
+        }
+    }
+
     pub(crate) fn is_dirty(&self) -> bool {
         !self.finished && self.generation > self.saved_generation
     }
@@ -268,6 +297,14 @@ impl DocumentBuffer {
             Err(_) => "Saved locally".into(),
         }
     }
+}
+
+pub(crate) fn same_canonical_path(a: &Path, b: &Path) -> bool {
+    a == b
+        || a.canonicalize()
+            .ok()
+            .zip(b.canonicalize().ok())
+            .is_some_and(|(a, b)| a == b)
 }
 
 pub(crate) fn recovery_path_for(path: &Path) -> PathBuf {
