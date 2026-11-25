@@ -35,6 +35,20 @@ pub(crate) struct DecorationCache {
     pub description: String,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct CachedJudge {
+    pub voice_project: PathBuf,
+    pub judge_epoch: u64,
+    pub section: String,
+    pub report: crate::bridge::JudgeReport,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionConflict {
+    pub disk_text: String,
+    pub session_text: String,
+}
+
 pub(crate) struct DocumentBuffer {
     pub id: DocId,
     pub title: String,
@@ -61,6 +75,15 @@ pub(crate) struct DocumentBuffer {
     pub last_saved_label: Option<String>,
     pub save_error: Option<String>,
     pub last_disk_sha256: String,
+    /// Section chosen in the inspector. `None` follows frontmatter `section:`.
+    pub section_override: Option<String>,
+    /// Bumped when the judge section or voice guide changes, without dirtying the draft.
+    pub judge_epoch: u64,
+    /// Request id of the judge call that may still update this tab.
+    pub latest_judge_request: Option<u64>,
+    pub cached_judge: Option<CachedJudge>,
+    pub conflict: Option<SessionConflict>,
+    pub force_mirror: bool,
     cached_words: Cell<(u64, usize)>,
     pub(crate) decoration_cache: RefCell<Option<DecorationCache>>,
 }
@@ -102,6 +125,12 @@ impl DocumentBuffer {
             last_saved_label: if read_only { Some("Read-only".into()) } else { None },
             save_error: None,
             last_disk_sha256: sha,
+            section_override: None,
+            judge_epoch: 0,
+            latest_judge_request: None,
+            cached_judge: None,
+            conflict: None,
+            force_mirror: false,
             cached_words: Cell::new((u64::MAX, 0)),
             decoration_cache: RefCell::new(None),
         }
@@ -147,6 +176,12 @@ impl DocumentBuffer {
             last_saved_label: session.finished.then(|| "Finished".into()),
             save_error: None,
             last_disk_sha256: sha,
+            section_override: None,
+            judge_epoch: 0,
+            latest_judge_request: None,
+            cached_judge: None,
+            conflict: None,
+            force_mirror: false,
             cached_words: Cell::new((u64::MAX, 0)),
             decoration_cache: RefCell::new(None),
         }
@@ -154,6 +189,35 @@ impl DocumentBuffer {
 
     pub(crate) fn is_session(&self) -> bool {
         self.session_id.is_some()
+    }
+
+    pub(crate) fn matches_session(&self, project: &Path, session_id: &str) -> bool {
+        match &self.id {
+            DocId::Session {
+                project: doc_project,
+                id,
+            } => id == session_id && same_canonical_path(doc_project, project),
+            DocId::File(_) => {
+                self.session_id.as_deref() == Some(session_id)
+                    && self
+                        .voice_project
+                        .as_deref()
+                        .is_some_and(|doc_project| same_canonical_path(doc_project, project))
+            }
+        }
+    }
+
+    pub(crate) fn matches_workspace_file(&self, canon: &Path) -> bool {
+        match &self.id {
+            DocId::File(path) => same_canonical_path(path, canon),
+            DocId::Session { .. } => {
+                !self.finished
+                    && self
+                        .mirror_path
+                        .as_deref()
+                        .is_some_and(|path| same_canonical_path(path, canon))
+            }
+        }
     }
 
     pub(crate) fn is_dirty(&self) -> bool {
@@ -233,6 +297,14 @@ impl DocumentBuffer {
             Err(_) => "Saved locally".into(),
         }
     }
+}
+
+pub(crate) fn same_canonical_path(a: &Path, b: &Path) -> bool {
+    a == b
+        || a.canonicalize()
+            .ok()
+            .zip(b.canonicalize().ok())
+            .is_some_and(|(a, b)| a == b)
 }
 
 pub(crate) fn recovery_path_for(path: &Path) -> PathBuf {

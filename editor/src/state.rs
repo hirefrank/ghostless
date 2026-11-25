@@ -2,6 +2,7 @@ use std::{
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 use rune::{Key, KeyEvent, TextEdit, Tx};
@@ -12,7 +13,7 @@ use rune_kit::{
 };
 use crate::{
     cli::run_cli,
-    documents::{DocId, DocumentBuffer},
+    documents::{CachedJudge, DocId, DocumentBuffer},
     fs_io,
     prefs,
     session::{LaunchTarget, Session, load_session},
@@ -46,6 +47,7 @@ fn tree_files(tree: &TreeModel<FileNode<WorkspaceEntry>>) -> Vec<WorkspaceEntry>
 
 pub(crate) const SESSION_AUTOSAVE_DELAY: Duration = Duration::from_millis(800);
 pub(crate) const FILE_AUTOSAVE_DELAY: Duration = Duration::from_millis(1500);
+pub(crate) const JUDGE_DELAY: Duration = Duration::from_millis(1200);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ViewMode {
@@ -80,6 +82,8 @@ pub(crate) enum DialogKind {
     Delete { rel_path: String, display_name: String, is_dir: bool },
     ConfirmClose { doc_id: DocId, title: String },
     Recover { doc_id: DocId, title: String },
+    StartSession,
+    ConfirmRevert,
 }
 
 pub(crate) struct Editor {
@@ -117,7 +121,31 @@ pub(crate) struct Editor {
     quit_recovery_needed: bool,
     pub(crate) reopen_window: Option<Box<dyn Fn()>>,
     pub(crate) status: String,
+    pub(crate) judge_due: Option<f64>,
+    judge_armed: bool,
+    judge_inflight: Option<JudgeInFlight>,
+    pub(crate) inspector_tab: usize,
+    pub(crate) section_menu_open: bool,
+    pub(crate) rule_draft: TextEdit,
+    pub(crate) toast: Option<String>,
+    pub(crate) pending_document_focus: bool,
+    pub(crate) compare_unified: bool,
+    pub(crate) conflict_compare: bool,
+    pub(crate) session_origin: String,
+    pub(crate) session_section: TextEdit,
+    pub(crate) session_sources: TextEdit,
+    pending_track: Option<DocId>,
+    session_start_inflight: Option<(DocId, u64)>,
+    pub(crate) bridge: crate::bridge::BridgeClient,
     pub(crate) worker: Worker,
+}
+
+struct JudgeInFlight {
+    doc_id: DocId,
+    generation: u64,
+    judge_epoch: u64,
+    section: String,
+    request_id: u64,
 }
 
 impl Editor {
@@ -160,6 +188,17 @@ impl Editor {
         writer: WriteRunner,
         wake: WakeFn,
     ) -> Self {
+        Self::with_handlers_backend(session, store, runner, writer, wake, None)
+    }
+
+    pub(crate) fn with_handlers_backend(
+        session: Session,
+        store: prefs::EditorStateStore,
+        runner: CliRunner,
+        writer: WriteRunner,
+        wake: WakeFn,
+        backend: Option<Box<dyn crate::bridge::BridgeBackend>>,
+    ) -> Self {
         let mirror_path = store
             .session_links
             .get(&prefs::EditorStateStore::session_link_key(
@@ -176,7 +215,7 @@ impl Editor {
             &session.after,
         )]);
         diff.set_mode(DiffMode::Split);
-        let worker = Worker::spawn_with_handlers(runner, writer, wake);
+        let (worker, bridge) = boot_io(runner, writer, wake, backend);
         let voice = Some(session.project.clone());
         let session_link = store.session_links.get(&prefs::EditorStateStore::session_link_key(&session.project, &session.id));
         let unknown_link = session_link.is_some_and(|link| link.last_synced_sha256.is_empty());
@@ -228,6 +267,22 @@ impl Editor {
             quit_recovery_needed: false,
             reopen_window: None,
             status,
+            judge_due: None,
+            judge_armed: true,
+            judge_inflight: None,
+            inspector_tab: 0,
+            section_menu_open: false,
+            rule_draft: TextEdit::new(""),
+            toast: None,
+            pending_document_focus: false,
+            compare_unified: false,
+            conflict_compare: false,
+            session_origin: "ai-first".into(),
+            session_section: TextEdit::new(""),
+            session_sources: TextEdit::new(""),
+            pending_track: None,
+            session_start_inflight: None,
+            bridge,
             worker,
         }
     }
@@ -238,7 +293,7 @@ impl Editor {
         writer: WriteRunner,
         wake: WakeFn,
     ) -> Self {
-        let worker = Worker::spawn_with_handlers(runner, writer, wake);
+        let (worker, bridge) = boot_io(runner, writer, wake, None);
         let diff = DiffState::new(Vec::new());
         let mut sb = PaneState::new(250.0)
             .range(180.0, 420.0)
@@ -287,6 +342,22 @@ impl Editor {
             quit_recovery_needed: false,
             reopen_window: None,
             status: "Ready".into(),
+            judge_due: None,
+            judge_armed: false,
+            judge_inflight: None,
+            inspector_tab: 0,
+            section_menu_open: false,
+            rule_draft: TextEdit::new(""),
+            toast: None,
+            pending_document_focus: false,
+            compare_unified: false,
+            conflict_compare: false,
+            session_origin: "ai-first".into(),
+            session_section: TextEdit::new(""),
+            session_sources: TextEdit::new(""),
+            pending_track: None,
+            session_start_inflight: None,
+            bridge,
             worker,
         }
     }
@@ -444,6 +515,12 @@ impl Editor {
             }
         }
 
+        self.judge_due = None;
+        self.judge_inflight = None;
+        self.conflict_compare = false;
+        self.pending_track = None;
+        self.session_start_inflight = None;
+        self.judge_armed = self.active_doc.is_some();
         if let Err(error) = prefs::save_store(&self.store) {
             self.status = error;
         } else {
@@ -475,8 +552,11 @@ impl Editor {
 
     pub(crate) fn open_workspace_file(&mut self, path: PathBuf, pin: bool) {
         let canon = path.canonicalize().unwrap_or(path);
-        let id = DocId::File(canon.clone());
-        if let Some(pos) = self.documents.iter().position(|d| d.id == id) {
+        if let Some(pos) = self
+            .documents
+            .iter()
+            .position(|d| d.matches_workspace_file(&canon))
+        {
             if pin {
                 self.documents[pos].pinned = true;
             }
@@ -539,7 +619,10 @@ impl Editor {
             self.file_tree.select(&rel);
         }
         self.save_open_tabs_pref();
+        self.reconcile_linked_file();
         self.prompt_recovery_if_needed();
+        self.judge_due = None;
+        self.judge_armed = true;
     }
 
     fn prompt_recovery_if_needed(&mut self) {
@@ -568,7 +651,10 @@ impl Editor {
                     doc.generation += 1;
                     doc.pinned = true;
                     doc.last_saved_label = Some("Unsaved".into());
+                    doc.cached_judge = None;
+                    doc.latest_judge_request = None;
                     self.refresh_diff();
+                    self.judge_armed = true;
                     self.status = "Recovered unsaved changes; save when ready".into();
                 }
                 Err(error) => { self.dialog_error = Some(error); return; }
@@ -584,13 +670,14 @@ impl Editor {
     }
 
     pub(crate) fn open_session_entry(&mut self, project: PathBuf, session_id: String) {
-        let id = DocId::Session {
-            project: project.clone(),
-            id: session_id.clone(),
-        };
-        if let Some(pos) = self.documents.iter().position(|d| d.id == id) {
+        if let Some(pos) = self
+            .documents
+            .iter()
+            .position(|d| d.matches_session(&project, &session_id))
+        {
             self.documents[pos].pinned = true;
             self.switch_active_doc(pos);
+            self.reconcile_active_linked_doc();
             self.prompt_recovery_if_needed();
             return;
         }
@@ -601,29 +688,104 @@ impl Editor {
                 return;
             }
         };
-        let mirror_path = self
-            .store
-            .session_links
-            .get(&prefs::EditorStateStore::session_link_key(
-                &project,
-                &session_id,
-            ))
+        let key = prefs::EditorStateStore::session_link_key(&project, &session_id);
+        let session_link = self.store.session_links.get(&key);
+        let finished = loaded.finished;
+        let mirror_path = (!finished)
+            .then_some(session_link)
+            .flatten()
             .and_then(|link| {
-                (!link.last_synced_sha256.is_empty() && (self.workspace.is_some() || link.workspace_file.is_absolute()))
+                (!link.last_synced_sha256.is_empty()
+                    && (self.workspace.is_some() || link.workspace_file.is_absolute()))
                     .then(|| resolve_mirror_path(&link.workspace_file, self.workspace.as_deref()))
             });
-        let session_link = self.store.session_links.get(&prefs::EditorStateStore::session_link_key(&project, &session_id));
-        let unknown_link = session_link.is_some_and(|link| link.last_synced_sha256.is_empty());
-        let unresolved_link = self.workspace.is_none() && session_link.is_some_and(|link| !link.workspace_file.is_absolute());
-        let finished = loaded.finished;
+        let unknown_link =
+            !finished && session_link.is_some_and(|link| link.last_synced_sha256.is_empty());
+        let unresolved_link = !finished
+            && self.workspace.is_none()
+            && session_link.is_some_and(|link| !link.workspace_file.is_absolute());
+        let missing_link = !finished && mirror_path.as_ref().is_some_and(|path| !path.is_file());
+        let mut mirror_path = if finished || missing_link {
+            None
+        } else {
+            mirror_path
+        };
+        let mut open_in_other_tab = false;
+        if !finished
+            && let Some(mirror) = mirror_path.as_ref()
+            && let Some(pos) = self
+                .documents
+                .iter()
+                .position(|d| d.matches_workspace_file(mirror))
+        {
+            let can_attach_in_place = matches!(self.documents[pos].id, DocId::File(_))
+                && self.documents[pos].session_id.is_none()
+                && !self.documents[pos].is_dirty()
+                && !self.documents[pos].read_only
+                && !self.documents[pos].user_locked
+                && self
+                    .worker_busy
+                    .as_ref()
+                    .is_none_or(|(id, _)| id != &self.documents[pos].id);
+            if can_attach_in_place {
+                let mirror = mirror.clone();
+                let disk = fs_io::read_utf8(&mirror)
+                    .unwrap_or_else(|_| self.documents[pos].edit.text.clone());
+                let same = fs_io::sha256_text(&disk) == fs_io::sha256_text(&loaded.after);
+                self.flush_leaving_doc();
+                {
+                    let doc = &mut self.documents[pos];
+                    doc.pinned = true;
+                    doc.session_id = Some(loaded.id);
+                    doc.original = Some(loaded.original);
+                    doc.before_sha256 = Some(loaded.before_sha256);
+                    doc.notes = Some(TextEdit::new(loaded.notes));
+                    doc.voice_project = Some(loaded.project);
+                    doc.mirror_path = Some(mirror);
+                    if same {
+                        doc.conflict = None;
+                    } else {
+                        doc.edit = TextEdit::new(loaded.after.clone());
+                        doc.cached_judge = None;
+                        doc.latest_judge_request = None;
+                        *doc.decoration_cache.borrow_mut() = None;
+                        doc.conflict = Some(crate::documents::SessionConflict {
+                            disk_text: disk,
+                            session_text: loaded.after,
+                        });
+                    }
+                }
+                self.active_doc = Some(pos);
+                self.conflict_compare = false;
+                self.refresh_find();
+                self.refresh_diff();
+                self.dispatch_next();
+                self.status = if same {
+                    "Ready".into()
+                } else {
+                    "This file changed on disk outside the edit session.".into()
+                };
+                self.judge_due = None;
+                self.judge_armed = true;
+                self.prompt_recovery_if_needed();
+                return;
+            }
+            mirror_path = None;
+            open_in_other_tab = true;
+        }
         let buf = DocumentBuffer::from_session(loaded, true, mirror_path);
         self.flush_leaving_doc();
         self.documents.push(buf);
         self.active_doc = Some(self.documents.len() - 1);
+        self.conflict_compare = false;
         self.refresh_find();
         self.refresh_diff();
         self.dispatch_next();
-        self.status = if unknown_link {
+        self.status = if open_in_other_tab {
+            "The linked workspace file is open in another tab. Editing the session copy.".into()
+        } else if missing_link {
+            "The linked workspace file is gone. Editing the session copy.".into()
+        } else if unknown_link {
             "Linked draft has no known sync state; session saves locally".into()
         } else if unresolved_link {
             "Linked file unavailable without a workspace; session saves locally".into()
@@ -632,6 +794,9 @@ impl Editor {
         } else {
             "Ready".into()
         };
+        self.reconcile_active_linked_doc();
+        self.judge_due = None;
+        self.judge_armed = true;
         self.prompt_recovery_if_needed();
     }
 
@@ -728,11 +893,18 @@ impl Editor {
         use crate::quick_open::MAX_SEARCH_FILE_BYTES;
 
         let buffers = self.documents.iter().filter_map(|doc| {
-            let DocId::File(path) = &doc.id else { return None };
+            let path = match &doc.id {
+                DocId::File(path) => path.clone(),
+                DocId::Session { .. } if !doc.finished => {
+                    let mirror = doc.mirror_path.as_ref()?;
+                    mirror.canonicalize().unwrap_or_else(|_| mirror.clone())
+                }
+                DocId::Session { .. } => return None,
+            };
             // An oversized open buffer is excluded, including its disk copy.
             let content = (doc.edit.text.len() <= MAX_SEARCH_FILE_BYTES)
                 .then(|| doc.edit.text.clone());
-            Some((path.clone(), content))
+            Some((path, content))
         }).collect();
         match self.worker.search.submit(
             tree_files(&self.file_tree),
@@ -757,10 +929,9 @@ impl Editor {
     pub(crate) fn choose_folder_match(&mut self, index: usize, tx: &mut Tx) {
         let Some(hit) = self.folder_search.matches.get(index).cloned() else { return };
         let path = hit.abs_path.canonicalize().unwrap_or_else(|_| hit.abs_path.clone());
-        let expected = DocId::File(path.clone());
-        self.open_workspace_file(path, true);
+        self.open_workspace_file(path.clone(), true);
         let Some(doc) = self.active_doc.and_then(|index| self.documents.get(index))
-            .filter(|doc| doc.id == expected)
+            .filter(|doc| doc.matches_workspace_file(&path))
         else {
             self.folder_search.message = Some(self.status.clone());
             return;
@@ -861,16 +1032,22 @@ impl Editor {
             return;
         }
         if self.active_doc != Some(pos) {
+            self.reconcile_active_linked_doc();
             self.flush_leaving_doc();
             self.active_doc = Some(pos);
+            self.conflict_compare = false;
             self.refresh_find();
             self.dispatch_next();
         }
+        self.reconcile_active_linked_doc();
         if !self.active_has_baseline() && self.view_mode == ViewMode::Compare {
             self.view_mode = ViewMode::Write;
+            self.conflict_compare = false;
         } else if self.view_mode == ViewMode::Compare {
             self.refresh_diff();
         }
+        self.judge_due = None;
+        self.judge_armed = true;
     }
 
     pub(crate) fn activate_tab(&mut self, tab_key: &str, tx: &mut Tx) {
@@ -935,6 +1112,7 @@ impl Editor {
     }
 
     fn remove_doc_at(&mut self, pos: usize) {
+        let previous = self.active_doc.and_then(|index| self.documents.get(index).map(|doc| doc.id.clone()));
         self.documents.remove(pos);
         if self.documents.is_empty() {
             self.active_doc = None;
@@ -952,6 +1130,12 @@ impl Editor {
             self.view_mode = ViewMode::Write;
         } else if self.view_mode == ViewMode::Compare {
             self.refresh_diff();
+        }
+        let current = self.active_doc.and_then(|index| self.documents.get(index).map(|doc| doc.id.clone()));
+        if previous != current {
+            self.conflict_compare = false;
+            self.judge_due = None;
+            self.judge_armed = self.active_doc.is_some();
         }
         self.save_open_tabs_pref();
     }
@@ -1201,6 +1385,7 @@ impl Editor {
     pub(crate) fn close_dialog(&mut self) {
         self.active_dialog = None;
         self.dialog_error = None;
+        self.pending_document_focus = true;
     }
 
     pub(crate) fn duplicate_selected(&mut self) {
@@ -1223,8 +1408,13 @@ impl Editor {
 
     fn has_pending_writes_under(&self, target: &Path) -> bool {
         self.documents.iter().any(|doc| {
-            let writing = self.worker_busy.as_ref().is_some_and(|(id, _)| id == &doc.id);
-            let file = !doc.is_session() && doc.path.starts_with(target);
+            let writing = self.worker_busy.as_ref().is_some_and(|(id, _)| id == &doc.id)
+                || self.pending_track.as_ref() == Some(&doc.id)
+                || self
+                    .session_start_inflight
+                    .as_ref()
+                    .is_some_and(|(id, _)| id == &doc.id);
+            let file = matches!(doc.id, DocId::File(_)) && doc.path.starts_with(target);
             let mirror = doc.mirror_path.as_ref().is_some_and(|path| path.starts_with(target));
             (file || mirror) && (writing || doc.is_dirty())
         })
@@ -1236,6 +1426,16 @@ impl Editor {
         };
         if matches!(dialog, DialogKind::ConfirmClose { .. }) {
             self.confirm_close_save();
+            return;
+        }
+        if matches!(dialog, DialogKind::StartSession) {
+            self.confirm_track_session();
+            self.focus_document(tx);
+            return;
+        }
+        if matches!(dialog, DialogKind::ConfirmRevert) {
+            self.close_dialog();
+            self.revert_to_original(tx);
             return;
         }
         let Some(root) = self.workspace.clone() else {
@@ -1279,25 +1479,66 @@ impl Editor {
                     self.dialog_error = Some("Wait for saves to finish or close unsaved files before renaming them.".into());
                     return;
                 }
+                let root_canon = root.canonicalize().unwrap_or_else(|_| root.clone());
+                let link_targets: Vec<(String, PathBuf, bool)> = self
+                    .store
+                    .session_links
+                    .iter()
+                    .map(|(key, link)| {
+                        let resolved = resolve_mirror_path(&link.workspace_file, Some(&root_canon));
+                        let canon = resolved.canonicalize().unwrap_or(resolved);
+                        (key.clone(), canon, link.workspace_file.is_relative())
+                    })
+                    .collect();
                 match workspace_tree::rename_entry(&root, &rel_path, &input) {
                     Ok(renamed) => {
                         let new_canon = renamed.canonicalize().unwrap_or(renamed);
                         for doc in &mut self.documents {
-                            if !doc.is_session() {
-                                if doc.path == old_canon {
-                                    doc.path = new_canon.clone();
-                                    doc.id = DocId::File(new_canon.clone());
-                                    if let Some(name) =
-                                        new_canon.file_name().and_then(|n| n.to_str())
-                                    {
-                                        doc.title = name.to_owned();
-                                    }
-                                } else if let Ok(suffix) = doc.path.strip_prefix(&old_canon) {
-                                    let updated = new_canon.join(suffix);
-                                    doc.path = updated.clone();
-                                    doc.id = DocId::File(updated);
+                            if matches!(doc.id, DocId::File(_))
+                                && let Some(updated) =
+                                    remap_renamed_path(&doc.path, &old_canon, &new_canon)
+                            {
+                                let old_id = doc.id.clone();
+                                doc.path = updated.clone();
+                                doc.id = DocId::File(updated.clone());
+                                if updated == new_canon
+                                    && let Some(name) = new_canon.file_name().and_then(|n| n.to_str())
+                                {
+                                    doc.title = name.to_owned();
+                                }
+                                if self
+                                    .judge_inflight
+                                    .as_ref()
+                                    .is_some_and(|inflight| inflight.doc_id == old_id)
+                                {
+                                    self.judge_inflight = None;
+                                    self.judge_armed = true;
                                 }
                             }
+                            if let Some(mirror) = doc.mirror_path.as_deref()
+                                && let Some(updated) =
+                                    remap_renamed_path(mirror, &old_canon, &new_canon)
+                            {
+                                doc.mirror_path = Some(updated);
+                            }
+                        }
+                        let mut links_changed = false;
+                        for (key, canon, was_relative) in link_targets {
+                            if let Some(updated) = remap_renamed_path(&canon, &old_canon, &new_canon)
+                                && let Some(link) = self.store.session_links.get_mut(&key)
+                            {
+                                link.workspace_file = if was_relative {
+                                    rel_path_from_abs(&root_canon, &updated)
+                                        .map(PathBuf::from)
+                                        .unwrap_or(updated)
+                                } else {
+                                    updated
+                                };
+                                links_changed = true;
+                            }
+                        }
+                        if links_changed {
+                            let _ = prefs::save_store(&self.store);
                         }
                         if let Some(rel) = rel_path_from_abs(&root, &new_canon) {
                             self.selected_tree_id = Some(rel);
@@ -1317,15 +1558,76 @@ impl Editor {
                     self.dialog_error = Some("Save or close unsaved files before deleting them.".into());
                     return;
                 }
+                let root_canon = root.canonicalize().unwrap_or_else(|_| root.clone());
+                let deleted_link_keys: Vec<String> = self
+                    .store
+                    .session_links
+                    .iter()
+                    .filter_map(|(key, link)| {
+                        let resolved = resolve_mirror_path(&link.workspace_file, Some(&root_canon));
+                        let canon = resolved.canonicalize().unwrap_or(resolved);
+                        canon.starts_with(&target_canon).then(|| key.clone())
+                    })
+                    .collect();
                 match workspace_tree::delete_entry(&root, &rel_path) {
                     Ok(()) => {
-                        let active_id = self.active_doc_ref().map(|doc| doc.id.clone());
+                        let mut active_id = self.active_doc_ref().map(|doc| doc.id.clone());
                         self.documents
                             .retain(|d| d.is_session() || !d.path.starts_with(&target_canon));
+                        for doc in &mut self.documents {
+                            let hit_mirror = doc
+                                .mirror_path
+                                .as_ref()
+                                .is_some_and(|path| path.starts_with(&target_canon));
+                            let hit_file_session = matches!(doc.id, DocId::File(_))
+                                && doc.path.starts_with(&target_canon);
+                            if doc.session_id.is_some() && (hit_mirror || hit_file_session) {
+                                doc.mirror_path = None;
+                                if matches!(doc.id, DocId::File(_))
+                                    && let (Some(project), Some(session_id)) =
+                                        (doc.voice_project.clone(), doc.session_id.clone())
+                                {
+                                    let old_id = doc.id.clone();
+                                    let new_id = DocId::Session {
+                                        project: project.clone(),
+                                        id: session_id.clone(),
+                                    };
+                                    doc.path = project
+                                        .join("sessions")
+                                        .join(&session_id)
+                                        .join("after.md");
+                                    doc.id = new_id.clone();
+                                    if active_id.as_ref() == Some(&old_id) {
+                                        active_id = Some(new_id);
+                                    }
+                                    if self
+                                        .judge_inflight
+                                        .as_ref()
+                                        .is_some_and(|inflight| inflight.doc_id == old_id)
+                                    {
+                                        self.judge_inflight = None;
+                                        self.judge_armed = true;
+                                    }
+                                }
+                            }
+                        }
+                        let mut links_removed = false;
+                        for key in deleted_link_keys {
+                            links_removed |= self.store.session_links.remove(&key).is_some();
+                        }
+                        if links_removed {
+                            let _ = prefs::save_store(&self.store);
+                        }
                         self.active_doc = active_id.as_ref()
                             .and_then(|id| self.documents.iter().position(|doc| &doc.id == id))
                             .or_else(|| self.active_doc.zip(self.documents.len().checked_sub(1))
                                 .map(|(index, last)| index.min(last)));
+                        let current = self.active_doc.and_then(|index| self.documents.get(index).map(|doc| doc.id.clone()));
+                        if current != active_id {
+                            self.conflict_compare = false;
+                            self.judge_due = None;
+                            self.judge_armed = self.active_doc.is_some();
+                        }
                         self.selected_tree_id = None;
                         self.refresh_find();
                         self.close_dialog();
@@ -1336,7 +1638,10 @@ impl Editor {
                     Err(err) => self.dialog_error = Some(err),
                 }
             }
-            DialogKind::ConfirmClose { .. } | DialogKind::Recover { .. } => unreachable!(),
+            DialogKind::ConfirmClose { .. }
+            | DialogKind::Recover { .. }
+            | DialogKind::StartSession
+            | DialogKind::ConfirmRevert => unreachable!(),
         }
     }
 
@@ -1382,9 +1687,18 @@ impl Editor {
         if self.find.open {
             self.find.document_changed(&doc.edit.text, doc.edit.range().0);
         }
+        let section_now = section_for_document(doc);
+        if doc.cached_judge.as_ref().is_some_and(|cached| cached.section != section_now) {
+            doc.cached_judge = None;
+        }
+        self.request_judge(tx.clock());
+        tx.wake_after(JUDGE_DELAY);
     }
 
     pub(crate) fn set_view_mode(&mut self, mode: ViewMode, tx: &mut Tx) {
+        if mode != ViewMode::Compare {
+            self.conflict_compare = false;
+        }
         if mode == ViewMode::Compare {
             if !self.active_has_baseline() {
                 return;
@@ -1523,22 +1837,920 @@ impl Editor {
         }
     }
 
+    pub(crate) fn is_conflict_compare(&self) -> bool {
+        self.conflict_compare && self.active_doc_ref().is_some_and(|doc| doc.conflict.is_some())
+    }
+
+    /// Left side of Compare. Conflict compare shows the workspace file; every other compare shows the session baseline.
+    pub(crate) fn compare_left_text(&self) -> Option<&str> {
+        let doc = self.active_doc_ref()?;
+        if self.is_conflict_compare() {
+            doc.conflict.as_ref().map(|conflict| conflict.disk_text.as_str())
+        } else {
+            doc.original.as_deref()
+        }
+    }
+
     pub(crate) fn refresh_diff(&mut self) {
+        let original = self.compare_left_text().map(str::to_owned);
         let Some(doc) = self.active_doc_ref() else {
             self.diff = DiffState::new(Vec::new());
             return;
         };
-        let Some(original) = &doc.original else {
+        let Some(original) = original else {
             self.diff = DiffState::new(Vec::new());
             return;
         };
-        let mut diff = DiffState::new(vec![FileDiff::from_texts(
-            &doc.title,
-            original,
-            &doc.edit.text,
-        )]);
-        diff.set_mode(DiffMode::Split);
+        let title = doc.title.clone();
+        let current = doc.edit.text.clone();
+        let mut diff = DiffState::new(vec![FileDiff::from_texts(&title, &original, &current)]);
+        diff.set_mode(if self.compare_unified { DiffMode::Unified } else { DiffMode::Split });
         self.diff = diff;
+    }
+
+    pub(crate) fn compare_unified(&self) -> bool { self.compare_unified }
+
+    pub(crate) fn set_compare_unified(&mut self, unified: bool) {
+        self.compare_unified = unified;
+        self.refresh_diff();
+    }
+
+    pub(crate) fn can_revert(&self) -> bool {
+        self.view_mode == ViewMode::Compare
+            && !self.is_conflict_compare()
+            && self.active_doc_ref().is_some_and(|doc| doc.is_editable() && doc.original.is_some())
+    }
+
+    pub(crate) fn confirm_revert(&mut self) {
+        if self.can_revert() {
+            self.dialog_error = None;
+            self.active_dialog = Some(DialogKind::ConfirmRevert);
+        }
+    }
+
+    pub(crate) fn revert_to_original(&mut self, tx: &mut Tx) {
+        if !self.can_revert() {
+            self.focus_document(tx);
+            return;
+        }
+        let Some(original) = self.active_doc_ref().and_then(|doc| doc.original.clone()) else { return };
+        let Some(doc) = self.active_doc_mut() else { return };
+        doc.edit.undo_group(|edit| {
+            edit.set_selection(0, edit.text.len());
+            edit.insert(&original);
+        });
+        self.changed_active(tx);
+        self.refresh_diff();
+        self.focus_document(tx);
+    }
+
+    pub(crate) fn revert_hunk(&mut self, index: usize, tx: &mut Tx) {
+        if !self.can_revert() {
+            self.focus_document(tx);
+            return;
+        }
+        let Some(original) = self.active_doc_ref().and_then(|doc| doc.original.clone()) else { return };
+        let current = self.active_working_edit().text.clone();
+        let Some(next) = crate::hunks::revert_hunk_text(&original, &current, index) else {
+            self.focus_document(tx);
+            return;
+        };
+        let Some(doc) = self.active_doc_mut() else { return };
+        let end = doc.edit.text.len();
+        doc.edit.undo_group(|edit| {
+            edit.set_selection(0, end);
+            edit.insert(&next);
+        });
+        self.changed_active(tx);
+        self.refresh_diff();
+        self.focus_document(tx);
+    }
+
+    pub(crate) fn active_judge_report(&self) -> Option<&crate::bridge::JudgeReport> {
+        let voice = self.voice_project.as_ref()?;
+        let doc = self.active_doc_ref()?;
+        if !judge_target(doc) {
+            return None;
+        }
+        let cached = doc.cached_judge.as_ref()?;
+        if &cached.voice_project != voice
+            || cached.judge_epoch != doc.judge_epoch
+            || cached.section != section_for_document(doc)
+        {
+            return None;
+        }
+        Some(&cached.report)
+    }
+
+    pub(crate) fn voice_pill_label(&self) -> Option<String> {
+        let project = self.voice_project.as_ref()?;
+        let name = project.file_name().and_then(|name| name.to_str()).unwrap_or("voice");
+        let Some(doc) = self.active_doc_ref() else {
+            return Some(format!("Voice: {name}"));
+        };
+        if !judge_target(doc) {
+            return Some(format!("Voice: {name}"));
+        }
+        let Some(report) = self.active_judge_report() else {
+            return Some(format!("Voice: {name}"));
+        };
+        if report.needs_build {
+            return Some("Build voice".into());
+        }
+        if report.error.is_some() && report.checks.is_empty() {
+            let name = project.file_name().and_then(|name| name.to_str()).unwrap_or("voice");
+            return Some(format!("Voice: {name}"));
+        }
+        let gaps = report.gap_count();
+        Some(match gaps {
+            0 => format!("Voice: {}", report.score),
+            1 => format!("Voice: {} · 1 gap", report.score),
+            count => format!("Voice: {} · {count} gaps", report.score),
+        })
+    }
+
+    pub(crate) fn set_judge_section(&mut self, section: String, clock: f64) {
+        let Some(index) = self.active_doc else { return };
+        if section_for_document(&self.documents[index]) == section {
+            return;
+        }
+        let doc_id = self.documents[index].id.clone();
+        self.documents[index].section_override = Some(section);
+        self.documents[index].judge_epoch += 1;
+        self.documents[index].latest_judge_request = None;
+        self.documents[index].cached_judge = None;
+        if self.judge_inflight.as_ref().is_some_and(|inflight| inflight.doc_id == doc_id) {
+            self.judge_inflight = None;
+        }
+        self.request_judge(clock);
+    }
+
+    pub(crate) fn choose_judge_section(&mut self, section: String, tx: &mut Tx) {
+        self.set_judge_section(section, tx.clock());
+        tx.wake_after(JUDGE_DELAY);
+    }
+
+    pub(crate) fn toggle_voice_lens(&mut self) {
+        self.store.ui.voice_lens = !self.store.ui.voice_lens;
+        let _ = prefs::save_store(&self.store);
+    }
+
+    pub(crate) fn jump_next_placeholder(&mut self, tx: &mut Tx) {
+        let Some(doc) = self.active_doc_ref() else {
+            self.status = "No placeholders".into();
+            return;
+        };
+        let caret = doc.edit.range().1;
+        let ranges = crate::markdown_decor::find_placeholder_ranges(&doc.edit.text, self.placeholder_token.as_deref());
+        if ranges.is_empty() {
+            self.status = "No placeholders".into();
+            self.focus_document(tx);
+            return;
+        }
+        let index = ranges.iter().position(|range| range.start > caret).unwrap_or(0);
+        let range = ranges[index].clone();
+        let total = ranges.len();
+        if self.jump_to_range(range.start, range.end, tx) {
+            self.status = format!("Placeholder {} of {total}", index + 1);
+        }
+    }
+
+    /// Selects a source range without changing the text. Preview and Compare
+    /// return to Write so the selection is on the draft, except a voice guide,
+    /// which stays on its rendered page.
+    pub(crate) fn jump_to_range(&mut self, start: usize, end: usize, tx: &mut Tx) -> bool {
+        if self.active_doc_ref().is_none() {
+            return false;
+        }
+        if self.find.open {
+            self.find.close();
+        }
+        if self.view_mode != ViewMode::Write {
+            self.set_view_mode(ViewMode::Write, tx);
+        }
+        let Some(doc) = self.active_doc_mut() else { return false };
+        let len = doc.edit.text.len();
+        let start = start.min(len);
+        let end = end.min(len);
+        if start > end || !doc.edit.text.is_char_boundary(start) || !doc.edit.text.is_char_boundary(end) {
+            return false;
+        }
+        let before = doc.edit.text.clone();
+        doc.edit.set_selection(start, end);
+        if doc.edit.text != before {
+            doc.edit.replace_text(&before);
+            return false;
+        }
+        self.focus_document(tx);
+        true
+    }
+
+    pub(crate) fn jump_to_query(&mut self, query: &str, tx: &mut Tx) {
+        let query = query.trim();
+        if query.is_empty() || self.active_doc.is_none() {
+            self.status = "Nothing to select".into();
+            return;
+        }
+        let before = self.active_working_edit().text.clone();
+        if self.view_mode != ViewMode::Write {
+            self.set_view_mode(ViewMode::Write, tx);
+        }
+        self.find.query.replace_text(query);
+        self.find.replacement.replace_text("");
+        self.find.case_sensitive = false;
+        self.find.whole_word = !query.chars().any(char::is_whitespace);
+        self.find.open = true;
+        self.find.show_replace = false;
+        self.refresh_find();
+        if self.find.matches.is_empty() {
+            self.find.close();
+            self.status = format!("No matches for {query}");
+            self.focus_document(tx);
+        } else if let Some(range) = self.find.current_range().cloned() {
+            if let Some(doc) = self.active_doc_mut() {
+                doc.edit.set_selection(range.start, range.end);
+            }
+            self.focus_document(tx);
+        }
+        if self.active_working_edit().text != before {
+            self.active_working_edit_mut().replace_text(&before);
+        }
+    }
+
+    pub(crate) fn jump_to_excerpt(&mut self, excerpt: &str, tx: &mut Tx) {
+        let excerpt = excerpt.trim();
+        let Some(text) = self.active_doc_ref().map(|doc| doc.edit.text.clone()) else {
+            return;
+        };
+        if let Some(start) = text.find(excerpt) {
+            self.jump_to_range(start, start + excerpt.len(), tx);
+        } else if !excerpt.is_empty() {
+            self.jump_to_query(excerpt, tx);
+        }
+    }
+
+    pub(crate) fn show_live_check(&mut self, query: &str, detail: &str, tx: &mut Tx) {
+        let before = self.active_working_edit().text.clone();
+        self.jump_to_query(query, tx);
+        if self.find.matches.is_empty() {
+            self.status = if detail.is_empty() { query.to_owned() } else { detail.to_owned() };
+        }
+        if self.active_working_edit().text != before {
+            self.active_working_edit_mut().replace_text(&before);
+        }
+    }
+
+    pub(crate) fn request_voice_build(&mut self) {
+        let Some(project) = self.voice_project.clone() else {
+            self.status = "Open a voice project before building".into();
+            return;
+        };
+        let doc_id = self.active_doc_ref().map(|doc| doc.id.clone());
+        let generation = self.active_doc_ref().map(|doc| doc.generation).unwrap_or(0);
+        if let Err(error) = self.bridge.request(doc_id, generation, crate::bridge::BridgeOp::Build { project }) {
+            self.status = error;
+            return;
+        }
+        self.status = "Building voice guide…".into();
+    }
+
+    pub(crate) fn save_durable_rule(&mut self, kind: &str) {
+        let text = self.rule_draft.text.trim().to_owned();
+        if text.is_empty() {
+            self.status = "Write a rule before saving it".into();
+            return;
+        }
+        let Some(project) = self.voice_project.clone() else {
+            self.status = "Open a voice project before saving a rule".into();
+            return;
+        };
+        let doc_id = self.active_doc_ref().map(|doc| doc.id.clone());
+        let generation = self.active_doc_ref().map(|doc| doc.generation).unwrap_or(0);
+        if let Err(error) = self.bridge.request(
+            doc_id,
+            generation,
+            crate::bridge::BridgeOp::SaveNote { project, kind: kind.to_owned(), text },
+        ) {
+            self.status = error;
+            return;
+        }
+        self.rule_draft = TextEdit::new("");
+        self.status = "Saving note…".into();
+    }
+
+    pub(crate) fn open_voice_note(&mut self, name: &str) {
+        if name != "STYLE.md" && name != "AUDIENCE.md" {
+            return;
+        }
+        let Some(voice) = self.voice_project.clone() else {
+            self.status = "Open a voice project first".into();
+            return;
+        };
+        if !voice.is_dir() {
+            self.status = "Voice project is not available".into();
+            return;
+        }
+        let path = voice.join(name);
+        if !fs_io::is_contained_in(&voice, &path) || workspace_tree::is_protected_voice_path(&path) {
+            self.status = format!("Protected voice data is read-only: {}", path.display());
+            return;
+        }
+        if !path.is_file() {
+            let stub = format!("# {name}\n\n");
+            if let Err(error) = fs_io::atomic_write_text(&path, &stub) {
+                self.status = error;
+                return;
+            }
+        }
+        self.open_workspace_file(path, true);
+    }
+
+    pub(crate) fn can_track_session(&self) -> bool {
+        let Some(doc) = self.active_doc_ref() else { return false };
+        self.voice_project.is_some()
+            && matches!(doc.id, DocId::File(_))
+            && doc.session_id.is_none()
+            && doc.is_editable()
+            && !doc.edit.text.trim().is_empty()
+            && !workspace_tree::is_protected_voice_path(&doc.path)
+            && self.workspace.as_ref().is_none_or(|root| fs_io::is_contained_in(root, &doc.path))
+    }
+
+    pub(crate) fn open_track_session(&mut self) {
+        if !self.can_track_session() {
+            self.status = "This file cannot start an edit session".into();
+            return;
+        }
+        let section = self.active_doc_ref().map(section_for_document).unwrap_or_else(|| "all".into());
+        let section = if section == "all" { String::new() } else { section };
+        self.session_origin = "ai-first".into();
+        self.session_section = TextEdit::new(section);
+        self.session_sources = TextEdit::new("");
+        self.dialog_error = None;
+        self.active_dialog = Some(DialogKind::StartSession);
+    }
+
+    pub(crate) fn confirm_track_session(&mut self) {
+        if !self.can_track_session() {
+            self.dialog_error = Some("This file cannot start an edit session".into());
+            return;
+        }
+        let dirty = self.active_doc_ref().is_some_and(DocumentBuffer::is_dirty);
+        let id = self.active_doc_ref().map(|doc| doc.id.clone());
+        self.close_dialog();
+        if dirty {
+            self.pending_track = id;
+            if let Some(doc) = self.active_doc_mut() {
+                doc.pending_save = true;
+            }
+            self.status = "Saving before the session starts…".into();
+            return;
+        }
+        self.request_session_start();
+    }
+
+    fn maybe_start_pending_track(&mut self) {
+        let Some(id) = self.pending_track.clone() else { return };
+        let Some(doc) = self.documents.iter().find(|doc| doc.id == id) else {
+            self.pending_track = None;
+            return;
+        };
+        if doc.save_error.is_some() {
+            self.pending_track = None;
+            self.status = doc.save_error.clone().unwrap_or_else(|| "Save failed".into());
+            return;
+        }
+        if doc.is_dirty() || doc.pending_save || self.worker_busy.is_some() {
+            return;
+        }
+        self.pending_track = None;
+        self.request_session_start();
+    }
+
+    fn request_session_start(&mut self) {
+        if !self.can_track_session() {
+            self.status = "This file cannot start an edit session".into();
+            return;
+        }
+        let Some(project) = self.voice_project.clone() else { return };
+        let Some(doc) = self.active_doc_ref() else { return };
+        let draft = doc.path.clone();
+        if !draft.is_file() {
+            self.status = "Save the draft to disk before tracking a session".into();
+            return;
+        }
+        if !fs_io::is_contained_in(project.parent().unwrap_or(project.as_path()), &draft)
+            && self.workspace.as_ref().is_some_and(|root| !fs_io::is_contained_in(root, &draft))
+        {
+            self.status = "That draft is outside the workspace".into();
+            return;
+        }
+        let doc_id = doc.id.clone();
+        let generation = doc.generation;
+        if self.session_start_inflight.as_ref().is_some_and(|(id, _)| id == &doc_id) {
+            return;
+        }
+        let section = self.session_section.text.trim();
+        let section = if section.is_empty() || section == "all" { None } else { Some(section.to_owned()) };
+        let origin = if self.session_origin == "writer-first" { "writer-first" } else { "ai-first" };
+        let sources = self.session_sources.text.split([',', '\n']).map(str::trim).filter(|item| !item.is_empty()).map(str::to_owned).collect::<Vec<_>>();
+        if let Err(error) = self.bridge.request(Some(doc_id.clone()), generation, crate::bridge::BridgeOp::SessionStart {
+            project,
+            draft,
+            section,
+            origin: origin.into(),
+            sources,
+        }) {
+            self.status = error;
+        } else {
+            self.session_start_inflight = Some((doc_id, generation));
+            self.status = "Starting edit session…".into();
+        }
+    }
+
+    fn session_start_is_stale(&self, doc_id: &DocId, generation: u64) -> bool {
+        self.documents.iter().find(|doc| &doc.id == doc_id).is_some_and(|doc| {
+            doc.generation != generation || doc.is_dirty() || doc.session_id.is_some() || !doc.is_editable()
+        })
+    }
+
+    fn attach_started_session(&mut self, doc_id: Option<DocId>, generation: u64, started: crate::bridge::SessionStartResult) {
+        let Some(doc_id) = doc_id else {
+            self.status = "Edit session started without a document".into();
+            return;
+        };
+        let Some(project) = self.voice_project.clone() else { return };
+        let folder = project.join("sessions").join(&started.id);
+        let before = match fs_io::read_utf8(&folder.join("before.md")) {
+            Ok(text) => text,
+            Err(error) => { self.status = error; return; },
+        };
+        if fs_io::sha256_text(&before) != started.before_sha256 {
+            self.status = "Session baseline does not match before.md".into();
+            return;
+        }
+        let notes = fs_io::read_utf8(&folder.join("notes.md")).unwrap_or_default();
+        if self.session_start_is_stale(&doc_id, generation) {
+            self.status = "The draft changed before the edit session could attach.".into();
+            return;
+        }
+        if self
+            .documents
+            .iter()
+            .any(|doc| doc.matches_session(&project, &started.id))
+        {
+            self.status = format!("Edit session {} is already open", started.id);
+            return;
+        }
+        let Some(doc) = self.documents.iter().find(|doc| doc.id == doc_id) else {
+            self.status = "The draft closed before the session started".into();
+            return;
+        };
+        if workspace_tree::is_protected_voice_path(&doc.path) || !doc.path.is_absolute() {
+            self.status = format!("Protected voice data is read-only: {}", doc.path.display());
+            return;
+        }
+        let mirror = doc.path.clone();
+        let buffer = doc.edit.text.clone();
+        let disk = match fs_io::read_utf8(&mirror) {
+            Ok(text) => text,
+            Err(error) => {
+                self.status = error;
+                return;
+            }
+        };
+        if fs_io::sha256_text(&disk) != fs_io::sha256_text(&buffer) {
+            self.status = "The draft changed on disk before the edit session could attach.".into();
+            return;
+        }
+        let Some(doc) = self.documents.iter_mut().find(|doc| doc.id == doc_id) else {
+            self.status = "The draft closed before the session started".into();
+            return;
+        };
+        doc.session_id = Some(started.id.clone());
+        doc.original = Some(before);
+        doc.before_sha256 = Some(started.before_sha256);
+        doc.notes = Some(TextEdit::new(notes));
+        doc.voice_project = Some(project.clone());
+        doc.mirror_path = Some(mirror.clone());
+        doc.conflict = None;
+        let key = prefs::EditorStateStore::session_link_key(&project, &started.id);
+        self.store.session_links.insert(key, prefs::SessionLink {
+            workspace_file: mirror,
+            last_synced_sha256: fs_io::sha256_text(&disk),
+        });
+        if let Err(error) = prefs::save_store(&self.store) {
+            self.status = format!("Session started, but the link was not saved: {error}");
+        } else {
+            self.status = format!("Tracking edit session {}", started.id);
+            self.toast = Some(format!("Edit session {} is tracking this file", started.id));
+        }
+        self.sessions = workspace_tree::scan_sessions(&project, &self.store.session_links);
+        self.refresh_diff();
+    }
+
+    pub(crate) fn load_disk_conflict(&mut self, tx: &mut Tx) {
+        if self.active_is_locked() {
+            self.focus_document(tx);
+            return;
+        }
+        let Some(disk) = self.active_doc_ref().and_then(|doc| doc.conflict.as_ref().map(|conflict| conflict.disk_text.clone())) else {
+            return;
+        };
+        let hash = fs_io::sha256_text(&disk);
+        self.remember_link_hash(&hash);
+        let Some(doc) = self.active_doc_mut() else { return };
+        doc.conflict = None;
+        doc.edit.undo_group(|edit| {
+            edit.set_selection(0, edit.text.len());
+            edit.insert(&disk);
+        });
+        self.conflict_compare = false;
+        self.changed_active(tx);
+        self.refresh_diff();
+        self.status = "Loaded the file from disk into the session".into();
+        self.focus_document(tx);
+    }
+
+    pub(crate) fn keep_session_conflict(&mut self, tx: &mut Tx) {
+        if self.active_is_locked() {
+            self.focus_document(tx);
+            return;
+        }
+        let ready = self.active_doc_mut().is_some_and(|doc| {
+            if doc.conflict.is_none() {
+                return false;
+            }
+            doc.conflict = None;
+            doc.force_mirror = true;
+            doc.pending_save = true;
+            true
+        });
+        if !ready {
+            return;
+        }
+        self.dispatch_next();
+        self.conflict_compare = false;
+        self.status = "Keeping the session copy".into();
+        self.focus_document(tx);
+    }
+
+    pub(crate) fn compare_conflict(&mut self, tx: &mut Tx) {
+        if self.active_doc_ref().and_then(|doc| doc.conflict.as_ref()).is_none() {
+            return;
+        }
+        self.conflict_compare = true;
+        self.set_view_mode(ViewMode::Compare, tx);
+        self.focus_document(tx);
+    }
+
+    fn remember_link_hash(&mut self, hash: &str) {
+        let Some(doc) = self.active_doc_ref() else { return };
+        let Some(key) = doc.voice_project.as_ref().zip(doc.session_id.as_ref()).map(|(project, id)| {
+            prefs::EditorStateStore::session_link_key(project, id)
+        }) else { return };
+        if let Some(link) = self.store.session_links.get_mut(&key) {
+            link.last_synced_sha256 = hash.to_owned();
+            let _ = prefs::save_store(&self.store);
+        }
+    }
+
+    fn reconcile_active_linked_doc(&mut self) {
+        let Some(index) = self.active_doc else { return };
+        let doc_id = self.documents[index].id.clone();
+        if self.documents[index].finished
+            || self.documents[index].pending_save
+            || self.documents[index].force_mirror
+            || self.worker_busy.as_ref().is_some_and(|(id, kind)| {
+                id == &doc_id && matches!(kind, InFlight::Save | InFlight::Finish)
+            })
+        {
+            return;
+        }
+        if let Some(mirror) = self.documents[index].mirror_path.clone() {
+            if !mirror.is_file() {
+                self.documents[index].mirror_path = None;
+                self.status = "The linked workspace file is gone. Editing the session copy.".into();
+                return;
+            }
+            let disk = match fs_io::read_utf8(&mirror) {
+                Ok(text) => text,
+                Err(error) => {
+                    self.status = error;
+                    return;
+                }
+            };
+            let disk_hash = fs_io::sha256_text(&disk);
+            let buffer_hash = fs_io::sha256_text(&self.documents[index].edit.text);
+            let sync = Self::mirror_sync_hash(&self.store, &self.documents[index]);
+            let matches_sync = sync.as_deref() == Some(disk_hash.as_str());
+            let matches_buffer = disk_hash == buffer_hash;
+            if !matches_sync && !matches_buffer {
+                let session_text = self.documents[index].edit.text.clone();
+                self.documents[index].conflict = Some(crate::documents::SessionConflict { disk_text: disk, session_text });
+                self.status = "This file changed on disk outside the edit session.".into();
+                return;
+            }
+            if self.documents[index].conflict.is_some() {
+                self.documents[index].conflict = None;
+                self.conflict_compare = false;
+            }
+            return;
+        }
+        if self.documents[index].session_id.is_some() || self.documents[index].is_dirty() {
+            return;
+        }
+        let path = self.documents[index].path.clone();
+        let Some((project, id, after, before, notes, before_sha)) = self.linked_session_files(&path) else { return };
+        let Ok(disk) = fs_io::read_utf8(&path) else { return };
+        let buffer = self.documents[index].edit.text.clone();
+        let same = fs_io::sha256_text(&disk) == fs_io::sha256_text(&buffer)
+            && fs_io::sha256_text(&disk) == fs_io::sha256_text(&after);
+        {
+            let doc = &mut self.documents[index];
+            doc.session_id = Some(id);
+            doc.original = Some(before);
+            doc.before_sha256 = Some(before_sha);
+            doc.notes = Some(TextEdit::new(notes));
+            doc.voice_project = Some(project);
+            doc.mirror_path = Some(path);
+            if same {
+                doc.conflict = None;
+            } else if buffer == disk {
+                doc.edit = TextEdit::new(after.clone());
+                doc.conflict = Some(crate::documents::SessionConflict { disk_text: disk, session_text: after });
+            } else {
+                doc.conflict = Some(crate::documents::SessionConflict { disk_text: disk, session_text: buffer });
+            }
+        }
+        if !same {
+            self.status = "This file changed on disk outside the edit session.".into();
+        }
+    }
+
+    fn reconcile_linked_file(&mut self) {
+        let Some(index) = self.active_doc else { return };
+        if self.documents[index].read_only {
+            return;
+        }
+        let path = self.documents[index].path.clone();
+        let Some((project, id, after, before, notes, before_sha)) = self.linked_session_files(&path) else { return };
+        let disk = self.documents[index].edit.text.clone();
+        let doc = &mut self.documents[index];
+        doc.session_id = Some(id);
+        doc.original = Some(before);
+        doc.before_sha256 = Some(before_sha);
+        doc.notes = Some(TextEdit::new(notes));
+        doc.voice_project = Some(project);
+        doc.mirror_path = Some(path);
+        if fs_io::sha256_text(&disk) == fs_io::sha256_text(&after) {
+            doc.conflict = None;
+            return;
+        }
+        doc.edit = TextEdit::new(after.clone());
+        doc.conflict = Some(crate::documents::SessionConflict { disk_text: disk, session_text: after });
+        self.status = "This file changed on disk outside the edit session.".into();
+    }
+
+    fn linked_session_files(&self, path: &Path) -> Option<(PathBuf, String, String, String, String, String)> {
+        struct LinkedCandidate {
+            created_at: String,
+            key: String,
+            project: PathBuf,
+            id: String,
+            after: String,
+            before: String,
+            notes: String,
+            before_sha: String,
+        }
+
+        let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let workspace = self
+            .workspace
+            .as_deref()
+            .map(|root| root.canonicalize().unwrap_or_else(|_| root.to_path_buf()));
+        let mut valid: Vec<LinkedCandidate> = Vec::new();
+        for (key, link) in &self.store.session_links {
+            if link.last_synced_sha256.is_empty() {
+                continue;
+            }
+            let resolved = resolve_mirror_path(&link.workspace_file, workspace.as_deref());
+            let linked = resolved.canonicalize().unwrap_or(resolved);
+            if linked != canon {
+                continue;
+            }
+            let Some((project_str, id)) = key.rsplit_once("::") else {
+                continue;
+            };
+            if !crate::session::valid_session_id(id) {
+                continue;
+            }
+            let project = PathBuf::from(project_str);
+            if self
+                .documents
+                .iter()
+                .any(|doc| doc.matches_session(&project, id))
+            {
+                continue;
+            }
+            let folder = project.join("sessions").join(id);
+            if !folder.join("session.json").is_file() || folder.join("receipt.json").exists() {
+                continue;
+            }
+            let Ok(after) = fs_io::read_utf8(&folder.join("after.md")) else {
+                continue;
+            };
+            let Ok(before) = fs_io::read_utf8(&folder.join("before.md")) else {
+                continue;
+            };
+            let notes = fs_io::read_utf8(&folder.join("notes.md")).unwrap_or_default();
+            let Ok(meta) = fs_io::read_utf8(&folder.join("session.json")) else {
+                continue;
+            };
+            let Ok(meta_json) = serde_json::from_str::<serde_json::Value>(&meta) else {
+                continue;
+            };
+            let Some(before_sha) = meta_json
+                .get("beforeSha256")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            if fs_io::sha256_text(&before) != before_sha {
+                continue;
+            }
+            let created_at = meta_json
+                .get("createdAt")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            valid.push(LinkedCandidate {
+                created_at,
+                key: key.clone(),
+                project,
+                id: id.to_owned(),
+                after,
+                before,
+                notes,
+                before_sha,
+            });
+        }
+        valid.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.id.cmp(&a.id))
+                .then_with(|| b.key.cmp(&a.key))
+        });
+        valid.into_iter().next().map(|candidate| {
+            (
+                candidate.project,
+                candidate.id,
+                candidate.after,
+                candidate.before,
+                candidate.notes,
+                candidate.before_sha,
+            )
+        })
+    }
+
+    fn request_judge(&mut self, clock: f64) {
+        let ready = self.voice_project.is_some()
+            && self.active_doc_ref().is_some_and(judge_target);
+        if !ready {
+            self.judge_due = None;
+            return;
+        }
+        self.judge_due = Some(clock + JUDGE_DELAY.as_secs_f64());
+    }
+
+    fn dispatch_judge(&mut self) {
+        let Some(project) = self.voice_project.clone() else { return };
+        let Some(index) = self.active_doc else { return };
+        if !judge_target(&self.documents[index]) {
+            return;
+        }
+        let doc_id = self.documents[index].id.clone();
+        let generation = self.documents[index].generation;
+        let judge_epoch = self.documents[index].judge_epoch;
+        let section = section_for_document(&self.documents[index]);
+        if self.judge_inflight.as_ref().is_some_and(|inflight| {
+            inflight.doc_id == doc_id
+                && inflight.generation == generation
+                && inflight.judge_epoch == judge_epoch
+                && inflight.section == section
+        }) {
+            return;
+        }
+        let text = self.documents[index].edit.text.clone();
+        let section_param = (section != "all").then(|| section.clone());
+        if let Ok(request_id) = self.bridge.request(
+            Some(doc_id.clone()),
+            generation,
+            crate::bridge::BridgeOp::JudgeText { project, text, section: section_param },
+        ) {
+            self.documents[index].latest_judge_request = Some(request_id);
+            self.judge_inflight = Some(JudgeInFlight {
+                doc_id,
+                generation,
+                judge_epoch,
+                section,
+                request_id,
+            });
+        }
+    }
+
+    pub(crate) fn apply_bridge_reply(&mut self, reply: crate::bridge::BridgeReply) {
+        use crate::bridge::BridgeReply;
+        match reply {
+            BridgeReply::Judge { request_id, doc_id, generation, section, result } => {
+                let mut result = *result;
+                if result.section.is_empty() {
+                    result.section = section.clone();
+                }
+                if self.judge_inflight.as_ref().is_some_and(|inflight| inflight.request_id == request_id) {
+                    self.judge_inflight = None;
+                }
+                let voice_project = self.voice_project.clone();
+                let Some(doc) = self.documents.iter_mut().find(|doc| doc.id == doc_id) else {
+                    return;
+                };
+                if doc.generation != generation
+                    || doc.latest_judge_request != Some(request_id)
+                    || section_for_document(doc) != section
+                {
+                    return;
+                }
+                let Some(voice_project) = voice_project else { return };
+                doc.cached_judge = Some(CachedJudge {
+                    voice_project,
+                    judge_epoch: doc.judge_epoch,
+                    section,
+                    report: result,
+                });
+            }
+            BridgeReply::Build { result, .. } => match result {
+                Ok(_) => {
+                    for doc in &mut self.documents {
+                        doc.judge_epoch += 1;
+                        doc.latest_judge_request = None;
+                        doc.cached_judge = None;
+                    }
+                    self.judge_inflight = None;
+                    self.judge_armed = true;
+                }
+                Err(error) => self.status = format!("Build failed: {error}"),
+            },
+            BridgeReply::SaveNote { result, .. } => match result {
+                Ok(saved) => {
+                    self.status = format!("Saved note to {}", saved.path);
+                    self.toast = Some(format!("Saved a note in {}", saved.path));
+                }
+                Err(error) => {
+                    self.status = format!("Could not save note: {error}");
+                    self.toast = Some(self.status.clone());
+                }
+            },
+            BridgeReply::SessionStart { doc_id, generation, result } => {
+                if let Some(id) = &doc_id
+                    && self.session_start_inflight.as_ref().is_some_and(|(inflight, sent)| inflight == id && *sent == generation)
+                {
+                    self.session_start_inflight = None;
+                }
+                let stale = doc_id.as_ref().is_some_and(|id| self.session_start_is_stale(id, generation));
+                match result {
+                    Ok(_started) if stale => {
+                        self.status = "The draft changed before the edit session could attach.".into();
+                    }
+                    Ok(started) => self.attach_started_session(doc_id, generation, started),
+                    Err(_) if stale => {}
+                    Err(error) => self.status = format!("Could not start session: {error}"),
+                }
+            }
+            BridgeReply::SessionFinish { doc_id, result } => {
+                if let Err(error) = result {
+                    self.status = if doc_id.is_some() {
+                        format!("Could not finish session: {error}")
+                    } else {
+                        error
+                    };
+                }
+            }
+            BridgeReply::RulesList { result }
+            | BridgeReply::RulesDecide { result }
+            | BridgeReply::ChecksList { result }
+            | BridgeReply::ChecksDecide { result }
+            | BridgeReply::Promote { result } => {
+                if let Err(error) = result {
+                    self.status = error;
+                }
+            }
+            BridgeReply::SessionsList { result } => {
+                if let Err(error) = result {
+                    self.status = error;
+                }
+            }
+        }
     }
 
     pub(crate) fn save_clicked(&mut self) {
@@ -1550,6 +2762,10 @@ impl Editor {
             return;
         }
         if !doc.is_dirty() && !doc.recovery_path().is_file() {
+            if doc.conflict.is_some() {
+                self.status = "Resolve the disk conflict (Load Disk or Keep Session) before syncing to disk.".into();
+                return;
+            }
             let label = DocumentBuffer::format_saved_utc();
             doc.last_saved_label = Some(label);
             self.status = "Saved locally".into();
@@ -1692,6 +2908,7 @@ impl Editor {
             doc.recovery_due = None;
             doc.pending_recovery = false;
             let doc_id = doc.id.clone();
+            let mirror_force = std::mem::take(&mut doc.force_mirror);
             let req = if let (Some(project), Some(session_id)) =
                 (doc.voice_project.clone(), doc.session_id.clone())
             {
@@ -1707,7 +2924,8 @@ impl Editor {
                         .as_ref()
                         .map_or_else(String::new, |n| n.text.clone()),
                     mirror_path: doc.mirror_path.clone(),
-                mirror_expected_sha256: Self::mirror_sync_hash(&self.store, doc),
+                    mirror_expected_sha256: Self::mirror_sync_hash(&self.store, doc),
+                    mirror_force,
                 }
             } else {
                 WorkerRequest::WriteFile {
@@ -1769,6 +2987,9 @@ impl Editor {
                 let mut should_close = false;
                 if let Some(doc) = self.documents.iter_mut().find(|d| d.id == doc_id) {
                     match result {
+                        Ok(_) if generation < doc.saved_generation => {
+                            // An older save finished after a newer one. Drop it so it cannot rewind the sync hash.
+                        }
                         Ok(outcome) => {
                             let warning = Self::saved_snapshot(&mut self.store, doc, generation, sha256, outcome);
                             doc.save_error = None;
@@ -1789,6 +3010,9 @@ impl Editor {
                                 }
                             }
                             saved_ok = true;
+                        }
+                        Err(_) if generation < doc.saved_generation => {
+                            // The failed write is older than the bytes already accepted.
                         }
                         Err(error) => {
                             doc.autosave_due = None;
@@ -1853,6 +3077,27 @@ impl Editor {
                             doc.pending_save = false;
                             doc.autosave_due = None;
                             doc.save_error = None;
+                            doc.mirror_path = None;
+                            if matches!(doc.id, DocId::File(_))
+                                && let (Some(project), Some(session_id)) =
+                                    (doc.voice_project.clone(), doc.session_id.clone())
+                            {
+                                doc.id = DocId::Session {
+                                    project: project.clone(),
+                                    id: session_id.clone(),
+                                };
+                                doc.path = project
+                                    .join("sessions")
+                                    .join(&session_id)
+                                    .join("after.md");
+                                if self
+                                    .judge_inflight
+                                    .as_ref()
+                                    .is_some_and(|inflight| inflight.doc_id == doc_id)
+                                {
+                                    self.judge_inflight = None;
+                                }
+                            }
                             doc.last_saved_label = Some("Finished".into());
                             self.status = warning.map_or_else(
                                 || "Finished. Final and receipt saved locally.".into(),
@@ -2059,8 +3304,38 @@ impl Editor {
             self.save_ui_prefs_if_workspace();
         }
         self.worker.shutdown();
+        self.bridge.shutdown();
         true
     }
+}
+
+fn boot_io(
+    runner: CliRunner,
+    writer: WriteRunner,
+    wake: WakeFn,
+    backend: Option<Box<dyn crate::bridge::BridgeBackend>>,
+) -> (Worker, crate::bridge::BridgeClient) {
+    let wake = Arc::new(wake);
+    let bridge = crate::bridge::BridgeClient::spawn(Arc::clone(&wake), backend);
+    let worker = Worker::spawn_with_shared_wake(runner, writer, wake);
+    (worker, bridge)
+}
+
+fn judge_target(doc: &DocumentBuffer) -> bool {
+    let name = doc.path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+    !matches!(name, "manifest.json" | "receipt.json")
+}
+
+pub(crate) fn section_for_document(doc: &DocumentBuffer) -> String {
+    if let Some(section) = doc.section_override.as_deref() {
+        return if section.is_empty() { "all".into() } else { section.to_owned() };
+    }
+    crate::markdown_decor::parse_frontmatter_fields(&doc.edit.text)
+        .into_iter()
+        .find(|(key, _)| key == "section")
+        .map(|(_, value)| value)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "all".into())
 }
 
 pub(crate) fn on_window_close(editor: &mut Editor, tx: &mut Tx) {
@@ -2080,6 +3355,17 @@ impl Drop for Editor {
             }
             self.worker.shutdown();
         }
+        self.bridge.shutdown();
+    }
+}
+
+fn remap_renamed_path(path: &Path, old_canon: &Path, new_canon: &Path) -> Option<PathBuf> {
+    if path == old_canon {
+        Some(new_canon.to_path_buf())
+    } else {
+        path.strip_prefix(old_canon)
+            .ok()
+            .map(|suffix| new_canon.join(suffix))
     }
 }
 
@@ -2136,6 +3422,24 @@ pub(crate) fn poll(editor: &mut Editor, clock: f64, tx: &mut Tx) -> bool {
 
     while let Ok(reply) = editor.worker.search.try_recv() {
         changed |= editor.accept_folder_search(reply);
+    }
+    while let Ok(reply) = editor.bridge.try_recv() {
+        editor.apply_bridge_reply(reply);
+        changed = true;
+    }
+    if editor.judge_armed {
+        editor.judge_armed = false;
+        if editor.judge_due.is_none() {
+            editor.request_judge(clock);
+        }
+    }
+    if let Some(due) = editor.judge_due {
+        if clock >= due {
+            editor.judge_due = None;
+            editor.dispatch_judge();
+        } else {
+            tx.wake_after(Duration::from_secs_f64((due - clock).max(0.0)));
+        }
     }
     if let Some(due) = editor.folder_search.due {
         if clock >= due {
@@ -2198,6 +3502,13 @@ pub(crate) fn poll(editor: &mut Editor, clock: f64, tx: &mut Tx) -> bool {
         }
     }
 
+    editor.maybe_start_pending_track();
+    if editor.pending_document_focus {
+        editor.pending_document_focus = false;
+        editor.focus_document(tx);
+        changed = true;
+    }
+
     editor.sync_window_title(tx);
     changed
 }
@@ -2255,6 +3566,19 @@ pub(crate) fn on_key(editor: &mut Editor, key: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if key.is_command('j') && !key.mods.shift && !key.mods.alt {
         editor.toggle_inspector();
+        return true;
+    }
+    if editor.section_menu_open && key.key == Key::Escape {
+        editor.section_menu_open = false;
+        editor.focus_document(tx);
+        return true;
+    }
+    if key.key == Key::Function(8) || (key.is_command('.') && key.mods.shift) {
+        editor.jump_next_placeholder(tx);
+        return true;
+    }
+    if key.is_command('l') && !key.mods.shift && !key.mods.alt {
+        editor.toggle_voice_lens();
         return true;
     }
     if key.is_command('n') && !key.mods.shift && editor.workspace.is_some() {
@@ -3743,6 +5067,1457 @@ mod tests {
             } else {
                 std::env::remove_var("GHOSTLESS_HOME");
             }
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn section_inference_uses_frontmatter_until_overridden() {
+        let doc = DocumentBuffer::from_workspace_file(
+            PathBuf::from("/tmp/draft.md"),
+            "draft.md".into(),
+            "---\nsection: notes\n---\nHello.\n".into(),
+            false,
+            false,
+            true,
+            None,
+        );
+        assert_eq!(section_for_document(&doc), "notes");
+        let mut picked = doc;
+        picked.section_override = Some("all".into());
+        assert_eq!(section_for_document(&picked), "all");
+        let manifest = DocumentBuffer::from_workspace_file(
+            PathBuf::from("/tmp/manifest.json"),
+            "manifest.json".into(),
+            "{}".into(),
+            true,
+            false,
+            true,
+            None,
+        );
+        assert!(!judge_target(&manifest));
+    }
+
+    #[test]
+    fn rapid_edits_coalesce_into_one_judge_and_stale_replies_are_dropped() {
+        use crate::bridge::{BridgeBackend, BridgeReply, JudgeReport};
+        use serde_json::{Value, json};
+
+        struct RecordBackend {
+            calls: Arc<Mutex<Vec<String>>>,
+        }
+        impl BridgeBackend for RecordBackend {
+            fn call(&mut self, method: &str, params: &Value) -> Result<Value, String> {
+                self.calls.lock().unwrap().push(params["text"].as_str().unwrap_or(method).to_owned());
+                Ok(json!({
+                    "ok": true, "score": 86, "failUnder": 70, "section": "notes",
+                    "checks": [{"metric": "medianSentenceLength", "label": "Median sentence", "target": 10.0, "actual": 8.0, "low": 6.0, "high": 14.0, "status": "low", "penalty": 4}, {"metric": "emDashesPer1k", "label": "Em dashes / 1k", "target": 1.0, "actual": 1.0, "low": 0.0, "high": 2.0, "status": "ok", "penalty": 0}],
+                    "needsBuild": false
+                }))
+            }
+        }
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut session = test_session();
+        session.after = "---\nsection: notes\n---\nFirst.\n".into();
+        let mut editor = Editor::with_handlers_backend(
+            session,
+            prefs::EditorStateStore::default(),
+            ok_runner(),
+            ok_writer(),
+            noop_wake(),
+            Some(Box::new(RecordBackend { calls: Arc::clone(&calls) })),
+        );
+        let mut tx = Tx::default();
+        editor.set_judge_section("archive".into(), 0.0);
+        assert_eq!(editor.documents[0].section_override.as_deref(), Some("archive"));
+        for text in ["---\nsection: notes\n---\nOne.\n", "---\nsection: notes\n---\nTwo.\n", "---\nsection: notes\n---\nThree.\n"] {
+            editor.active_working_edit_mut().text = text.into();
+            editor.changed_active(&mut tx);
+        }
+        assert_eq!(editor.bridge.submitted.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert!(!poll(&mut editor, 1.0, &mut tx) || editor.worker_busy.is_some());
+        assert_eq!(editor.bridge.submitted.load(std::sync::atomic::Ordering::Relaxed), 0);
+        poll(&mut editor, 1.2, &mut tx);
+        assert_eq!(editor.bridge.submitted.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while editor.active_judge_report().is_none() {
+            assert!(std::time::Instant::now() < deadline, "judge reply did not arrive");
+            poll(&mut editor, 1.2, &mut tx);
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(calls.lock().unwrap().as_slice(), ["---\nsection: notes\n---\nThree.\n"]);
+        assert_eq!(editor.active_judge_report().unwrap().score, 86);
+        assert_eq!(editor.voice_pill_label().as_deref(), Some("Voice: 86 · 1 gap"));
+        let doc_id = editor.documents[0].id.clone();
+        editor.apply_bridge_reply(BridgeReply::Judge {
+            request_id: 0,
+            doc_id: doc_id.clone(),
+            generation: 1,
+            section: "notes".into(),
+            result: Box::new(JudgeReport { score: 1, ..JudgeReport::default() }),
+        });
+        assert_eq!(editor.active_judge_report().unwrap().score, 86);
+
+        editor.active_working_edit_mut().text = "---\nsection: notes\n---\nFour.\n".into();
+        editor.changed_active(&mut tx);
+        let superseded = editor.documents[0].generation - 1;
+        editor.apply_bridge_reply(BridgeReply::Judge {
+            request_id: 0,
+            doc_id,
+            generation: superseded,
+            section: "notes".into(),
+            result: Box::new(JudgeReport { score: 2, ..JudgeReport::default() }),
+        });
+        assert_eq!(editor.active_judge_report().unwrap().score, 86);
+    }
+
+    #[test]
+    fn edit_during_judge_drops_the_superseded_reply() {
+        use crate::bridge::BridgeBackend;
+        use serde_json::{Value, json};
+        use std::sync::Condvar;
+
+        struct HoldBackend {
+            calls: Arc<std::sync::atomic::AtomicUsize>,
+            started: mpsc::Sender<()>,
+            release: Arc<(Mutex<bool>, Condvar)>,
+        }
+        impl BridgeBackend for HoldBackend {
+            fn call(&mut self, _method: &str, _params: &Value) -> Result<Value, String> {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = self.started.send(());
+                let (lock, cv) = &*self.release;
+                let _guard = cv.wait_timeout_while(
+                    lock.lock().unwrap(),
+                    Duration::from_secs(2),
+                    |ready| !*ready,
+                ).unwrap();
+                Ok(json!({"ok": true, "score": 40, "failUnder": 70, "needsBuild": false}))
+            }
+        }
+
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (started_tx, started_rx) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let mut editor = Editor::with_handlers_backend(
+            test_session(),
+            prefs::EditorStateStore::default(),
+            ok_runner(),
+            ok_writer(),
+            noop_wake(),
+            Some(Box::new(HoldBackend { calls: Arc::clone(&calls), started: started_tx, release: Arc::clone(&release) })),
+        );
+        editor.judge_armed = false;
+        let mut tx = Tx::default();
+        editor.active_working_edit_mut().text = "Before the reply.\n".into();
+        editor.changed_active(&mut tx);
+        poll(&mut editor, 1.2, &mut tx);
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        editor.active_working_edit_mut().text = "Edited while judging.\n".into();
+        editor.changed_active(&mut tx);
+        {
+            let (lock, cv) = &*release;
+            *lock.lock().unwrap() = true;
+            cv.notify_all();
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while editor.judge_inflight.is_some() {
+            assert!(std::time::Instant::now() < deadline, "judge did not settle");
+            poll(&mut editor, 1.0, &mut tx);
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(editor.active_judge_report().is_none());
+        assert!(editor.judge_due.is_some());
+    }
+
+    struct ScriptedHold {
+        scores: Vec<i32>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        started: mpsc::Sender<usize>,
+        release: Arc<(Mutex<usize>, std::sync::Condvar)>,
+    }
+
+    impl crate::bridge::BridgeBackend for ScriptedHold {
+        fn call(&mut self, _method: &str, params: &serde_json::Value) -> Result<serde_json::Value, String> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = self.started.send(n);
+            let (lock, cv) = &*self.release;
+            let _guard = cv
+                .wait_timeout_while(lock.lock().unwrap(), Duration::from_secs(2), |ready| *ready <= n)
+                .unwrap();
+            let score = self.scores.get(n).copied().unwrap_or(1);
+            let section = params.get("section").and_then(|value| value.as_str()).unwrap_or("all");
+            Ok(serde_json::json!({
+                "ok": true, "score": score, "failUnder": 70, "section": section, "needsBuild": false
+            }))
+        }
+    }
+
+    fn release_holds(release: &Arc<(Mutex<usize>, std::sync::Condvar)>, ready: usize) {
+        let (lock, cv) = &**release;
+        *lock.lock().unwrap() = ready;
+        cv.notify_all();
+    }
+
+    fn wait_for_judge_score(editor: &mut Editor, score: i32) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut tx = Tx::default();
+        while editor.active_judge_report().map(|report| report.score) != Some(score) {
+            assert!(std::time::Instant::now() < deadline, "judge score {score} did not land");
+            poll(editor, 10.0, &mut tx);
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn section_switch_during_judge_keeps_the_new_section_score() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = mpsc::channel();
+        let release = Arc::new((Mutex::new(0usize), std::sync::Condvar::new()));
+        let mut editor = Editor::with_handlers_backend(
+            test_session(),
+            prefs::EditorStateStore::default(),
+            ok_runner(),
+            ok_writer(),
+            noop_wake(),
+            Some(Box::new(ScriptedHold {
+                scores: vec![11, 91],
+                calls: Arc::clone(&calls),
+                started: started_tx,
+                release: Arc::clone(&release),
+            })),
+        );
+        editor.judge_armed = false;
+        let mut tx = Tx::default();
+        editor.request_judge(0.0);
+        poll(&mut editor, JUDGE_DELAY.as_secs_f64(), &mut tx);
+        assert_eq!(started_rx.recv_timeout(Duration::from_secs(2)).unwrap(), 0);
+        editor.set_judge_section("essays".into(), JUDGE_DELAY.as_secs_f64());
+        assert!(!editor.documents[0].is_dirty());
+        assert!(editor.active_judge_report().is_none());
+        poll(&mut editor, (JUDGE_DELAY + JUDGE_DELAY).as_secs_f64(), &mut tx);
+        assert_eq!(editor.bridge.submitted.load(Ordering::Relaxed), 2);
+        assert_eq!(editor.judge_inflight.as_ref().map(|inflight| inflight.section.as_str()), Some("essays"));
+        release_holds(&release, 2);
+        wait_for_judge_score(&mut editor, 91);
+        assert_eq!(editor.documents[0].cached_judge.as_ref().map(|cached| cached.report.score), Some(91));
+        assert_eq!(editor.voice_pill_label().as_deref(), Some("Voice: 91"));
+        assert!(!editor.documents[0].is_dirty());
+        assert!(editor.active_judge_report().is_some_and(|report| report.score != 11));
+    }
+
+    #[test]
+    fn aba_section_switch_and_rebuild_drop_stale_judge_replies() {
+        use crate::bridge::BuildSummary;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = mpsc::channel();
+        let release = Arc::new((Mutex::new(0usize), std::sync::Condvar::new()));
+        let mut editor = Editor::with_handlers_backend(
+            test_session(),
+            prefs::EditorStateStore::default(),
+            ok_runner(),
+            ok_writer(),
+            noop_wake(),
+            Some(Box::new(ScriptedHold {
+                scores: vec![11, 22, 33],
+                calls: Arc::clone(&calls),
+                started: started_tx,
+                release: Arc::clone(&release),
+            })),
+        );
+        editor.judge_armed = false;
+        let mut tx = Tx::default();
+        editor.request_judge(0.0);
+        let delay = JUDGE_DELAY.as_secs_f64();
+        poll(&mut editor, delay, &mut tx);
+        assert_eq!(started_rx.recv_timeout(Duration::from_secs(2)).unwrap(), 0);
+        editor.set_judge_section("essays".into(), delay);
+        poll(&mut editor, delay * 2.0, &mut tx);
+        editor.set_judge_section("all".into(), delay * 2.0);
+        poll(&mut editor, delay * 3.0, &mut tx);
+        assert_eq!(editor.bridge.submitted.load(Ordering::Relaxed), 3);
+        assert!(!editor.documents[0].is_dirty());
+        release_holds(&release, 3);
+        wait_for_judge_score(&mut editor, 33);
+        assert_eq!(editor.active_judge_report().map(|report| report.score), Some(33));
+        assert!(!editor.documents[0].is_dirty());
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = mpsc::channel();
+        let release = Arc::new((Mutex::new(0usize), std::sync::Condvar::new()));
+        let mut editor = Editor::with_handlers_backend(
+            test_session(),
+            prefs::EditorStateStore::default(),
+            ok_runner(),
+            ok_writer(),
+            noop_wake(),
+            Some(Box::new(ScriptedHold {
+                scores: vec![11, 44],
+                calls,
+                started: started_tx,
+                release: Arc::clone(&release),
+            })),
+        );
+        editor.judge_armed = false;
+        editor.request_judge(0.0);
+        poll(&mut editor, delay, &mut tx);
+        assert_eq!(started_rx.recv_timeout(Duration::from_secs(2)).unwrap(), 0);
+        editor.apply_bridge_reply(crate::bridge::BridgeReply::Build {
+            doc_id: Some(editor.documents[0].id.clone()),
+            result: Ok(BuildSummary {
+                gold_pieces: 1,
+                counts: serde_json::Value::Null,
+                bronze_format_only: false,
+                warnings: Vec::new(),
+                generated_at: String::new(),
+            }),
+        });
+        assert_eq!(editor.documents[0].judge_epoch, 1);
+        assert!(editor.documents[0].latest_judge_request.is_none());
+        assert!(editor.active_judge_report().is_none());
+        assert!(editor.judge_inflight.is_none());
+        assert!(!editor.documents[0].is_dirty());
+        poll(&mut editor, delay, &mut tx);
+        poll(&mut editor, delay * 2.0, &mut tx);
+        assert_eq!(editor.bridge.submitted.load(Ordering::Relaxed), 2);
+        release_holds(&release, 2);
+        wait_for_judge_score(&mut editor, 44);
+        assert!(!editor.documents[0].is_dirty());
+    }
+
+    fn plant_judge(editor: &mut Editor, section: &str, score: i32) {
+        let voice = editor.voice_project.clone().expect("voice project");
+        let doc = editor.active_doc_mut().unwrap();
+        let epoch = doc.judge_epoch;
+        doc.cached_judge = Some(CachedJudge {
+            voice_project: voice,
+            judge_epoch: epoch,
+            section: section.into(),
+            report: crate::bridge::JudgeReport {
+                ok: true,
+                score,
+                section: section.into(),
+                banned: vec![crate::bridge::BannedHit { tell: "delve".into(), count: 1 }],
+                ..crate::bridge::JudgeReport::default()
+            },
+        });
+    }
+
+    fn element_mentions(elements: &[rune::ElementInfo], needle: &str) -> bool {
+        elements.iter().filter(|element| !element.exiting).any(|element| {
+            element.text.as_deref().is_some_and(|text| text.contains(needle))
+                || element.label.as_deref().is_some_and(|text| text.contains(needle))
+        })
+    }
+
+    #[test]
+    fn yaml_section_edit_drops_the_cached_judge_across_tab_switches() {
+        let essays = "---\nsection: essays\n---\nPlease delve here.\n";
+        let mut session = test_session();
+        session.after = essays.into();
+        session.original = essays.into();
+        let mut editor = Editor::with_handlers(session, prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake());
+        editor.store.ui.voice_lens = true;
+        if !editor.inspector_pane.is_open() {
+            editor.inspector_pane.toggle();
+        }
+        plant_judge(&mut editor, "essays", 77);
+        assert_eq!(editor.active_judge_report().map(|report| report.score), Some(77));
+        let mut rt = rune::Runtime::new(editor, crate::ui::view, (1280.0, 800.0), rune::Env::new(false, 1.0));
+        rt.on_key = Some(on_key);
+        rt.frame(0.0);
+        assert!(element_mentions(&rt.elements(), "Score 77"));
+        assert!(element_mentions(&rt.elements(), "Voice: 77"));
+        rt.update(|editor, tx| {
+            editor.active_working_edit_mut().text = "---\nsection: notes\n---\nPlease delve here.\n".into();
+            editor.changed_active(tx);
+        });
+        assert!(rt.state.active_judge_report().is_none());
+        assert!(rt.state.documents[0].cached_judge.is_none());
+        rt.frame(1.0 / 60.0);
+        assert!(!element_mentions(&rt.elements(), "Score 77"));
+        assert!(!element_mentions(&rt.elements(), "Voice: 77"));
+        let draft_key = rt.state.documents[0].id.tab_key();
+        rt.update(|editor, tx| {
+            let other = DocumentBuffer::from_workspace_file(
+                PathBuf::from("/tmp/other-judge.md"),
+                "other-judge.md".into(),
+                "Other note.\n".into(),
+                false,
+                false,
+                true,
+                editor.voice_project.clone(),
+            );
+            let other_key = other.id.tab_key();
+            editor.documents.push(other);
+            editor.activate_tab(&other_key, tx);
+        });
+        assert!(rt.state.active_judge_report().is_none());
+        rt.update(|editor, tx| editor.activate_tab(&draft_key, tx));
+        assert!(rt.state.active_judge_report().is_none());
+        assert!(rt.state.documents.iter().find(|doc| doc.id.tab_key() == draft_key).unwrap().cached_judge.is_none());
+        rt.frame(0.0);
+        assert!(!element_mentions(&rt.elements(), "Score 77"));
+        assert!(!element_mentions(&rt.elements(), "Voice: 77"));
+    }
+
+    #[test]
+    fn judge_report_does_not_leak_across_close_delete_workspace_or_recovery() {
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let home = std::env::temp_dir().join(format!("ghostless-judge-life-home-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("ghostless-judge-life-{}", std::process::id()));
+        let other = std::env::temp_dir().join(format!("ghostless-judge-life-other-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&other);
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        let previous = std::env::var_os("GHOSTLESS_HOME");
+        unsafe { std::env::set_var("GHOSTLESS_HOME", &home); }
+        let mut tx = Tx::default();
+
+        let essays = "---\nsection: essays\n---\nPlease delve here.\n";
+        let mut session = test_session();
+        session.after = essays.into();
+        session.original = essays.into();
+        let mut editor = Editor::with_handlers(session, prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake());
+        plant_judge(&mut editor, "essays", 77);
+        let key = editor.documents[0].id.tab_key();
+        assert!(editor.close_tab_by_id(&key, &mut tx));
+        assert!(editor.documents.is_empty());
+        assert!(editor.active_judge_report().is_none());
+
+        let draft = root.join("draft.md");
+        let keep = root.join("keep.md");
+        fs_io::atomic_write_text(&draft, essays).unwrap();
+        fs_io::atomic_write_text(&keep, "Keep this.\n").unwrap();
+        let mut editor = Editor::empty_with_handlers(prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake());
+        editor.open_workspace_with_voice(root.clone(), Some(draft.clone()), Some(root.clone()));
+        plant_judge(&mut editor, "essays", 77);
+        let mut linked = DocumentBuffer::from_session(test_session(), true, Some(draft.clone()));
+        linked.mirror_path = Some(draft.canonicalize().unwrap_or(draft.clone()));
+        editor.documents.push(linked);
+        editor.active_dialog = Some(DialogKind::Delete {
+            rel_path: "draft.md".into(),
+            display_name: "draft.md".into(),
+            is_dir: false,
+        });
+        editor.submit_dialog(&mut tx);
+        assert!(editor.active_judge_report().is_none());
+        assert!(editor.documents.iter().all(|doc| doc.cached_judge.is_none()));
+        let linked = editor.documents.iter().find(|doc| doc.is_session()).unwrap();
+        assert!(linked.mirror_path.is_none());
+
+        editor.open_workspace_file(keep.clone(), true);
+        plant_judge(&mut editor, "all", 77);
+        assert_eq!(editor.active_judge_report().map(|report| report.score), Some(77));
+        editor.open_workspace_with_voice(other.clone(), None, Some(other.clone()));
+        assert!(editor.active_judge_report().is_none());
+        assert!(editor.judge_inflight.is_none());
+        assert!(editor.judge_due.is_none());
+        assert!(!editor.conflict_compare);
+        assert!(editor.documents.iter().all(|doc| doc.cached_judge.is_none()));
+
+        let recover = root.join("recover.md");
+        fs_io::atomic_write_text(&recover, essays).unwrap();
+        editor.open_workspace_with_voice(root.clone(), Some(recover.clone()), Some(root.clone()));
+        plant_judge(&mut editor, "essays", 77);
+        let recovery = editor.active_doc_ref().unwrap().recovery_path();
+        fs_io::atomic_write_text(&recovery, "---\nsection: essays\n---\nRecovered body.\n").unwrap();
+        let doc_id = editor.active_doc_ref().unwrap().id.clone();
+        let title = editor.active_doc_ref().unwrap().title.clone();
+        editor.active_dialog = Some(DialogKind::Recover { doc_id, title });
+        editor.resolve_recovery(true);
+        assert!(editor.active_doc_ref().unwrap().cached_judge.is_none());
+        assert!(editor.active_judge_report().is_none());
+        assert_eq!(editor.active_working_edit().text, "---\nsection: essays\n---\nRecovered body.\n");
+
+        unsafe {
+            if let Some(value) = previous { std::env::set_var("GHOSTLESS_HOME", value); }
+            else { std::env::remove_var("GHOSTLESS_HOME"); }
+        }
+        let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&other);
+    }
+
+    #[test]
+    fn voice_navigation_keeps_text_and_returns_focus_in_every_mode() {
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let home = std::env::temp_dir().join(format!("ghostless-lens-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        let previous = std::env::var_os("GHOSTLESS_HOME");
+        unsafe { std::env::set_var("GHOSTLESS_HOME", &home); }
+
+        let draft = "# Opening\n\nKeep [PLACEHOLDER: one] then [PLACEHOLDER: two].\n\nPlease delve here.\n";
+        let cases = [
+            (ViewMode::Write, false, false, false),
+            (ViewMode::Preview, false, false, false),
+            (ViewMode::Compare, false, false, false),
+            (ViewMode::Write, true, false, false),
+            (ViewMode::Preview, true, false, false),
+            (ViewMode::Compare, true, false, false),
+            (ViewMode::Write, false, true, false),
+            (ViewMode::Preview, false, true, false),
+            (ViewMode::Compare, false, true, false),
+            (ViewMode::Write, true, false, true),
+            (ViewMode::Preview, true, false, true),
+            (ViewMode::Compare, true, false, true),
+        ];
+        for (mode, read_only, locked, voice_guide) in cases {
+            let mut session = test_session();
+            session.after = draft.into();
+            session.original = draft.into();
+            let mut editor = Editor::with_handlers(
+                session, prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake(),
+            );
+            {
+                let doc = editor.active_doc_mut().unwrap();
+                doc.read_only = read_only || voice_guide;
+                doc.lockable = locked;
+                doc.user_locked = locked;
+                if voice_guide {
+                    doc.path.set_file_name("voice-guide.md");
+                    doc.title = "voice-guide.md".into();
+                }
+            }
+            editor.view_mode = mode;
+            editor.store.ui.voice_lens = false;
+            let generation = editor.active_doc_ref().unwrap().generation;
+            let focus = if voice_guide {
+                "preview-body"
+            } else if read_only || locked {
+                "working-body"
+            } else {
+                "prose-input"
+            };
+
+            let mut rt = rune::Runtime::new(editor, crate::ui::view, (1120.0, 800.0), rune::Env::new(false, 1.0));
+            rt.on_key = Some(on_key);
+            rt.poll = Some(poll);
+            rt.frame(0.0);
+            if mode == ViewMode::Write && !read_only && !locked && !voice_guide {
+                assert!(rt.elements().iter().any(|element| element.key.as_deref() == Some("next-placeholder")));
+            }
+            rt.key(KeyEvent { key: Key::Function(8), mods: rune::Mods::default() });
+            rt.frame(0.0);
+            assert_eq!(rt.state.active_working_edit().text, draft, "{mode:?} read_only={read_only} locked={locked} guide={voice_guide}");
+            assert_eq!(rt.state.active_doc_ref().unwrap().generation, generation);
+            assert_eq!(rt.state.active_working_edit().selected(), "[PLACEHOLDER: one]");
+            assert_eq!(rt.state.view_mode, ViewMode::Write);
+            assert_surface(&rt, focus);
+            rt.key(KeyEvent { key: Key::Command('l'), mods: rune::Mods::default() });
+            rt.frame(0.0);
+            assert!(rt.state.store.ui.voice_lens);
+            assert_eq!(rt.state.active_working_edit().text, draft);
+            assert_surface(&rt, focus);
+            rt.update(|editor, tx| editor.jump_to_query("delve", tx));
+            rt.frame(0.0);
+            assert_eq!(rt.state.active_working_edit().selected(), "delve");
+            assert_eq!(rt.state.active_working_edit().text, draft);
+            assert_eq!(rt.state.active_doc_ref().unwrap().generation, generation);
+            let focused = rt.elements().iter().find(|element| element.focused).and_then(|element| element.key.clone());
+            assert_eq!(focused.as_deref(), Some(focus), "{mode:?} read_only={read_only} locked={locked} guide={voice_guide}");
+        }
+
+        let mut session = test_session();
+        session.after = draft.into();
+        let editor = Editor::with_handlers(
+            session, prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake(),
+        );
+        let mut rt = rune::Runtime::new(editor, crate::ui::view, (1120.0, 800.0), rune::Env::new(false, 1.0));
+        rt.on_key = Some(on_key);
+        rt.poll = Some(poll);
+        rt.frame(0.0);
+        rt.update(|editor, tx| editor.jump_next_placeholder(tx));
+        rt.frame(0.0);
+        assert_eq!(rt.state.active_working_edit().selected(), "[PLACEHOLDER: one]");
+        rt.key(KeyEvent { key: Key::Command('.'), mods: rune::Mods { shift: true, ..rune::Mods::default() } });
+        rt.frame(0.0);
+        assert_eq!(rt.state.active_working_edit().selected(), "[PLACEHOLDER: two]");
+        rt.key(KeyEvent { key: Key::Function(8), mods: rune::Mods::default() });
+        rt.frame(0.0);
+        assert_eq!(rt.state.active_working_edit().selected(), "[PLACEHOLDER: one]");
+        assert_eq!(rt.state.active_working_edit().text, draft);
+
+        unsafe {
+            if let Some(value) = previous { std::env::set_var("GHOSTLESS_HOME", value); }
+            else { std::env::remove_var("GHOSTLESS_HOME"); }
+        }
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    fn assert_surface(rt: &rune::Runtime<Editor>, focus: &str) {
+        let elements = rt.elements();
+        let focused = elements.iter().find(|element| element.focused).unwrap_or_else(|| {
+            panic!("nothing focused; wanted {focus}");
+        });
+        assert_eq!(focused.key.as_deref(), Some(focus));
+        let rect = focused.rect;
+        assert!(rect[2] > 1.0 && rect[3] > 1.0, "focus {focus} has no area {rect:?}");
+        assert!(rect[0] >= -1.0 && rect[1] >= -1.0 && rect[0] + rect[2] <= 1121.0 && rect[1] + rect[3] <= 801.0, "{focus} {:?} is outside the window", rect);
+        if let Some(parent) = elements.iter().find(|element| element.key.as_deref() == Some("working-body")) {
+            assert!(rect[1] >= parent.rect[1] - 1.0 && rect[1] + rect[3] <= parent.rect[1] + parent.rect[3] + 1.0, "{focus} {:?} outside working body {:?}", rect, parent.rect);
+        }
+        for stray in ["find-source-match", "find-source-anchor", "preview-find-anchor"] {
+            assert!(elements.iter().all(|element| element.key.as_deref() != Some(stray)), "{stray} left behind");
+        }
+    }
+
+    #[test]
+    fn linked_reopen_detects_divergence_without_writing_either_copy() {
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let home = std::env::temp_dir().join(format!("ghostless-conflict-home-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("ghostless-conflict-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&home).unwrap();
+        let previous = std::env::var_os("GHOSTLESS_HOME");
+        unsafe { std::env::set_var("GHOSTLESS_HOME", &home); }
+        let session_id = "2026-04-02-notes";
+        let folder = root.join("sessions").join(session_id);
+        fs::create_dir_all(&folder).unwrap();
+        let before = "Session copy.\n";
+        let before_sha = fs_io::sha256_text(before);
+        fs_io::atomic_write_text(&folder.join("before.md"), before).unwrap();
+        fs_io::atomic_write_text(&folder.join("after.md"), before).unwrap();
+        fs_io::atomic_write_text(&folder.join("session.json"), &format!(r#"{{"kind":"ghostless-edit-session","beforeSha256":"{before_sha}"}}"#)).unwrap();
+        let draft = root.join("draft.md");
+        fs_io::atomic_write_text(&draft, before).unwrap();
+        let mut store = prefs::EditorStateStore::default();
+        store.session_links.insert(prefs::EditorStateStore::session_link_key(&root, session_id), prefs::SessionLink {
+            workspace_file: draft.clone(),
+            last_synced_sha256: before_sha,
+        });
+        let mut editor = Editor::empty_with_handlers(store, ok_runner(), ok_writer(), noop_wake());
+        editor.workspace = Some(root.clone());
+        editor.voice_project = Some(root.clone());
+        editor.open_workspace_file(draft.clone(), true);
+        assert!(editor.active_doc_ref().unwrap().conflict.is_none());
+        assert_eq!(fs_io::read_utf8(&draft).unwrap(), before);
+        assert_eq!(fs_io::read_utf8(&folder.join("after.md")).unwrap(), before);
+        assert_eq!(fs_io::read_utf8(&folder.join("before.md")).unwrap(), before);
+
+        fs_io::atomic_write_text(&draft, "Disk edit.\n").unwrap();
+        let store = prefs::load_store();
+        let mut editor = Editor::empty_with_handlers(store, ok_runner(), ok_writer(), noop_wake());
+        editor.workspace = Some(root.clone());
+        editor.voice_project = Some(root.clone());
+        editor.open_workspace_file(draft.clone(), true);
+        let doc = editor.active_doc_ref().unwrap();
+        assert!(doc.conflict.is_some());
+        assert_eq!(doc.edit.text, before);
+        assert_eq!(doc.conflict.as_ref().unwrap().disk_text, "Disk edit.\n");
+        assert_eq!(fs_io::read_utf8(&draft).unwrap(), "Disk edit.\n");
+        assert_eq!(fs_io::read_utf8(&folder.join("after.md")).unwrap(), before);
+        assert_eq!(fs_io::read_utf8(&folder.join("before.md")).unwrap(), before);
+
+        unsafe {
+            if let Some(value) = previous { std::env::set_var("GHOSTLESS_HOME", value); }
+            else { std::env::remove_var("GHOSTLESS_HOME"); }
+        }
+        let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn diverged_linked_open_stays_clean_until_keep_session_mirrors() {
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let home = std::env::temp_dir().join(format!("ghostless-conflict-save-home-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("ghostless-conflict-save-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&home).unwrap();
+        let previous = std::env::var_os("GHOSTLESS_HOME");
+        unsafe { std::env::set_var("GHOSTLESS_HOME", &home); }
+        let session_id = "2026-04-02-notes";
+        let folder = root.join("sessions").join(session_id);
+        fs::create_dir_all(&folder).unwrap();
+        let session_copy = "Session copy.\n";
+        let disk_text = "Disk edit.\n";
+        let before_sha = fs_io::sha256_text(session_copy);
+        fs_io::atomic_write_text(&folder.join("before.md"), session_copy).unwrap();
+        fs_io::atomic_write_text(&folder.join("after.md"), session_copy).unwrap();
+        fs_io::atomic_write_text(&folder.join("session.json"), &format!(r#"{{"kind":"ghostless-edit-session","beforeSha256":"{before_sha}"}}"#)).unwrap();
+        let draft = root.join("draft.md");
+        fs_io::atomic_write_text(&draft, disk_text).unwrap();
+        let mut store = prefs::EditorStateStore::default();
+        store.session_links.insert(prefs::EditorStateStore::session_link_key(&root, session_id), prefs::SessionLink {
+            workspace_file: draft.clone(),
+            last_synced_sha256: before_sha,
+        });
+        let mut editor = Editor::empty_with_handlers(store, ok_runner(), Box::new(crate::worker::execute_write_op), noop_wake());
+        editor.workspace = Some(root.clone());
+        editor.voice_project = Some(root.clone());
+        editor.open_workspace_file(draft.clone(), true);
+        {
+            let doc = editor.active_doc_ref().unwrap();
+            assert!(!doc.is_dirty());
+            assert_eq!(doc.edit.text, session_copy);
+            assert_eq!(doc.conflict.as_ref().unwrap().disk_text, disk_text);
+        }
+        assert_eq!(fs_io::read_utf8(&draft).unwrap(), disk_text);
+
+        let mut rt = rune::Runtime::new(editor, crate::ui::view, (1120.0, 800.0), rune::Env::new(false, 1.0));
+        rt.on_key = Some(on_key);
+        rt.frame(0.0);
+        let elements = rt.elements();
+        assert!(elements.iter().any(|element| element.text.as_deref() == Some("Disk conflict — resolve above")));
+        assert!(elements.iter().any(|element| element.key.as_deref() == Some("keep-session")));
+        rt.key(KeyEvent { key: Key::Command('s'), mods: rune::Mods::default() });
+        rt.frame(0.0);
+        rt.update(|editor, _| editor.save_clicked());
+        assert_eq!(
+            rt.state.status,
+            "Resolve the disk conflict (Load Disk or Keep Session) before syncing to disk.",
+        );
+        assert!(!rt.state.status.contains("Saved locally"));
+        assert!(!rt.state.active_doc_ref().unwrap().is_dirty());
+        assert!(rt.state.worker_busy.is_none());
+        assert_eq!(fs_io::read_utf8(&draft).unwrap(), disk_text);
+        assert_eq!(fs_io::read_utf8(&folder.join("before.md")).unwrap(), session_copy);
+
+        let [x, y, w, h] = rt.elements().iter().find(|element| element.key.as_deref() == Some("keep-session")).unwrap().rect;
+        rt.pointer_down(x + w / 2.0, y + h / 2.0);
+        rt.pointer_up(x + w / 2.0, y + h / 2.0);
+        rt.frame(0.0);
+        assert!(rt.state.active_doc_ref().unwrap().conflict.is_none());
+        assert_eq!(rt.state.worker_busy.as_ref().map(|(_, kind)| *kind), Some(InFlight::Save));
+        assert!(!rt.state.active_doc_ref().unwrap().is_dirty());
+        rt.update(|editor, _| drain_until_idle(editor));
+        assert_eq!(fs_io::read_utf8(&draft).unwrap(), session_copy);
+        assert_eq!(fs_io::read_utf8(&folder.join("after.md")).unwrap(), session_copy);
+        assert_eq!(fs_io::read_utf8(&folder.join("before.md")).unwrap(), session_copy);
+
+        unsafe {
+            if let Some(value) = previous { std::env::set_var("GHOSTLESS_HOME", value); }
+            else { std::env::remove_var("GHOSTLESS_HOME"); }
+        }
+        let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn compare_reverts_are_undoable_and_refuse_locked_surfaces() {
+        let original = "Alpha paragraph.\n\nMiddle paragraph.\n\nOmega paragraph.\n";
+        let edited = "Alpha changed.\n\nMiddle edited.\n\nOmega changed.\n";
+        let mut session = test_session();
+        session.original = original.into();
+        session.after = edited.into();
+        let mut editor = Editor::with_handlers(session, prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake());
+        editor.view_mode = ViewMode::Compare;
+        editor.refresh_diff();
+        let mut rt = rune::Runtime::new(editor, crate::ui::view, (1120.0, 800.0), rune::Env::new(false, 1.0));
+        rt.on_key = Some(on_key);
+        rt.poll = Some(poll);
+        rt.frame(0.0);
+        rt.update(|editor, tx| editor.revert_hunk(1, tx));
+        rt.frame(0.0);
+        assert_eq!(rt.state.active_working_edit().text, "Alpha changed.\n\nMiddle paragraph.\n\nOmega changed.\n");
+        rt.update(|editor, _| editor.active_working_edit_mut().undo());
+        assert_eq!(rt.state.active_working_edit().text, edited);
+        rt.update(|editor, tx| editor.revert_to_original(tx));
+        rt.frame(0.0);
+        assert_eq!(rt.state.active_working_edit().text, original);
+        rt.update(|editor, _| editor.active_working_edit_mut().undo());
+        assert_eq!(rt.state.active_working_edit().text, edited);
+        assert_surface(&rt, "compare-body");
+
+        for (mode, read_only, locked, voice_guide) in [
+            (ViewMode::Write, false, false, false),
+            (ViewMode::Preview, false, false, false),
+            (ViewMode::Compare, true, false, false),
+            (ViewMode::Compare, false, true, false),
+            (ViewMode::Compare, true, false, true),
+        ] {
+            let mut session = test_session();
+            session.original = original.into();
+            session.after = edited.into();
+            let mut editor = Editor::with_handlers(session, prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake());
+            {
+                let doc = editor.active_doc_mut().unwrap();
+                doc.read_only = read_only || voice_guide;
+                doc.lockable = locked;
+                doc.user_locked = locked;
+                if voice_guide { doc.path.set_file_name("voice-guide.md"); }
+            }
+            editor.view_mode = mode;
+            let mut rt = rune::Runtime::new(editor, crate::ui::view, (1120.0, 800.0), rune::Env::new(false, 1.0));
+            rt.on_key = Some(on_key);
+            rt.frame(0.0);
+            rt.update(|editor, tx| {
+                editor.revert_hunk(1, tx);
+                editor.revert_to_original(tx);
+            });
+            rt.frame(0.0);
+            assert_eq!(rt.state.active_working_edit().text, edited, "{mode:?} read_only={read_only} locked={locked} guide={voice_guide}");
+            let elements = rt.elements();
+            for stray in ["find-source-match", "find-source-anchor", "preview-find-anchor"] {
+                assert!(elements.iter().all(|element| element.key.as_deref() != Some(stray)));
+            }
+        }
+    }
+
+    #[test]
+    fn conflict_compare_uses_the_disk_text_and_refuses_revert() {
+        let original = "Baseline only.\n";
+        let edited = "one two three\n";
+        let disk = "alpha beta gamma delta epsilon\n";
+        let mut session = test_session();
+        session.original = original.into();
+        session.after = edited.into();
+        let mut editor = Editor::with_handlers(session, prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake());
+        editor.active_doc_mut().unwrap().conflict = Some(crate::documents::SessionConflict {
+            disk_text: disk.into(),
+            session_text: edited.into(),
+        });
+        editor.conflict_compare = true;
+        editor.view_mode = ViewMode::Compare;
+        editor.refresh_diff();
+        assert!(!editor.can_revert());
+        let mut rt = rune::Runtime::new(editor, crate::ui::view, (1120.0, 800.0), rune::Env::new(false, 1.0));
+        rt.on_key = Some(on_key);
+        rt.poll = Some(poll);
+        rt.frame(0.0);
+        let elements = rt.elements();
+        let summary = elements.iter().find_map(|element| {
+            element.text.as_deref().filter(|text| text.contains("Disk vs session"))
+        }).expect("disk compare summary");
+        assert!(summary.contains("Words: 5 → 3 (-2)"), "{summary}");
+        assert!(summary.contains("Changed hunks: 1"), "{summary}");
+        assert!(elements.iter().all(|element| element.key.as_deref() != Some("revert-original")));
+        assert!(elements.iter().all(|element| !element.key.as_deref().unwrap_or("").starts_with("revert-hunk")));
+        let before = rt.state.active_working_edit().text.clone();
+        rt.update(|editor, tx| {
+            editor.revert_hunk(0, tx);
+            editor.revert_to_original(tx);
+        });
+        assert_eq!(rt.state.active_working_edit().text, before);
+        assert!(!rt.state.can_revert());
+        rt.update(|editor, tx| editor.set_view_mode(ViewMode::Write, tx));
+        assert!(!rt.state.conflict_compare);
+        rt.update(|editor, tx| {
+            editor.conflict_compare = true;
+            editor.set_view_mode(ViewMode::Compare, tx);
+            let other = DocumentBuffer::from_workspace_file(
+                PathBuf::from("/tmp/other.md"), "other.md".into(), "Other note.\n".into(), false, false, true, None,
+            );
+            let key = other.id.tab_key();
+            editor.documents.push(other);
+            editor.activate_tab(&key, tx);
+        });
+        assert!(!rt.state.conflict_compare);
+    }
+
+    #[test]
+    fn reactivating_a_linked_tab_keeps_unsaved_text_and_shows_external_drift() {
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let home = std::env::temp_dir().join(format!("ghostless-reactivate-home-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("ghostless-reactivate-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&home).unwrap();
+        let previous = std::env::var_os("GHOSTLESS_HOME");
+        unsafe { std::env::set_var("GHOSTLESS_HOME", &home); }
+        let session_id = "2026-04-02-notes";
+        let folder = root.join("sessions").join(session_id);
+        fs::create_dir_all(&folder).unwrap();
+        let session_text = "Session copy.\n";
+        let before_sha = fs_io::sha256_text(session_text);
+        fs_io::atomic_write_text(&folder.join("before.md"), session_text).unwrap();
+        fs_io::atomic_write_text(&folder.join("after.md"), session_text).unwrap();
+        fs_io::atomic_write_text(&folder.join("session.json"), &format!(r#"{{"kind":"ghostless-edit-session","beforeSha256":"{before_sha}"}}"#)).unwrap();
+        let draft = root.join("draft.md");
+        fs_io::atomic_write_text(&draft, session_text).unwrap();
+        let mut store = prefs::EditorStateStore::default();
+        store.session_links.insert(prefs::EditorStateStore::session_link_key(&root, session_id), prefs::SessionLink {
+            workspace_file: draft.clone(),
+            last_synced_sha256: before_sha,
+        });
+        let mut editor = Editor::empty_with_handlers(store, ok_runner(), ok_writer(), noop_wake());
+        editor.workspace = Some(root.clone());
+        editor.voice_project = Some(root.clone());
+        editor.open_workspace_file(draft.clone(), true);
+        let other = DocumentBuffer::from_workspace_file(
+            root.join("other.md"), "other.md".into(), "Other note.\n".into(), false, false, true, None,
+        );
+        let other_key = other.id.tab_key();
+        let draft_key = editor.active_doc_ref().unwrap().id.tab_key();
+        editor.documents.push(other);
+        fs_io::atomic_write_text(&draft, "External clean.\n").unwrap();
+        let mut tx = Tx::default();
+        editor.activate_tab(&other_key, &mut tx);
+        editor.activate_tab(&draft_key, &mut tx);
+        let doc = editor.active_doc_ref().unwrap();
+        assert_eq!(doc.edit.text, session_text);
+        assert_eq!(doc.conflict.as_ref().map(|conflict| conflict.disk_text.as_str()), Some("External clean.\n"));
+        assert_eq!(fs_io::read_utf8(&draft).unwrap(), "External clean.\n");
+        assert_eq!(fs_io::read_utf8(&folder.join("after.md")).unwrap(), session_text);
+        assert_eq!(fs_io::read_utf8(&folder.join("before.md")).unwrap(), session_text);
+
+        let unsaved = "Unsaved words.\n";
+        {
+            let doc = editor.active_doc_mut().unwrap();
+            doc.edit = TextEdit::new(unsaved);
+            doc.generation += 1;
+        }
+        fs_io::atomic_write_text(&draft, "External dirty.\n").unwrap();
+        editor.activate_tab(&other_key, &mut tx);
+        editor.open_workspace_file(draft.clone(), true);
+        let doc = editor.active_doc_ref().unwrap();
+        assert_eq!(doc.edit.text, unsaved);
+        assert_eq!(doc.conflict.as_ref().map(|conflict| conflict.disk_text.as_str()), Some("External dirty.\n"));
+        assert_eq!(fs_io::read_utf8(&draft).unwrap(), "External dirty.\n");
+        assert_eq!(fs_io::read_utf8(&folder.join("before.md")).unwrap(), session_text);
+
+        unsafe {
+            if let Some(value) = previous { std::env::set_var("GHOSTLESS_HOME", value); }
+            else { std::env::remove_var("GHOSTLESS_HOME"); }
+        }
+        let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stale_save_reply_does_not_rewind_the_mirror_hash() {
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let home = std::env::temp_dir().join(format!("ghostless-stale-save-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        let previous = std::env::var_os("GHOSTLESS_HOME");
+        unsafe { std::env::set_var("GHOSTLESS_HOME", &home); }
+        let mut editor = Editor::with_handlers(test_session(), prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake());
+        let project = editor.voice_project.clone().unwrap();
+        let session_id = editor.active_doc_ref().unwrap().session_id.clone().unwrap();
+        let key = prefs::EditorStateStore::session_link_key(&project, &session_id);
+        editor.store.session_links.insert(key.clone(), prefs::SessionLink {
+            workspace_file: PathBuf::from("/tmp/draft.md"),
+            last_synced_sha256: "hash-v2".into(),
+        });
+        let doc_id = {
+            let doc = editor.active_doc_mut().unwrap();
+            doc.saved_generation = 2;
+            doc.generation = 2;
+            doc.last_disk_sha256 = "hash-v2".into();
+            doc.id.clone()
+        };
+        editor.status = "Saved locally".into();
+        let saved = editor.apply_reply(WorkerReply::Saved {
+            doc_id,
+            generation: 1,
+            sha256: "hash-v1".into(),
+            result: Ok(WriteOutcome::Mirrored),
+        }, None);
+        assert!(!saved);
+        let doc = editor.active_doc_ref().unwrap();
+        assert_eq!(doc.last_disk_sha256, "hash-v2");
+        assert!(doc.save_error.is_none());
+        assert_eq!(editor.store.session_links[&key].last_synced_sha256, "hash-v2");
+        assert_eq!(editor.status, "Saved locally");
+        unsafe {
+            if let Some(value) = previous { std::env::set_var("GHOSTLESS_HOME", value); }
+            else { std::env::remove_var("GHOSTLESS_HOME"); }
+        }
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn edit_during_save_keeps_the_buffer_dirty_and_the_next_mirror_succeeds() {
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let home = std::env::temp_dir().join(format!("ghostless-edit-save-home-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("ghostless-edit-save-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&home).unwrap();
+        let previous = std::env::var_os("GHOSTLESS_HOME");
+        unsafe { std::env::set_var("GHOSTLESS_HOME", &home); }
+        let session_id = "2026-04-02-notes";
+        let folder = root.join("sessions").join(session_id);
+        fs::create_dir_all(&folder).unwrap();
+        let v0 = "v0\n";
+        let v1 = "v1\n";
+        let v2 = "v2\n";
+        let before_sha = fs_io::sha256_text(v0);
+        fs_io::atomic_write_text(&folder.join("before.md"), v0).unwrap();
+        fs_io::atomic_write_text(&folder.join("after.md"), v0).unwrap();
+        fs_io::atomic_write_text(&folder.join("notes.md"), "").unwrap();
+        fs_io::atomic_write_text(&folder.join("session.json"), &format!(r#"{{"kind":"ghostless-edit-session","beforeSha256":"{before_sha}"}}"#)).unwrap();
+        let draft = root.join("draft.md");
+        fs_io::atomic_write_text(&draft, v0).unwrap();
+        let mut store = prefs::EditorStateStore::default();
+        let key = prefs::EditorStateStore::session_link_key(&root, session_id);
+        store.session_links.insert(key.clone(), prefs::SessionLink {
+            workspace_file: draft.clone(),
+            last_synced_sha256: before_sha.clone(),
+        });
+        let mut session = test_session();
+        session.project = root.clone();
+        session.id = session_id.into();
+        session.original = v0.into();
+        session.after = v0.into();
+        session.before_sha256 = before_sha.clone();
+        let mirrored = crate::worker::write_session_direct(
+            &root, session_id, Some(&before_sha), v1, "", Some(&draft), Some(&before_sha), false,
+        ).unwrap();
+        assert!(matches!(mirrored, WriteOutcome::Mirrored));
+        let mut editor = Editor::with_handlers(session, store, ok_runner(), ok_writer(), noop_wake());
+        let doc_id = {
+            let doc = editor.active_doc_mut().unwrap();
+            doc.edit = TextEdit::new(v2);
+            doc.generation = 2;
+            doc.saved_generation = 0;
+            doc.id.clone()
+        };
+        assert!(editor.apply_reply(WorkerReply::Saved {
+            doc_id,
+            generation: 1,
+            sha256: fs_io::sha256_text(v1),
+            result: Ok(WriteOutcome::Mirrored),
+        }, None));
+        let doc = editor.active_doc_ref().unwrap();
+        assert!(doc.is_dirty());
+        assert_eq!(doc.edit.text, v2);
+        assert_eq!(doc.last_disk_sha256, fs_io::sha256_text(v1));
+        assert_eq!(editor.store.session_links[&key].last_synced_sha256, fs_io::sha256_text(v1));
+        assert!(!editor.status.contains("Saved locally"));
+        let expected = editor.store.session_links[&key].last_synced_sha256.clone();
+        let next = crate::worker::write_session_direct(
+            &root, session_id, Some(&before_sha), v2, "", Some(&draft), Some(&expected), false,
+        ).unwrap();
+        assert!(matches!(next, WriteOutcome::Mirrored), "{next:?}");
+        assert_eq!(fs_io::read_utf8(&draft).unwrap(), v2);
+        assert_eq!(fs_io::read_utf8(&folder.join("after.md")).unwrap(), v2);
+        assert_eq!(fs_io::read_utf8(&folder.join("before.md")).unwrap(), v0);
+        unsafe {
+            if let Some(value) = previous { std::env::set_var("GHOSTLESS_HOME", value); }
+            else { std::env::remove_var("GHOSTLESS_HOME"); }
+        }
+        let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stale_session_start_does_not_attach_or_store_a_link() {
+        let mut editor = Editor::empty_with_handlers(prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake());
+        let voice = PathBuf::from("/tmp/ghostless-session-start-voice");
+        editor.voice_project = Some(voice.clone());
+        editor.documents.push(DocumentBuffer::from_workspace_file(
+            PathBuf::from("/tmp/ghostless-session-start-draft.md"),
+            "draft.md".into(),
+            "Hello\n".into(),
+            false,
+            false,
+            true,
+            Some(voice),
+        ));
+        editor.active_doc = Some(0);
+        let doc_id = {
+            let doc = editor.active_doc_mut().unwrap();
+            doc.edit = TextEdit::new("Hello edited\n");
+            doc.generation = 2;
+            doc.saved_generation = 1;
+            doc.id.clone()
+        };
+        editor.session_start_inflight = Some((doc_id.clone(), 1));
+        editor.apply_bridge_reply(crate::bridge::BridgeReply::SessionStart {
+            doc_id: Some(doc_id.clone()),
+            generation: 1,
+            result: Ok(crate::bridge::SessionStartResult {
+                id: "2026-04-02-notes".into(),
+                path: "sessions/2026-04-02-notes".into(),
+                before_sha256: "abc".into(),
+                source_draft_name: "draft.md".into(),
+                section: None,
+                origin: "ai-first".into(),
+            }),
+        });
+        assert!(editor.active_doc_ref().unwrap().session_id.is_none());
+        assert!(editor.store.session_links.is_empty());
+        assert!(editor.status.contains("changed"));
+        assert!(editor.session_start_inflight.is_none());
+        editor.status = "Ready".into();
+        editor.apply_bridge_reply(crate::bridge::BridgeReply::SessionStart {
+            doc_id: Some(doc_id),
+            generation: 1,
+            result: Err("bridge failed".into()),
+        });
+        assert_eq!(editor.status, "Ready");
+        assert!(editor.store.session_links.is_empty());
+    }
+
+    fn write_test_session_dir(
+        project: &Path,
+        session_id: &str,
+        source_draft_name: &str,
+        created_at: &str,
+        before: &str,
+        after: &str,
+        finished: bool,
+    ) -> String {
+        let folder = project.join("sessions").join(session_id);
+        fs::create_dir_all(&folder).unwrap();
+        let before_sha = fs_io::sha256_text(before);
+        fs_io::atomic_write_text(&folder.join("before.md"), before).unwrap();
+        fs_io::atomic_write_text(&folder.join("after.md"), after).unwrap();
+        fs_io::atomic_write_text(&folder.join("notes.md"), "").unwrap();
+        fs_io::atomic_write_text(
+            &folder.join("session.json"),
+            &serde_json::json!({
+                "kind": "ghostless-edit-session",
+                "id": session_id,
+                "sourceDraftName": source_draft_name,
+                "origin": "ai-first",
+                "createdAt": created_at,
+                "beforeSha256": before_sha,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        if finished {
+            fs_io::atomic_write_text(&folder.join("receipt.json"), "{}\n").unwrap();
+        }
+        before_sha
+    }
+
+    #[test]
+    fn in_place_track_session_and_sidebar_open_dedupe_both_ways() {
+        use crate::{quick_open::search_workspace_files, workspace_tree::FileKind};
+
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let base = std::env::temp_dir().join(format!("ghostless-dedupe-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let root_raw = base.join("ws");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&root_raw).unwrap();
+        let root = root_raw.canonicalize().unwrap();
+        let prev_home = std::env::var_os("GHOSTLESS_HOME");
+        unsafe { std::env::set_var("GHOSTLESS_HOME", &home); }
+
+        fs_io::atomic_write_text(&root.join("manifest.json"), r#"{"kind":"ghostless"}"#).unwrap();
+        let draft = root.join("draft.md");
+        let body = "Hello linked world.\n";
+        fs_io::atomic_write_text(&draft, body).unwrap();
+        let session_id = "2026-04-02-notes";
+        let before_sha = write_test_session_dir(
+            &root,
+            session_id,
+            "draft.md",
+            "2026-04-02T10:00:00Z",
+            body,
+            body,
+            false,
+        );
+
+        // 1. In-place Track Session -> clicking sidebar session or reopening file stays on one tab.
+        let mut editor = Editor::empty_with_handlers(
+            prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake(),
+        );
+        editor.open_workspace_with_voice(root.clone(), Some(draft.clone()), Some(root.clone()));
+        let draft_id = DocId::File(draft.clone());
+        editor.session_start_inflight = Some((draft_id.clone(), 0));
+        editor.apply_bridge_reply(crate::bridge::BridgeReply::SessionStart {
+            doc_id: Some(draft_id),
+            generation: 0,
+            result: Ok(crate::bridge::SessionStartResult {
+                id: session_id.into(),
+                path: format!("sessions/{session_id}"),
+                before_sha256: before_sha.clone(),
+                source_draft_name: "draft.md".into(),
+                section: None,
+                origin: "ai-first".into(),
+            }),
+        });
+        assert_eq!(editor.documents.len(), 1);
+        assert_eq!(editor.documents[0].session_id.as_deref(), Some(session_id));
+
+        let mut rt = rune::Runtime::new(
+            editor, crate::ui::view, (1120.0, 800.0), rune::Env::new(false, 1.0),
+        );
+        rt.on_key = Some(on_key);
+        rt.poll = Some(poll);
+        rt.frame(0.0);
+        assert!(rt.elements().iter().any(|e| e.key.as_deref() == Some("session-2026-04-02-notes")));
+        rt.update(|editor, _| editor.open_session_entry(root.clone(), session_id.into()));
+        rt.frame(0.0);
+        assert_eq!(rt.state.documents.len(), 1);
+        assert_eq!(rt.state.active_doc, Some(0));
+        assert!(rt.state.active_doc_ref().unwrap().matches_session(&root, session_id));
+        rt.update(|editor, _| editor.open_workspace_file(draft.clone(), true));
+        assert_eq!(rt.state.documents.len(), 1);
+        drop(rt);
+
+        // 2. Open session from sidebar first -> open_workspace_file & choose_folder_match dedupe onto it.
+        let mut store = prefs::EditorStateStore::default();
+        store.session_links.insert(
+            prefs::EditorStateStore::session_link_key(&root, session_id),
+            prefs::SessionLink { workspace_file: draft.clone(), last_synced_sha256: before_sha },
+        );
+        let mut editor = Editor::empty_with_handlers(store.clone(), ok_runner(), ok_writer(), noop_wake());
+        editor.open_workspace_with_voice(root.clone(), None, Some(root.clone()));
+        editor.open_session_entry(root.clone(), session_id.into());
+        assert_eq!(editor.documents.len(), 1);
+        assert!(matches!(editor.documents[0].id, DocId::Session { .. }));
+        assert_eq!(editor.documents[0].mirror_path.as_ref(), Some(&draft));
+
+        editor.open_workspace_file(draft.clone(), true);
+        assert_eq!(editor.documents.len(), 1);
+        assert!(matches!(editor.documents[0].id, DocId::Session { .. }));
+
+        editor.folder_search.open = true;
+        editor.folder_search.query.replace_text("linked");
+        editor.folder_search.matches = search_workspace_files(
+            &[WorkspaceEntry {
+                abs_path: draft.clone(),
+                rel_path: "draft.md".into(),
+                kind: FileKind::Writing,
+                read_only: false,
+            }],
+            &[(draft.clone(), Some(body.into()))].into_iter().collect(),
+            "linked",
+            10,
+            || false,
+        );
+        let mut tx = Tx::default();
+        editor.choose_folder_match(0, &mut tx);
+        assert_eq!(editor.documents.len(), 1);
+        assert!(editor.find.open);
+        assert_eq!(editor.active_working_edit().selected(), "linked");
+        assert!(editor.flush_on_exit());
+
+        // 3. Unlinked dirty file open in another tab -> open_session_entry drops mirror on new session tab.
+        let dirty_file = root.join("dirty.md");
+        fs_io::atomic_write_text(&dirty_file, "Initial dirty.\n").unwrap();
+        let dirty_session = "2026-04-03-dirty";
+        let dirty_sha = write_test_session_dir(
+            &root,
+            dirty_session,
+            "dirty.md",
+            "2026-04-03T10:00:00Z",
+            "Initial dirty.\n",
+            "Initial dirty.\n",
+            false,
+        );
+        let mut manual_store = prefs::EditorStateStore::default();
+        manual_store.ui.autosave_workspace_files = false;
+        let mut editor = Editor::empty_with_handlers(manual_store, ok_runner(), ok_writer(), noop_wake());
+        editor.open_workspace_with_voice(root.clone(), Some(dirty_file.clone()), Some(root.clone()));
+        editor.active_working_edit_mut().text = "Unsaved dirty edit.\n".into();
+        editor.changed_active(&mut tx);
+        editor.store.session_links.insert(
+            prefs::EditorStateStore::session_link_key(&root, dirty_session),
+            prefs::SessionLink { workspace_file: dirty_file, last_synced_sha256: dirty_sha },
+        );
+        editor.open_session_entry(root.clone(), dirty_session.into());
+        assert_eq!(editor.documents.len(), 2);
+        assert!(editor.active_doc_ref().unwrap().mirror_path.is_none());
+        assert!(editor.status.contains("open in another tab"));
+        let _ = fs::remove_file(editor.documents[0].recovery_path());
+        editor.documents.clear();
+
+        unsafe {
+            if let Some(value) = prev_home { std::env::set_var("GHOSTLESS_HOME", value); }
+            else { std::env::remove_var("GHOSTLESS_HOME"); }
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn rename_and_delete_keep_linked_session_mirror_and_store_consistent() {
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let base = std::env::temp_dir().join(format!("ghostless-rename-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let root_raw = base.join("ws");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(root_raw.join("dir")).unwrap();
+        let root = root_raw.canonicalize().unwrap();
+        let prev_home = std::env::var_os("GHOSTLESS_HOME");
+        unsafe { std::env::set_var("GHOSTLESS_HOME", &home); }
+
+        fs_io::atomic_write_text(&root.join("manifest.json"), r#"{"kind":"ghostless"}"#).unwrap();
+        let draft = root.join("draft.md");
+        let sub = root.join("dir/sub.md");
+        fs_io::atomic_write_text(&draft, "Draft one.\n").unwrap();
+        fs_io::atomic_write_text(&sub, "Sub two.\n").unwrap();
+
+        let one_id = "2026-04-02-one";
+        let one_sha = write_test_session_dir(
+            &root, one_id, "draft.md", "2026-04-02T10:00:00Z", "Draft one.\n", "Draft one.\n", false,
+        );
+        let two_id = "2026-04-03-two";
+        let two_sha = write_test_session_dir(
+            &root, two_id, "sub.md", "2026-04-03T10:00:00Z", "Sub two.\n", "Sub two.\n", false,
+        );
+
+        let mut store = prefs::EditorStateStore::default();
+        let two_key = prefs::EditorStateStore::session_link_key(&root, two_id);
+        store.session_links.insert(
+            two_key.clone(),
+            prefs::SessionLink { workspace_file: "dir/sub.md".into(), last_synced_sha256: two_sha },
+        );
+        let mut editor = Editor::empty_with_handlers(store, ok_runner(), ok_writer(), noop_wake());
+        editor.open_workspace_with_voice(root.clone(), Some(draft.clone()), Some(root.clone()));
+
+        // Attach one_id in place on DocId::File(draft).
+        let one_doc_id = DocId::File(draft.clone());
+        editor.session_start_inflight = Some((one_doc_id.clone(), 0));
+        editor.apply_bridge_reply(crate::bridge::BridgeReply::SessionStart {
+            doc_id: Some(one_doc_id),
+            generation: 0,
+            result: Ok(crate::bridge::SessionStartResult {
+                id: one_id.into(),
+                path: format!("sessions/{one_id}"),
+                before_sha256: one_sha,
+                source_draft_name: "draft.md".into(),
+                section: None,
+                origin: "ai-first".into(),
+            }),
+        });
+        let one_key = prefs::EditorStateStore::session_link_key(&root, one_id);
+        // Open two_id as DocId::Session.
+        editor.open_session_entry(root.clone(), two_id.into());
+        assert_eq!(editor.documents.len(), 2);
+
+        // Rename draft.md -> renamed.md
+        let mut tx = Tx::default();
+        editor.active_dialog = Some(DialogKind::Rename { rel_path: "draft.md".into() });
+        editor.dialog_input.replace_text("renamed.md");
+        editor.submit_dialog(&mut tx);
+        let renamed = root.join("renamed.md");
+        assert_eq!(editor.documents[0].id, DocId::File(renamed.clone()));
+        assert_eq!(editor.documents[0].path, renamed);
+        assert_eq!(editor.documents[0].title, "renamed.md");
+        assert_eq!(editor.documents[0].mirror_path.as_ref(), Some(&renamed));
+        assert_eq!(editor.store.session_links[&one_key].workspace_file, renamed);
+        assert_eq!(prefs::load_store().session_links[&one_key].workspace_file, renamed);
+        editor.switch_active_doc(0);
+        editor.reconcile_active_linked_doc();
+        assert_eq!(editor.documents[0].mirror_path.as_ref(), Some(&renamed));
+        assert!(!editor.status.contains("gone"));
+
+        // Rename folder dir -> dir2 (remaps DocId::Session mirror_path & relative link).
+        editor.active_dialog = Some(DialogKind::Rename { rel_path: "dir".into() });
+        editor.dialog_input.replace_text("dir2");
+        editor.submit_dialog(&mut tx);
+        let renamed_sub = root.join("dir2/sub.md");
+        assert_eq!(editor.documents[1].mirror_path.as_ref(), Some(&renamed_sub));
+        assert_eq!(editor.store.session_links[&two_key].workspace_file, PathBuf::from("dir2/sub.md"));
+        assert_eq!(prefs::load_store().session_links[&two_key].workspace_file, PathBuf::from("dir2/sub.md"));
+        assert!(editor.sessions.iter().any(|s| {
+            s.id == two_id && s.linked_workspace_file.as_deref() == Some(Path::new("dir2/sub.md"))
+        }));
+
+        // Delete renamed.md -> in-place session tab survives as DocId::Session without mirror.
+        editor.active_dialog = Some(DialogKind::Delete {
+            rel_path: "renamed.md".into(),
+            display_name: "renamed.md".into(),
+            is_dir: false,
+        });
+        editor.submit_dialog(&mut tx);
+        assert_eq!(editor.documents.len(), 2);
+        assert_eq!(
+            editor.documents[0].id,
+            DocId::Session { project: root.clone(), id: one_id.into() },
+        );
+        assert_eq!(
+            editor.documents[0].path,
+            root.join("sessions").join(one_id).join("after.md"),
+        );
+        assert!(editor.documents[0].mirror_path.is_none());
+        assert!(!editor.store.session_links.contains_key(&one_key));
+        assert!(!prefs::load_store().session_links.contains_key(&one_key));
+        assert!(editor.flush_on_exit());
+
+        unsafe {
+            if let Some(value) = prev_home { std::env::set_var("GHOSTLESS_HOME", value); }
+            else { std::env::remove_var("GHOSTLESS_HOME"); }
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn linked_session_files_skips_finished_sessions_and_picks_newest_deterministically() {
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let base = std::env::temp_dir().join(format!("ghostless-linked-pick-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let root_raw = base.join("ws");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&root_raw).unwrap();
+        let root = root_raw.canonicalize().unwrap();
+        let prev_home = std::env::var_os("GHOSTLESS_HOME");
+        unsafe { std::env::set_var("GHOSTLESS_HOME", &home); }
+
+        fs_io::atomic_write_text(&root.join("manifest.json"), r#"{"kind":"ghostless"}"#).unwrap();
+        let draft = root.join("draft.md");
+        let body = "Live draft.\n";
+        fs_io::atomic_write_text(&draft, body).unwrap();
+
+        let older_id = "2026-04-01-older";
+        let newer_id = "2026-04-02-newer";
+        let done_id = "2026-04-03-done";
+        let corrupt_id = "2026-04-04-corrupt";
+        let sha_old = write_test_session_dir(
+            &root, older_id, "draft.md", "2026-04-01T10:00:00Z", body, body, false,
+        );
+        let sha_new = write_test_session_dir(
+            &root, newer_id, "draft.md", "2026-04-02T10:00:00Z", body, body, false,
+        );
+        let sha_done = write_test_session_dir(
+            &root, done_id, "draft.md", "2026-04-03T10:00:00Z", body, body, true,
+        );
+
+        let mut store = prefs::EditorStateStore::default();
+        for (id, sha) in [
+            (corrupt_id, sha_old.clone()),
+            (done_id, sha_done),
+            (older_id, sha_old),
+            (newer_id, sha_new),
+        ] {
+            store.session_links.insert(
+                prefs::EditorStateStore::session_link_key(&root, id),
+                prefs::SessionLink { workspace_file: draft.clone(), last_synced_sha256: sha },
+            );
+        }
+
+        let mut editor = Editor::empty_with_handlers(store, ok_runner(), ok_writer(), noop_wake());
+        editor.open_workspace_with_voice(root.clone(), Some(draft.clone()), Some(root.clone()));
+        assert_eq!(editor.active_doc_ref().unwrap().session_id.as_deref(), Some(newer_id));
+
+        // Finish newer_id and mark both active sessions finished -> reopening draft.md opens a fresh editable file.
+        editor.apply_reply(WorkerReply::Finished {
+            doc_id: DocId::File(draft.clone()),
+            generation: 0,
+            snapshot: None,
+            result: Ok(()),
+        }, None);
+        fs_io::atomic_write_text(&root.join("sessions").join(newer_id).join("receipt.json"), "{}\n").unwrap();
+        fs_io::atomic_write_text(&root.join("sessions").join(older_id).join("receipt.json"), "{}\n").unwrap();
+
+        let finished_doc = editor.active_doc_ref().unwrap();
+        assert_eq!(finished_doc.id, DocId::Session { project: root.clone(), id: newer_id.into() });
+        assert_eq!(finished_doc.path, root.join("sessions").join(newer_id).join("after.md"));
+        assert!(finished_doc.mirror_path.is_none());
+        assert!(finished_doc.finished && finished_doc.read_only);
+
+        editor.open_workspace_file(draft.clone(), true);
+        assert_eq!(editor.documents.len(), 2);
+        let reopened = editor.active_doc_ref().unwrap();
+        assert_eq!(reopened.id, DocId::File(draft));
+        assert!(reopened.session_id.is_none());
+        assert!(!reopened.read_only);
+        assert!(editor.flush_on_exit());
+
+        unsafe {
+            if let Some(value) = prev_home { std::env::set_var("GHOSTLESS_HOME", value); }
+            else { std::env::remove_var("GHOSTLESS_HOME"); }
         }
         let _ = fs::remove_dir_all(&base);
     }

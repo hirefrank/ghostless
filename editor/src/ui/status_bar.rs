@@ -18,6 +18,7 @@ pub(crate) fn build(editor: &Editor, kit: &Kit) -> El {
         Some(doc) if doc.save_error.is_some() => {
             format!("Save failed: {}", doc.save_error.as_deref().unwrap_or("error"))
         }
+        Some(doc) if doc.conflict.is_some() => "Disk conflict — resolve above".to_owned(),
         Some(doc) if doc.last_saved_label.is_some() => {
             doc.last_saved_label.clone().unwrap_or_default()
         }
@@ -78,13 +79,9 @@ pub(crate) fn build(editor: &Editor, kit: &Kit) -> El {
             );
     }
 
-    if let Some(voice) = &editor.voice_project {
-        let name = voice
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("voice");
+    if let Some(label) = editor.voice_pill_label() {
         bar = bar.child(
-            Button::new(format!("Voice: {name}"))
+            Button::new(label)
                 .control_size(ControlSize::Small)
                 .variant(ButtonVariant::GhostMuted)
                 .help("Toggle inspector")

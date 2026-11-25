@@ -637,7 +637,7 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     else:
         _print_started(root, result)
         print(f"Opening the desktop editor for {session_id}")
-    code = launch_editor(root, session=session_id)
+    code = launch_editor(root, session=session_id, link_draft=Path(args.draft))
     if code != 0:
         print(f"Finish later with: ghostless finish --session {session_id}", file=sys.stderr)
     return code

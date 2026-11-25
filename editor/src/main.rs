@@ -1,8 +1,10 @@
 //! Local Rune editor over ghostless edit sessions.
 use rune::{App, AppSpec};
+mod bridge;
 mod cli;
 mod documents;
 mod fs_io;
+mod hunks;
 mod markdown_edit;
 mod markdown_decor;
 mod prefs;
@@ -13,6 +15,7 @@ mod state;
 mod theme;
 mod ui;
 mod ui_welcome;
+mod voice_lens;
 mod worker;
 mod workspace_tree;
 

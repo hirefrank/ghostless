@@ -101,17 +101,32 @@ fn inline_code(line: &str) -> Vec<Range<usize>> {
     result
 }
 
+/// YAML frontmatter, fenced code, and inline code. Voice marks and placeholders both skip these.
+pub(crate) fn non_prose_ranges(text: &str) -> Vec<Range<usize>> {
+    let mut excluded = Vec::new();
+    if let Some(end) = frontmatter_end(text) {
+        excluded.push(0..end);
+    }
+    for (offset, line, kind) in lines(text) {
+        if kind != 0 {
+            excluded.push(offset..offset + line.len());
+        } else {
+            excluded.extend(
+                inline_code(line)
+                    .into_iter()
+                    .map(|range| offset + range.start..offset + range.end),
+            );
+        }
+    }
+    excluded
+}
+
 pub(crate) fn find_placeholder_ranges(
     text: &str,
     placeholder_token: Option<&str>,
 ) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
-    let mut excluded = Vec::new();
-    if let Some(end) = frontmatter_end(text) { excluded.push(0..end); }
-    for (offset, line, kind) in lines(text) {
-        if kind != 0 { excluded.push(offset..offset + line.len()); }
-        else { excluded.extend(inline_code(line).into_iter().map(|r| offset + r.start..offset + r.end)); }
-    }
+    let excluded = non_prose_ranges(text);
     let mut pos = 0;
     while let Some(start) = text[pos..].find('[').map(|n| pos + n) {
         let Some(end) = text[start + 1..].find(']').map(|n| start + 1 + n) else { break; };

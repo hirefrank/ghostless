@@ -1,12 +1,14 @@
-use rune::{Cx, El, Tx, col, icon, row, text};
+use rune::{Cx, El, col, icon, row, text};
 use rune_kit::{
-    Button, ButtonVariant, ControlSize, Dialog, Divider, Kit, TextArea, TextInput,
-    diff::DiffView, glyphs, shell::SplitView,
+    Button, ButtonVariant, ControlSize, Dialog, Divider, Kit, SegmentedControl, TextArea, TextInput,
+    glyphs, shell::SplitView,
 };
 use crate::state::{DialogKind, Editor, ViewMode};
 
 mod canvas;
+mod compare;
 mod find_bar;
+mod inspector;
 pub(crate) mod folder_search;
 pub(crate) mod quick_switcher;
 mod preview;
@@ -37,7 +39,7 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
 
     let tb = toolbar::build(editor, &kit, &mut overlays);
     let sb = sidebar::build(editor, &kit, &mut overlays);
-    let insp = build_inspector(editor, cx, &kit);
+    let insp = build_inspector(editor, cx, &kit, &mut overlays);
 
     let stage = build_stage(editor, cx, &kit);
     let stage = if editor.reference.open && editor.view_mode != ViewMode::Compare {
@@ -80,6 +82,18 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
         .build(&kit);
 
     mount_dialogs(editor, &kit, &mut overlays);
+    if let Some(message) = editor.toast.clone() {
+        overlays.push(
+            rune_kit::ToastRegion::new()
+                .toast(
+                    rune_kit::Toast::new("note-toast", "Voice note")
+                        .description(message)
+                        .on_close(|editor: &mut Editor| editor.toast = None)
+                        .build(&kit),
+                )
+                .build(&kit),
+        );
+    }
     quick_switcher::mount(editor, &kit, &mut overlays);
     folder_search::mount(editor, &kit, &mut overlays);
     rune_kit::root(shell, overlays)
@@ -118,22 +132,11 @@ fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
     };
 
     if editor.active_uses_rendered_preview() {
-        return preview::build(&doc.edit.text, &editor.store.ui, kit, Some(&editor.find));
+        return with_conflict_banner(editor, kit, preview::build(&doc.edit.text, &editor.store.ui, kit, Some(&editor.find)));
     }
 
-    match editor.view_mode {
-        ViewMode::Compare if editor.active_has_baseline() => col()
-            .key("compare-body")
-            .focusable(true)
-            .role("region")
-            .label("Draft comparison")
-            .grow(1.0)
-            .w_full()
-            .min_h(0.0)
-            .child(
-                DiffView::new(|e: &Editor| &e.diff, |e: &mut Editor| &mut e.diff)
-                    .build(editor, kit),
-            ),
+    let stage = match editor.view_mode {
+        ViewMode::Compare if editor.active_has_baseline() => compare::build(editor, kit),
         _ => {
             let locked = editor.active_is_locked();
             let body = canvas::build(editor, cx, kit, locked);
@@ -185,61 +188,37 @@ fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
             }
             pane.child(body)
         }
-    }
+    };
+    with_conflict_banner(editor, kit, stage)
 }
 
-fn build_inspector(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
-    if !editor.active_is_session() {
-        return col()
-            .key("inspector-empty")
-            .w_full()
-            .h_full()
-            .padding(16.0)
-            .gap(8.0)
-            .child(text("INSPECTOR").font(kit.ty.text_xsmall_medium).color(kit.c.text_muted))
-            .child(
-                text("Open or start an edit session to record writer notes here.")
-                    .font(kit.ty.ui)
-                    .color(kit.c.text_faint)
-                    .wrap(),
-            );
+fn with_conflict_banner(editor: &Editor, kit: &Kit, body: El) -> El {
+    if editor.active_doc_ref().and_then(|doc| doc.conflict.as_ref()).is_none() {
+        return body;
     }
-    let locked = editor.active_is_locked();
-    let max_h = cx
-        .layout_size("inspector-notes")
-        .map(|s| (s[1] - 64.0).max(120.0))
-        .unwrap_or(220.0);
     col()
-        .key("inspector-notes")
+        .grow(1.0)
         .w_full()
-        .h_full()
         .min_h(0.0)
-        .padding(14.0)
-        .gap(8.0)
         .child(
-            text("NOTES · WHY DID YOU CHANGE IT?")
-                .font(kit.ty.text_xsmall_medium)
-                .color(kit.c.text_muted),
+            row()
+                .key("session-conflict")
+                .w_full()
+                .px(12.0)
+                .py(8.0)
+                .gap(8.0)
+                .center_y()
+                .fill(kit.c.warning.bg)
+                .child(text("This file changed on disk outside the edit session.").font(kit.ty.small).color(kit.c.text_base).grow(1.0).shrink())
+                .child(Button::new("Load Disk").control_size(ControlSize::Small).on_press_tx(|editor: &mut Editor, tx| editor.load_disk_conflict(tx)).build(kit).key("load-disk"))
+                .child(Button::new("Keep Session").control_size(ControlSize::Small).on_press_tx(|editor: &mut Editor, tx| editor.keep_session_conflict(tx)).build(kit).key("keep-session"))
+                .child(Button::new("Compare").control_size(ControlSize::Small).on_press_tx(|editor: &mut Editor, tx| editor.compare_conflict(tx)).build(kit).key("compare-conflict")),
         )
-        .child(
-            TextArea::new(editor.active_notes_edit())
-                .label("Edit notes")
-                .placeholder("Optional context for your future self")
-                .width(None)
-                .rows(6)
-                .max_height(max_h)
-                .disabled(locked)
-                .on_edit(|e: &mut Editor| e.active_notes_edit_mut())
-                .on_change(|e: &mut Editor, tx: &mut Tx| e.changed_active(tx))
-                .build(kit),
-        )
-        .child(row().grow(1.0))
-        .child(
-            text(editor.status.clone())
-                .font(kit.ty.small)
-                .color(kit.c.text_faint)
-                .wrap(),
-        )
+        .child(body)
+}
+
+fn build_inspector(editor: &Editor, cx: &Cx<Editor>, kit: &Kit, overlays: &mut Vec<El>) -> El {
+    inspector::build(editor, cx, kit, overlays)
 }
 
 fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
@@ -444,6 +423,58 @@ fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
                 .child(body)
                 .on_close(|e: &mut Editor| e.close_dialog())
                 .build(kit, overlays);
+        }
+        DialogKind::StartSession => {
+            let origin = if editor.session_origin == "writer-first" { 1 } else { 0 };
+            let mut body = col().w_full().px(16.0).pb(16.0).gap(12.0);
+            body = body.child(text("Origin").font(kit.ty.small).color(kit.c.text_muted));
+            body = body.child(
+                SegmentedControl::new(&["AI first", "Writer first"], Some(origin))
+                    .width(Some(240.0))
+                    .label("Session origin")
+                    .on_pick(|editor: &mut Editor, index, _tx| {
+                        editor.session_origin = if index == 1 { "writer-first" } else { "ai-first" }.into();
+                    })
+                    .build(kit),
+            );
+            body = body.child(
+                TextInput::new(&editor.session_section)
+                    .label("Section")
+                    .placeholder("optional")
+                    .width(None)
+                    .on_edit(|editor: &mut Editor| &mut editor.session_section)
+                    .build(kit),
+            );
+            body = body.child(
+                TextArea::new(&editor.session_sources)
+                    .label("Sources")
+                    .placeholder("Portable references, one per line")
+                    .width(None)
+                    .rows(3)
+                    .on_edit(|editor: &mut Editor| &mut editor.session_sources)
+                    .build(kit),
+            );
+            if let Some(err) = &editor.dialog_error {
+                body = body.child(text(err.clone()).font(kit.ty.small).color(kit.c.danger.fg).wrap());
+            }
+            body = body.child(
+                row().gap(8.0).justify_end().child(
+                    Button::new("Cancel").variant(ButtonVariant::Outline).on_press(|editor: &mut Editor| editor.close_dialog()).build(kit),
+                ).child(
+                    Button::new("Start").variant(ButtonVariant::Submit).on_press_tx(|editor: &mut Editor, tx| editor.submit_dialog(tx)).build(kit),
+                ),
+            );
+            Dialog::new("start-session", "Start Edit Session").open(true).fit().width(440.0).child(body)
+                .on_close(|editor: &mut Editor| editor.close_dialog()).build(kit, overlays);
+        }
+        DialogKind::ConfirmRevert => {
+            let body = col().w_full().px(16.0).pb(16.0).gap(12.0)
+                .child(text("Replace the working draft with the session baseline? You can undo it.").font(kit.ty.ui).color(kit.c.text_base).wrap())
+                .child(row().gap(8.0).justify_end()
+                    .child(Button::new("Cancel").variant(ButtonVariant::Outline).on_press(|editor: &mut Editor| editor.close_dialog()).build(kit))
+                    .child(Button::new("Revert").variant(ButtonVariant::Submit).on_press_tx(|editor: &mut Editor, tx| editor.submit_dialog(tx)).build(kit).key("confirm-revert")));
+            Dialog::new("confirm-revert", "Revert to Original").open(true).fit().width(420.0).child(body)
+                .on_close(|editor: &mut Editor| editor.close_dialog()).build(kit, overlays);
         }
     }
 }

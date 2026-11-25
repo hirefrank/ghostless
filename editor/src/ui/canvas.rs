@@ -29,6 +29,11 @@ pub(crate) fn build(editor: &Editor, cx: &Cx<Editor>, kit: &Kit, locked: bool) -
             if editor.find.current == Some(index) { span.color(kit.c.warning.bg) } else { span }
         }));
     }
+    if editor.store.ui.voice_lens
+        && let Some(report) = editor.active_judge_report()
+    {
+        spans.extend(crate::voice_lens::spans(&doc.edit.text, report, kit));
+    }
     let mut field = text_input(editor.active_working_edit(), theme::prose_text_style(&editor.store.ui))
         .key("prose-input").label("Working draft").description(cached.description.clone()).decorations(spans).w_full().min_h((height - 32.0).max(80.0))
         .color(kit.c.text_base).caret(kit.c.text_base, kit.selection())

@@ -4,7 +4,7 @@ use rune_kit::{
     Tree, TreeItem, glyphs,
     shell::{RowStatus, SidebarHeader, SidebarRow, SidebarSection},
 };
-use crate::{documents::DocId, state::Editor, workspace_tree::SessionStatus};
+use crate::{state::Editor, workspace_tree::SessionStatus};
 
 static ICON_PLUS: Icon = Icon {
     name: "ghostless-plus",
@@ -205,13 +205,9 @@ pub(crate) fn build(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
         for summary in &editor.sessions {
             let project = voice.clone();
             let id = summary.id.clone();
-            let selected = editor.active_doc_ref().is_some_and(|d| {
-                d.id
-                    == DocId::Session {
-                        project: project.clone(),
-                        id: id.clone(),
-                    }
-            });
+            let selected = editor
+                .active_doc_ref()
+                .is_some_and(|d| d.matches_session(&project, &id));
             let status = match summary.status {
                 SessionStatus::Editing => RowStatus::Attention,
                 SessionStatus::Finished => {
