@@ -93,7 +93,8 @@ def _list_sessions(root: Path) -> list[dict[str, object]]:
         item.update(section=metadata.get("section"), origin=metadata.get("origin"))
         try:
             receipt = _read_object(folder / "receipt.json")
-        except FileNotFoundError:
+        except (OSError, ProjectError):
+            # A damaged or unreadable receipt should not hide other sessions.
             continue
         changes = receipt.get("changes")
         item.update(

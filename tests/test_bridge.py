@@ -196,6 +196,15 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(finished["status"], "finished")
         self.assertEqual(finished["editRate"], receipt["changes"]["editRate"])
         self.assertEqual(finished["learnedPath"], receipt["learnedPath"])
+        receipt_path = folder / "receipt.json"
+        original_receipt = receipt_path.read_text(encoding="utf-8")
+        for malformed in ("{invalid", "[]"):
+            receipt_path.write_text(malformed, encoding="utf-8")
+            [damaged] = ask("sessions_list", project=root)
+            self.assertEqual(damaged["id"], session)
+            self.assertEqual(damaged["status"], "finished")
+            self.assertNotIn("editRate", damaged)
+        receipt_path.write_text(original_receipt, encoding="utf-8")
         slug = receipt["learnedPath"].removeprefix("gold/")
 
         first_id = receipt["checks"][0]["id"]

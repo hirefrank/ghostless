@@ -499,6 +499,7 @@ pub(crate) fn create_file(root: &Path, parent_rel: &str, name: &str) -> Result<P
         name.to_owned()
     };
     let path = new_path(root, parent_rel, &name)?;
+    ensure_creation_allowed(&path)?;
     // Exclusive creation publishes an empty file in one operation, even if another writer is creating it.
     OpenOptions::new()
         .write(true)
@@ -510,17 +511,33 @@ pub(crate) fn create_file(root: &Path, parent_rel: &str, name: &str) -> Result<P
 
 pub(crate) fn create_folder(root: &Path, parent_rel: &str, name: &str) -> Result<PathBuf, String> {
     let path = new_path(root, parent_rel, name)?;
+    ensure_creation_allowed(&path)?;
     fs::create_dir(&path).map_err(|error| path_error(&path, error))?;
     Ok(path)
 }
 
-fn ensure_mutable(root: &Path, path: &Path) -> Result<(), String> {
+fn ensure_creation_allowed(path: &Path) -> Result<(), String> {
+    let parent = path.parent().ok_or("Destination has no parent")?;
+    let parent = parent.canonicalize().map_err(|error| path_error(parent, error))?;
+    let target = parent.join(path.file_name().ok_or("Destination has no name")?);
+    for base in parent.ancestors() {
+        if is_regular_file(&base.join("manifest.json")) && manifest_is_ghostless(base)
+            && let Ok(relative) = target.strip_prefix(base)
+            && ["gold", "holdouts", "corpus", "sessions"].iter().any(|name| relative.starts_with(name))
+        {
+            return Err(format!("Cannot create files in protected voice data: {}", target.display()));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_mutable(path: &Path) -> Result<(), String> {
     let kind = fs::symlink_metadata(path)
         .map_err(|error| path_error(path, error))?
         .file_type();
     let protected = |path: &Path| {
         path.file_name() == Some(OsStr::new("manifest.json"))
-            || path.ancestors().skip(1).take_while(|base| base.starts_with(root)).any(|base| {
+            || path.ancestors().skip(1).any(|base| {
                 if !is_regular_file(&base.join("manifest.json")) || !manifest_is_ghostless(base) {
                     return false;
                 }
@@ -535,7 +552,7 @@ fn ensure_mutable(root: &Path, path: &Path) -> Result<(), String> {
     if kind.is_dir() {
         for item in fs::read_dir(path).map_err(|error| path_error(path, error))? {
             let item = item.map_err(|error| path_error(path, error))?;
-            ensure_mutable(root, &item.path())?;
+            ensure_mutable(&item.path())?;
         }
     }
     Ok(())
@@ -547,7 +564,7 @@ pub(crate) fn rename_entry(root: &Path, rel_path: &str, new_name: &str) -> Resul
         .canonicalize()
         .map_err(|error| path_error(root, error))?;
     let source = entry_path(&root, rel_path)?;
-    ensure_mutable(&root, &source)?;
+    ensure_mutable(&source)?;
     let target = checked_path(&root, source.with_file_name(new_name))?;
     if source != target {
         match fs::symlink_metadata(&target) {
@@ -572,7 +589,7 @@ pub(crate) fn duplicate_file(root: &Path, rel_path: &str) -> Result<PathBuf, Str
 fn duplicate_file_with_limit(root: &Path, rel_path: &str, limit: u32) -> Result<PathBuf, String> {
     let root = root.canonicalize().map_err(|error| path_error(root, error))?;
     let source = entry_path(&root, rel_path)?;
-    ensure_mutable(&root, &source)?;
+    ensure_mutable(&source)?;
     if !source.is_file() {
         return Err(format!(
             "Workspace entry is not a file: {}",
@@ -624,7 +641,7 @@ pub(crate) fn delete_entry(root: &Path, rel_path: &str) -> Result<(), String> {
         .canonicalize()
         .map_err(|error| path_error(root, error))?;
     let path = entry_path(&root, rel_path)?;
-    ensure_mutable(&root, &path)?;
+    ensure_mutable(&path)?;
     let meta = fs::symlink_metadata(&path).map_err(|error| path_error(&path, error))?;
     if meta.is_dir() {
         fs::remove_dir_all(&path)
@@ -902,6 +919,15 @@ mod tests {
             assert!(create_folder(root, "", name).is_err());
             assert!(rename_entry(root, "seeds/demo/NEXT.md", name).is_err());
         }
+        for parent in ["voice/gold", "voice/holdouts", "voice/corpus", "voice/corpus/gold", "voice/sessions", "voice/sessions/2026-11-23"] {
+            assert!(create_file(root, parent, "new").is_err(), "{parent}");
+            assert!(create_folder(root, parent, "new").is_err(), "{parent}");
+            assert!(!root.join(parent).join("new.md").exists());
+            assert!(!root.join(parent).join("new").exists());
+        }
+        assert!(create_file(&root.join("voice/corpus"), "", "new").is_err());
+        assert!(delete_entry(&root.join("voice/corpus"), "gold/a.md").is_err());
+        assert!(create_file(root, "voice/drafts", "new").is_ok());
         assert!(create_file(root, "../escape", "draft").is_err());
         assert!(delete_entry(root, "").is_err());
         assert!(delete_entry(root, "seeds/../voice/manifest.json").is_err());
