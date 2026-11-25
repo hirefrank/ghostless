@@ -58,6 +58,7 @@ pub(crate) enum DialogKind {
     Rename { rel_path: String },
     Delete { rel_path: String, display_name: String, is_dir: bool },
     ConfirmClose { doc_id: DocId, title: String },
+    Recover { doc_id: DocId, title: String },
 }
 
 pub(crate) struct Editor {
@@ -150,7 +151,13 @@ impl Editor {
         } else {
             "Ready".into()
         };
-        let buf = DocumentBuffer::from_session(session, true, mirror_path);
+        let mut buf = DocumentBuffer::from_session(session, true, mirror_path);
+        if buf.mirror_path.is_some()
+            && let Some((project, id)) = buf.voice_project.as_ref().zip(buf.session_id.as_ref())
+            && let Some(link) = store.session_links.get(&prefs::EditorStateStore::session_link_key(project, id))
+        {
+            buf.last_disk_sha256 = link.last_synced_sha256.clone();
+        }
         let sidebar_pane = PaneState::new(250.0).range(180.0, 420.0).collapsed();
         let inspector_pane = PaneState::new(310.0).range(240.0, 480.0);
         Self {
@@ -401,6 +408,7 @@ impl Editor {
                 self.documents[pos].pinned = true;
             }
             self.switch_active_doc(pos);
+            self.prompt_recovery_if_needed();
             if let Some(rel) = self.rel_from_workspace(&canon) {
                 self.selected_tree_id = Some(rel.clone());
                 self.file_tree.select(&rel);
@@ -457,6 +465,42 @@ impl Editor {
             self.file_tree.select(&rel);
         }
         self.save_open_tabs_pref();
+        self.prompt_recovery_if_needed();
+    }
+
+    fn prompt_recovery_if_needed(&mut self) {
+        let Some(doc) = self.active_doc_ref() else { return; };
+        if doc.is_session() || doc.read_only || doc.is_dirty() || !doc.recovery_path().is_file() { return; }
+        if self.active_dialog.is_none() {
+            self.active_dialog = Some(DialogKind::Recover { doc_id: doc.id.clone(), title: doc.title.clone() });
+        } else {
+            self.status = "A recovery copy is available; reopen the file to review it".into();
+        }
+    }
+
+    pub(crate) fn resolve_recovery(&mut self, restore: bool) {
+        let Some(DialogKind::Recover { doc_id, .. }) = self.active_dialog.clone() else { return; };
+        let Some(pos) = self.documents.iter().position(|doc| doc.id == doc_id) else { self.close_dialog(); return; };
+        self.active_doc = Some(pos);
+        let doc = &mut self.documents[pos];
+        let recovery = doc.recovery_path();
+        if restore {
+            match fs_io::read_utf8(&recovery) {
+                Ok(text) => {
+                    doc.edit = TextEdit::new(text);
+                    doc.generation += 1;
+                    doc.pinned = true;
+                    self.status = "Recovered unsaved changes; save when ready".into();
+                }
+                Err(error) => { self.dialog_error = Some(error); return; }
+            }
+        } else if let Err(error) = fs::remove_file(&recovery)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            self.dialog_error = Some(format!("Cannot remove recovery copy: {error}"));
+            return;
+        }
+        self.close_dialog();
     }
 
     pub(crate) fn open_session_entry(&mut self, project: PathBuf, session_id: String) {
@@ -485,7 +529,12 @@ impl Editor {
             ))
             .map(|link| resolve_mirror_path(&link.workspace_file, self.workspace.as_deref()));
         let finished = loaded.finished;
-        let buf = DocumentBuffer::from_session(loaded, true, mirror_path);
+        let mut buf = DocumentBuffer::from_session(loaded, true, mirror_path);
+        if buf.mirror_path.is_some()
+            && let Some(link) = self.store.session_links.get(&prefs::EditorStateStore::session_link_key(&project, &session_id))
+        {
+            buf.last_disk_sha256 = link.last_synced_sha256.clone();
+        }
         self.flush_leaving_doc();
         self.documents.push(buf);
         self.active_doc = Some(self.documents.len() - 1);
@@ -1010,7 +1059,7 @@ impl Editor {
                     Err(err) => self.dialog_error = Some(err),
                 }
             }
-            DialogKind::ConfirmClose { .. } => unreachable!(),
+            DialogKind::ConfirmClose { .. } | DialogKind::Recover { .. } => unreachable!(),
         }
     }
 
@@ -1157,6 +1206,7 @@ impl Editor {
                 before_sha256: doc.before_sha256.clone(),
                 snapshot,
                 mirror_path: doc.mirror_path.clone(),
+                mirror_expected_sha256: doc.mirror_path.as_ref().map(|_| doc.last_disk_sha256.clone()),
             }) {
                 Ok(()) => {
                     self.worker_busy = Some((doc_id, InFlight::Finish));
@@ -1197,6 +1247,7 @@ impl Editor {
                         .as_ref()
                         .map_or_else(String::new, |n| n.text.clone()),
                     mirror_path: doc.mirror_path.clone(),
+                mirror_expected_sha256: doc.mirror_path.as_ref().map(|_| doc.last_disk_sha256.clone()),
                 }
             } else {
                 WorkerRequest::WriteFile {
@@ -1260,7 +1311,14 @@ impl Editor {
                     match result {
                         Ok(()) => {
                             doc.saved_generation = doc.saved_generation.max(generation);
-                            doc.last_disk_sha256 = sha256;
+                            doc.last_disk_sha256 = sha256.clone();
+                            if doc.mirror_path.is_some() && let Some((project, id)) = doc.voice_project.as_ref().zip(doc.session_id.as_ref()) {
+                                let key = prefs::EditorStateStore::session_link_key(project, id);
+                                if let Some(link) = self.store.session_links.get_mut(&key) {
+                                    link.last_synced_sha256 = sha256;
+                                    if let Err(error) = prefs::save_store(&self.store) { eprintln!("ghostless-editor: cannot persist link state: {error}"); }
+                                }
+                            }
                             doc.save_error = None;
                             if doc.generation > doc.saved_generation {
                                 doc.pending_save = true;
@@ -1332,7 +1390,14 @@ impl Editor {
                     if saved_snapshot {
                         doc.saved_generation = doc.saved_generation.max(generation);
                         if let Some(sha) = after_sha256 {
-                            doc.last_disk_sha256 = sha;
+                            doc.last_disk_sha256 = sha.clone();
+                            if doc.mirror_path.is_some() && let Some((project, id)) = doc.voice_project.as_ref().zip(doc.session_id.as_ref()) {
+                                let key = prefs::EditorStateStore::session_link_key(project, id);
+                                if let Some(link) = self.store.session_links.get_mut(&key) {
+                                    link.last_synced_sha256 = sha;
+                                    if let Err(error) = prefs::save_store(&self.store) { eprintln!("ghostless-editor: cannot persist link state: {error}"); }
+                                }
+                            }
                         }
                     }
                     doc.finish_requested = false;
@@ -1849,6 +1914,37 @@ mod tests {
         }
         assert_eq!(editor.status, "Saved locally");
         assert!(!editor.documents[0].is_dirty());
+    }
+
+    #[test]
+    fn recovery_copy_can_be_reviewed_without_overwriting_disk() {
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let base = std::env::temp_dir().join(format!("ghostless-recovery-{}", std::process::id()));
+        let home = base.join("home"); let workspace = base.join("workspace");
+        fs::create_dir_all(&home).unwrap(); fs::create_dir_all(&workspace).unwrap();
+        let old_home = std::env::var_os("GHOSTLESS_HOME");
+        unsafe { std::env::set_var("GHOSTLESS_HOME", &home); }
+        let file = workspace.join("draft.md"); fs::write(&file, "disk text").unwrap();
+        let file = file.canonicalize().unwrap();
+        let recovery = crate::documents::recovery_path_for(&file);
+        fs_io::atomic_write_text(&recovery, "recovered text").unwrap();
+        let mut editor = Editor::empty_with_handlers(prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake());
+        editor.workspace = Some(workspace);
+        editor.open_workspace_file(file.clone(), true);
+        assert!(matches!(editor.active_dialog, Some(DialogKind::Recover { .. })));
+        assert_eq!(editor.active_working_edit().text, "disk text");
+        editor.close_dialog();
+        assert!(recovery.exists());
+        editor.open_workspace_file(file.clone(), true);
+        assert!(matches!(editor.active_dialog, Some(DialogKind::Recover { .. })));
+        editor.resolve_recovery(true);
+        assert_eq!(editor.active_working_edit().text, "recovered text");
+        assert!(editor.active_doc_ref().unwrap().is_dirty());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "disk text");
+        assert!(recovery.exists());
+        editor.documents.clear(); editor.workspace = None;
+        unsafe { if let Some(v) = old_home { std::env::set_var("GHOSTLESS_HOME", v); } else { std::env::remove_var("GHOSTLESS_HOME"); } }
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

@@ -48,6 +48,7 @@ pub(crate) fn parse_launch(args: Vec<String>) -> Result<LaunchTarget, String> {
     let mut project = None;
     let mut draft = None;
     let mut session = None;
+    let mut link_draft = false;
     let mut folder = None;
     let mut positional = None;
     let mut args = args.into_iter();
@@ -56,13 +57,15 @@ pub(crate) fn parse_launch(args: Vec<String>) -> Result<LaunchTarget, String> {
             "--project" => project = Some(PathBuf::from(args.next().ok_or("Missing value after --project")?)),
             "--draft" => draft = Some(PathBuf::from(args.next().ok_or("Missing value after --draft")?)),
             "--session" => session = Some(args.next().ok_or("Missing value after --session")?),
+            "--link-draft" => link_draft = true,
             "--folder" => folder = Some(PathBuf::from(args.next().ok_or("Missing value after --folder")?)),
             "--snap" | "--tree" | "--size" | "--theme" | "--scene" | "--at" | "--script" => { args.next().ok_or(format!("Missing value after {arg}"))?; }
-            "-h" | "--help" => { println!("ghostless-editor [--folder DIR | FILE] [--project DIR] [--draft FILE | --session ID]"); std::process::exit(0); }
+            "-h" | "--help" => { println!("ghostless-editor [--folder DIR | FILE] [--project DIR] [--draft FILE [--link-draft] | --session ID]"); std::process::exit(0); }
             _ if !arg.starts_with('-') && positional.is_none() => positional = Some(PathBuf::from(arg)),
             _ => return Err(format!("Unknown argument: {arg}")),
         }
     }
+    if link_draft && draft.is_none() { return Err("--link-draft requires --draft FILE".into()); }
     if draft.is_some() && session.is_some() { return Err("Pass exactly one of --draft FILE or --session ID".into()); }
     if (draft.is_some() || session.is_some()) && (folder.is_some() || positional.is_some()) { return Err("Cannot combine workspace and session targets".into()); }
     if folder.is_some() && positional.is_some() { return Err("Pass one workspace target".into()); }
@@ -78,6 +81,7 @@ pub(crate) fn parse_launch(args: Vec<String>) -> Result<LaunchTarget, String> {
         return Ok(LaunchTarget::Welcome { voice_project: explicit.or_else(|| resolve_project(None).ok()) });
     }
     let project = resolve_project(project)?;
+    let linked_draft = if link_draft { draft.as_deref().map(require_draft).transpose()? } else { None };
     let id = if let Some(draft) = draft {
         let draft = require_draft(&draft)?;
         let output = run_cli(&["start", draft.to_str().ok_or("Draft path is not UTF-8")?,
@@ -87,7 +91,17 @@ pub(crate) fn parse_launch(args: Vec<String>) -> Result<LaunchTarget, String> {
     } else {
         session.expect("one session supplied")
     };
-    Ok(LaunchTarget::Session(load_session(project, id)?))
+    let loaded = load_session(project, id)?;
+    if let Some(path) = linked_draft {
+        let current = crate::fs_io::read_utf8(&path)?;
+        if crate::fs_io::sha256_text(&current) != loaded.before_sha256 {
+            return Err("Draft changed while starting the session; the session was created without a link".into());
+        }
+        let mut store = prefs::load_store();
+        store.session_links.insert(prefs::EditorStateStore::session_link_key(&loaded.project, &loaded.id), prefs::SessionLink { workspace_file: path, last_synced_sha256: loaded.before_sha256.clone() });
+        prefs::save_store(&store)?;
+    }
+    Ok(LaunchTarget::Session(loaded))
 }
 
 pub(crate) fn load_session(project: PathBuf, id: String) -> Result<Session, String> {
@@ -133,6 +147,41 @@ pub(crate) fn load_session(project: PathBuf, id: String) -> Result<Session, Stri
 mod tests {
     use super::*;
     use std::fs;
+    #[test]
+    fn opt_in_draft_link_is_persisted_with_baseline_hash() {
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let base = std::env::temp_dir().join(format!("ghostless-link-launch-{}", std::process::id()));
+        let home = base.join("home"); let voice = base.join("voice");
+        fs::create_dir_all(&home).unwrap();
+        let old_home = std::env::var_os("GHOSTLESS_HOME");
+        unsafe { std::env::set_var("GHOSTLESS_HOME", &home); }
+        run_cli(&["init", voice.to_str().unwrap(), "--no-git"], None).unwrap();
+        let draft = base.join("draft.md"); fs::write(&draft, "Original draft text.\n").unwrap();
+        let target = parse_launch(vec!["--project".into(), voice.display().to_string(), "--draft".into(), draft.display().to_string(), "--link-draft".into()]).unwrap();
+        let LaunchTarget::Session(session) = target else { panic!("expected session"); };
+        let store = prefs::load_store();
+        let link = store.session_links.get(&prefs::EditorStateStore::session_link_key(&session.project, &session.id)).unwrap();
+        assert_eq!(link.workspace_file, draft.canonicalize().unwrap());
+        assert_eq!(link.last_synced_sha256, crate::fs_io::sha256_text("Original draft text.\n"));
+        let key = prefs::EditorStateStore::session_link_key(&session.project, &session.id);
+        let mut editor = crate::state::Editor::with_handlers(session.clone(), store, Box::new(run_cli), Box::new(crate::worker::execute_write_op), Box::new(|| {}));
+        editor.active_working_edit_mut().text = "Revised text.\n".into();
+        editor.changed_active(&mut rune::Tx::default());
+        editor.flush_on_exit();
+        assert_eq!(fs::read_to_string(&draft).unwrap(), "Revised text.\n");
+        assert_eq!(prefs::load_store().session_links[&key].last_synced_sha256, crate::fs_io::sha256_text("Revised text.\n"));
+        fs::write(&draft, "External update.\n").unwrap();
+        let loaded = load_session(session.project.clone(), session.id.clone()).unwrap();
+        let mut reopened = crate::state::Editor::with_handlers(loaded, prefs::load_store(), Box::new(run_cli), Box::new(crate::worker::execute_write_op), Box::new(|| {}));
+        reopened.active_working_edit_mut().text = "Must not overwrite.\n".into();
+        reopened.changed_active(&mut rune::Tx::default());
+        reopened.flush_on_exit();
+        assert_eq!(fs::read_to_string(&draft).unwrap(), "External update.\n");
+        assert!(reopened.status.contains("changed outside"));
+        unsafe { if let Some(value) = old_home { std::env::set_var("GHOSTLESS_HOME", value); } else { std::env::remove_var("GHOSTLESS_HOME"); } }
+        fs::remove_dir_all(base).unwrap();
+    }
+
     #[test]
     fn launch_targets_and_voice_discovery() {
         let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

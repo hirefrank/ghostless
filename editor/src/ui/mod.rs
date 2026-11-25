@@ -368,6 +368,18 @@ fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
                 .on_close(|e: &mut Editor| e.close_dialog())
                 .build(kit, overlays);
         }
+        DialogKind::Recover { title, .. } => {
+            let mut body = col().w_full().px(16.0).pb(16.0).gap(12.0)
+                .child(text(format!("An unsaved recovery copy exists for \"{title}\". Restore it to the editor (auto-save may then write it to disk), or keep the disk file and discard the recovery copy.")).font(kit.ty.ui).color(kit.c.text_base).wrap());
+            if let Some(err) = &editor.dialog_error {
+                body = body.child(text(err.clone()).font(kit.ty.small).color(kit.c.danger.fg).wrap());
+            }
+            body = body.child(row().w_full().gap(8.0)
+                .child(Button::new("Keep Disk File").variant(ButtonVariant::Outline).on_press(|e: &mut Editor| e.resolve_recovery(false)).build(kit))
+                .child(row().grow(1.0))
+                .child(Button::new("Restore Recovery").variant(ButtonVariant::Submit).on_press(|e: &mut Editor| e.resolve_recovery(true)).build(kit)));
+            Dialog::new("recover-file", "Unsaved Recovery").open(true).fit().width(480.0).child(body).on_close(|e: &mut Editor| e.close_dialog()).build(kit, overlays);
+        }
         DialogKind::ConfirmClose { title, .. } => {
             let mut body = col().w_full().px(16.0).pb(16.0).gap(12.0);
             body = body.child(

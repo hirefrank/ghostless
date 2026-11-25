@@ -38,6 +38,7 @@ pub(crate) enum WriteOp {
         after: String,
         notes: String,
         mirror_path: Option<PathBuf>,
+        mirror_expected_sha256: Option<String>,
     },
 }
 
@@ -63,6 +64,7 @@ pub(crate) enum WorkerRequest {
         after: String,
         notes: String,
         mirror_path: Option<PathBuf>,
+        mirror_expected_sha256: Option<String>,
     },
     Finish {
         doc_id: DocId,
@@ -72,6 +74,7 @@ pub(crate) enum WorkerRequest {
         before_sha256: Option<String>,
         snapshot: Option<(String, String)>,
         mirror_path: Option<PathBuf>,
+        mirror_expected_sha256: Option<String>,
     },
 }
 
@@ -152,6 +155,7 @@ impl Worker {
                         after,
                         notes,
                         mirror_path,
+                        mirror_expected_sha256,
                     } => {
                         let sha256 = fs_io::sha256_text(&after);
                         let result = writer(&WriteOp::Session {
@@ -161,6 +165,7 @@ impl Worker {
                             after,
                             notes,
                             mirror_path,
+                            mirror_expected_sha256,
                         });
                         WorkerReply::Saved {
                             doc_id,
@@ -177,6 +182,7 @@ impl Worker {
                         before_sha256,
                         snapshot,
                         mirror_path,
+                        mirror_expected_sha256,
                     } => {
                         let mut saved_snapshot = false;
                         let mut after_sha256 = None;
@@ -189,6 +195,7 @@ impl Worker {
                                 after,
                                 notes,
                                 mirror_path,
+                                mirror_expected_sha256,
                             }) {
                                 Ok(()) => {
                                     saved_snapshot = true;
@@ -270,6 +277,7 @@ pub(crate) fn execute_write_op(op: &WriteOp) -> Result<(), String> {
             after,
             notes,
             mirror_path,
+            mirror_expected_sha256,
         } => write_session_direct(
             project,
             session_id,
@@ -277,6 +285,7 @@ pub(crate) fn execute_write_op(op: &WriteOp) -> Result<(), String> {
             after,
             notes,
             mirror_path.as_deref(),
+            mirror_expected_sha256.as_deref(),
         ),
     }
 }
@@ -288,6 +297,7 @@ pub(crate) fn write_session_direct(
     after: &str,
     notes: &str,
     mirror_path: Option<&Path>,
+    mirror_expected_sha256: Option<&str>,
 ) -> Result<(), String> {
     if mirror_path.is_some_and(|path| !path.is_absolute()) {
         return Err("Session mirror path requires a workspace root".into());
@@ -318,6 +328,13 @@ pub(crate) fn write_session_direct(
     let before = fs_io::read_utf8(&folder.join("before.md"))?;
     if fs_io::sha256_text(&before) != expected_sha {
         return Err(format!("The immutable baseline has changed in {}.", folder.display()));
+    }
+    if let Some(mirror) = mirror_path {
+        let expected = mirror_expected_sha256.filter(|value| !value.is_empty()).ok_or("Linked draft has no known sync state; save stopped")?;
+        let current = fs_io::read_utf8(mirror)?;
+        if fs_io::sha256_text(&current) != expected {
+            return Err("Linked draft changed outside the editor; save stopped".into());
+        }
     }
     fs_io::atomic_write_text(&folder.join("after.md"), after)?;
     fs_io::atomic_write_text(&folder.join("notes.md"), notes)?;
@@ -365,6 +382,7 @@ mod tests {
         .unwrap();
 
         let mirror = base.join("mirror/draft.md");
+        fs_io::atomic_write_text(&mirror, before).unwrap();
         write_session_direct(
             &base,
             session_id,
@@ -372,15 +390,22 @@ mod tests {
             "Revised prose.\n",
             "Tightened lead.",
             Some(&mirror),
+            Some(&before_sha),
         )
         .unwrap();
         assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Revised prose.\n");
         assert_eq!(fs_io::read_utf8(&session_dir.join("notes.md")).unwrap(), "Tightened lead.");
         assert_eq!(fs_io::read_utf8(&mirror).unwrap(), "Revised prose.\n");
 
+        fs_io::atomic_write_text(&mirror, "external edit").unwrap();
+        let err = write_session_direct(&base, session_id, Some(&before_sha), "Must not overwrite", "", Some(&mirror), Some(&fs_io::sha256_text("Revised prose.\n"))).unwrap_err();
+        assert!(err.contains("changed outside"));
+        assert_eq!(fs_io::read_utf8(&mirror).unwrap(), "external edit");
+        assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Revised prose.\n");
+
         // Tampered before.md must be refused without overwriting after.md.
         fs_io::atomic_write_text(&session_dir.join("before.md"), "Tampered!\n").unwrap();
-        let err = write_session_direct(&base, session_id, Some(&before_sha), "Bad write", "", None)
+        let err = write_session_direct(&base, session_id, Some(&before_sha), "Bad write", "", None, None)
             .unwrap_err();
         assert!(err.contains("immutable baseline has changed"), "{err}");
         assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Revised prose.\n");
@@ -388,7 +413,7 @@ mod tests {
         // Restore before.md, add receipt.json -> finished session must be refused.
         fs_io::atomic_write_text(&session_dir.join("before.md"), before).unwrap();
         fs_io::atomic_write_text(&session_dir.join("receipt.json"), "{}\n").unwrap();
-        let err = write_session_direct(&base, session_id, Some(&before_sha), "After finish", "", None)
+        let err = write_session_direct(&base, session_id, Some(&before_sha), "After finish", "", None, None)
             .unwrap_err();
         assert!(err.contains("already finished"), "{err}");
 

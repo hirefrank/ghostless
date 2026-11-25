@@ -518,26 +518,19 @@ fn ensure_mutable(root: &Path, path: &Path) -> Result<(), String> {
     let kind = fs::symlink_metadata(path)
         .map_err(|error| path_error(path, error))?
         .file_type();
-    if !kind.is_dir() {
-        let protected = |path: &Path| {
-            path.file_name() == Some(OsStr::new("manifest.json"))
-                || path
-                    .ancestors()
-                    .skip(1)
-                    .take_while(|base| base.starts_with(root))
-                    .any(|base| {
-                        path.strip_prefix(base).is_ok_and(immutable)
-                            && is_regular_file(&base.join("manifest.json"))
-                            && manifest_is_ghostless(base)
-                    })
-        };
-        if protected(path)
-            || path
-                .canonicalize()
-                .is_ok_and(|resolved| protected(&resolved))
-        {
-            return Err(format!("Protected workspace file: {}", path.display()));
-        }
+    let protected = |path: &Path| {
+        path.file_name() == Some(OsStr::new("manifest.json"))
+            || path.ancestors().skip(1).take_while(|base| base.starts_with(root)).any(|base| {
+                if !is_regular_file(&base.join("manifest.json")) || !manifest_is_ghostless(base) {
+                    return false;
+                }
+                path.strip_prefix(base).is_ok_and(|relative| {
+                    immutable(relative) || ["gold", "holdouts", "corpus"].iter().any(|name| relative.starts_with(name))
+                })
+            })
+    };
+    if protected(path) || path.canonicalize().is_ok_and(|resolved| protected(&resolved)) {
+        return Err(format!("Protected workspace file: {}", path.display()));
     }
     if kind.is_dir() {
         for item in fs::read_dir(path).map_err(|error| path_error(path, error))? {
@@ -918,6 +911,12 @@ mod tests {
         assert!(delete_entry(root, "voice").is_err());
         for path in [
             "voice/voice-guide.md",
+            "voice/gold/a.md",
+            "voice/holdouts/b.markdown",
+            "voice/corpus/gold/a.md",
+            "voice/gold",
+            "voice/holdouts",
+            "voice/corpus",
             "voice/sessions/2026-11-23/before.md",
             "voice/sessions/2026-11-23/after.md",
             "voice/sessions/2026-11-23/notes.md",
