@@ -43,6 +43,7 @@ pub(crate) enum WriteOp {
 }
 
 pub(crate) enum WorkerRequest {
+    FolderSearch { request_id: u64, files: Vec<workspace_tree::WorkspaceEntry>, query: String },
     WriteFile {
         doc_id: DocId,
         generation: u64,
@@ -86,6 +87,7 @@ pub(crate) enum WriteOutcome {
 }
 
 pub(crate) enum WorkerReply {
+    FolderSearch { request_id: u64, matches: Vec<crate::quick_open::FolderMatch> },
     Saved {
         doc_id: DocId,
         generation: u64,
@@ -121,6 +123,9 @@ impl Worker {
         let join = thread::spawn(move || {
             while let Ok(request) = req_rx.recv() {
                 let reply = match request {
+                    WorkerRequest::FolderSearch { request_id, files, query } => WorkerReply::FolderSearch {
+                        request_id, matches: crate::quick_open::search_workspace_files(&files, &query, 200),
+                    },
                     WorkerRequest::WriteFile {
                         doc_id,
                         generation,

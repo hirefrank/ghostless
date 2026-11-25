@@ -30,6 +30,20 @@ fn load_placeholder(project: Option<&Path>) -> Option<String> {
     if token.is_empty() || token.contains(['[', ']', ':']) { None } else { Some(token.to_owned()) }
 }
 
+fn tree_files(tree: &TreeModel<FileNode<WorkspaceEntry>>) -> Vec<WorkspaceEntry> {
+    fn collect(tree: &TreeModel<FileNode<WorkspaceEntry>>, parent: Option<&str>, out: &mut Vec<WorkspaceEntry>) {
+        for id in tree.children(parent) {
+            if let Some(node) = tree.get(id) {
+                if let Some(entry) = &node.data { out.push(entry.clone()); }
+                if node.dir { collect(tree, Some(id), out); }
+            }
+        }
+    }
+    let mut entries = Vec::new();
+    collect(tree, None, &mut entries);
+    entries
+}
+
 pub(crate) const SESSION_AUTOSAVE_DELAY: Duration = Duration::from_millis(800);
 pub(crate) const FILE_AUTOSAVE_DELAY: Duration = Duration::from_millis(1500);
 
@@ -81,6 +95,8 @@ pub(crate) struct Editor {
     pub(crate) view_mode: ViewMode,
     pub(crate) reference: crate::ui::reference::ReferencePane,
     pub(crate) find: crate::search::FindState,
+    pub(crate) quick: crate::ui::quick_switcher::QuickState,
+    pub(crate) folder_search: crate::ui::folder_search::FolderSearchState,
     pub(crate) focus_mode: bool,
     pub(crate) view_settings_open: bool,
     fonts_initialized: bool,
@@ -190,6 +206,8 @@ impl Editor {
             view_mode: ViewMode::Write,
             reference: Default::default(),
             find: Default::default(),
+            quick: Default::default(),
+            folder_search: Default::default(),
             focus_mode: false,
             view_settings_open: false,
             fonts_initialized: false,
@@ -247,6 +265,8 @@ impl Editor {
             view_mode: ViewMode::Write,
             reference: Default::default(),
             find: Default::default(),
+            quick: Default::default(),
+            folder_search: Default::default(),
             focus_mode: false,
             view_settings_open: false,
             fonts_initialized: false,
@@ -379,6 +399,11 @@ impl Editor {
         self.documents.clear();
         self.reference = Default::default();
         self.find = Default::default();
+        self.quick = Default::default();
+        self.folder_search.open = false;
+        self.folder_search.due = None;
+        self.folder_search.request_id = self.folder_search.request_id.wrapping_add(1);
+        self.folder_search.matches.clear();
         self.active_doc = None;
         self.selected_tree_id = None;
         self.view_mode = ViewMode::Write;
@@ -617,6 +642,72 @@ impl Editor {
             doc.read_only = true;
             doc.last_saved_label = Some("Read-only".into());
         }
+    }
+
+    pub(crate) fn open_quick(&mut self, tx: &mut Tx) {
+        use crate::quick_open::{QuickItem, QuickTarget};
+        let mut items = Vec::new();
+        let files = tree_files(&self.file_tree);
+        for doc in self.documents.iter().rev() {
+            if let Some(entry) = files.iter().find(|entry| entry.abs_path == doc.path) {
+                items.push(QuickItem { id: entry.rel_path.clone(), title: doc.title.clone(), subtitle: entry.rel_path.clone(), target: QuickTarget::File(entry.abs_path.clone()) });
+            }
+        }
+        for session in &self.sessions {
+            items.push(QuickItem { id: format!("session:{}", session.id), title: session.source_name.clone(), subtitle: format!("session · {:?}", session.status).to_lowercase(), target: QuickTarget::Session(session.id.clone()) });
+        }
+        for entry in files {
+            if items.iter().any(|item| item.id == entry.rel_path) { continue; }
+            let title = entry.abs_path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            items.push(QuickItem { id: entry.rel_path.clone(), title, subtitle: entry.rel_path, target: QuickTarget::File(entry.abs_path) });
+        }
+        self.quick.items = items;
+        self.quick.query.replace_text("");
+        self.quick.selected = 0;
+        self.quick.open = true;
+        tx.focus("quick-query", false);
+    }
+
+    pub(crate) fn choose_quick(&mut self, index: usize, tx: &mut Tx) {
+        use crate::quick_open::QuickTarget;
+        let item = crate::ui::quick_switcher::filtered(&self.quick).get(index).cloned();
+        if let Some(item) = item {
+            match item.target {
+                QuickTarget::File(path) => self.open_workspace_file(path, true),
+                QuickTarget::Session(id) => if let Some(project) = self.voice_project.clone() { self.open_session_entry(project, id); },
+            }
+            self.quick.open = false;
+            tx.focus("prose-input", false);
+        }
+    }
+
+    pub(crate) fn open_folder_search(&mut self, tx: &mut Tx) {
+        self.folder_search.open = true;
+        self.folder_search.query.replace_text("");
+        self.folder_search.matches.clear();
+        self.folder_search.request_id = self.folder_search.request_id.wrapping_add(1);
+        self.folder_search.due = None;
+        tx.focus("folder-query", false);
+    }
+
+    pub(crate) fn schedule_folder_search(&mut self, tx: &mut Tx) {
+        self.folder_search.request_id = self.folder_search.request_id.wrapping_add(1);
+        self.folder_search.matches.clear();
+        self.folder_search.selected = 0;
+        self.folder_search.due = (self.folder_search.query.text.chars().count() >= 2).then_some(tx.clock() + 0.2);
+        if self.folder_search.due.is_some() { tx.wake_after(Duration::from_millis(200)); }
+    }
+
+    pub(crate) fn choose_folder_match(&mut self, index: usize, tx: &mut Tx) {
+        let Some(hit) = self.folder_search.matches.get(index).cloned() else { return; };
+        let query = self.folder_search.query.text.clone();
+        self.open_workspace_file(hit.abs_path, true);
+        let text = self.active_doc_ref().map(|doc| doc.edit.text.clone()).unwrap_or_default();
+        crate::search::open_find_with_query(&mut self.find, &query, &text, tx);
+        self.find.current = self.find.matches.iter().position(|range| range.start == hit.byte_offset);
+        self.select_find_match();
+        self.folder_search.open = false;
+        tx.focus("prose-input", false);
     }
 
     pub(crate) fn set_reference(&mut self, source: crate::ui::reference::ReferenceSource) {
@@ -1491,8 +1582,19 @@ impl Editor {
     }
 
     pub(crate) fn apply_reply(&mut self, reply: WorkerReply, tx: Option<&mut Tx>) -> bool {
+        let reply = match reply {
+            WorkerReply::FolderSearch { request_id, matches } => {
+                if self.folder_search.open && request_id == self.folder_search.request_id {
+                    self.folder_search.matches = matches;
+                    self.folder_search.selected = 0;
+                }
+                return true;
+            }
+            other => other,
+        };
         self.worker_busy = None;
         let ok = match reply {
+            WorkerReply::FolderSearch { .. } => unreachable!(),
             WorkerReply::Saved {
                 doc_id,
                 generation,
@@ -1870,6 +1972,14 @@ pub(crate) fn poll(editor: &mut Editor, clock: f64, tx: &mut Tx) -> bool {
 
     let autosave = editor.store.ui.autosave_workspace_files;
     let mut next_wake: Option<f64> = None;
+    if let Some(due) = editor.folder_search.due {
+        if clock >= due {
+            editor.folder_search.due = None;
+            let request = WorkerRequest::FolderSearch { request_id: editor.folder_search.request_id,
+                files: tree_files(&editor.file_tree), query: editor.folder_search.query.text.clone() };
+            if let Err(error) = editor.worker.send(request) { editor.status = error; }
+        } else { next_wake = Some(due); tx.wake_after(Duration::from_secs_f64(due - clock)); }
+    }
     for doc in &mut editor.documents {
         if !doc.can_save() || !doc.is_dirty() {
             continue;
@@ -1960,6 +2070,8 @@ pub(crate) fn on_key(editor: &mut Editor, key: &KeyEvent, tx: &mut Tx) -> bool {
         }
         if key.is_command('0') { editor.store.ui.font_size = 16.5; let _ = prefs::save_store(&editor.store); return true; }
     }
+    if key.is_command('p') && !key.mods.shift && !key.mods.alt { editor.open_quick(tx); return true; }
+    if key.is_command('f') && key.mods.shift && !key.mods.alt { editor.open_folder_search(tx); return true; }
     if key.is_command('f') && !key.mods.shift && !key.mods.alt { editor.open_find(false, tx); return true; }
     if key.is_command('h') && !key.mods.shift && !key.mods.alt { editor.open_find(true, tx); return true; }
     if key.is_command('v') && key.mods.shift && !key.mods.alt {
@@ -2025,6 +2137,22 @@ mod tests {
             before_sha256: "test".into(),
             finished: false,
         }
+    }
+
+    #[test]
+    fn folder_search_replies_do_not_clear_save_or_accept_stale_results() {
+        let mut editor = Editor::empty_with_handlers(prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake());
+        editor.folder_search.open = true;
+        editor.folder_search.request_id = 2;
+        editor.worker_busy = Some((DocId::File(PathBuf::from("/tmp/a.md")), InFlight::Save));
+        let hit = crate::quick_open::FolderMatch { rel_path: "a.md".into(), abs_path: "/tmp/a.md".into(), line_no: 1, byte_offset: 0, preview: "hello".into() };
+        editor.apply_reply(WorkerReply::FolderSearch { request_id: 1, matches: vec![hit.clone()] }, None);
+        assert!(editor.folder_search.matches.is_empty());
+        assert!(editor.worker_busy.is_some());
+        editor.apply_reply(WorkerReply::FolderSearch { request_id: 2, matches: vec![hit] }, None);
+        assert_eq!(editor.folder_search.matches.len(), 1);
+        assert!(editor.worker_busy.is_some());
+        editor.worker_busy = None;
     }
 
     fn noop_wake() -> WakeFn {

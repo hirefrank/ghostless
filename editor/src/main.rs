@@ -6,6 +6,7 @@ mod fs_io;
 mod markdown_edit;
 mod markdown_decor;
 mod prefs;
+mod quick_open;
 mod search;
 mod session;
 mod state;

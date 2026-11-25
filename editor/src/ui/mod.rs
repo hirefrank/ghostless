@@ -7,6 +7,8 @@ use crate::state::{DialogKind, Editor, ViewMode};
 
 mod canvas;
 mod find_bar;
+pub(crate) mod folder_search;
+pub(crate) mod quick_switcher;
 mod preview;
 pub(crate) mod reference;
 mod sidebar;
@@ -77,6 +79,8 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
         .build(&kit);
 
     mount_dialogs(editor, &kit, &mut overlays);
+    quick_switcher::mount(editor, &kit, &mut overlays);
+    folder_search::mount(editor, &kit, &mut overlays);
     rune_kit::root(shell, overlays)
 }
 
