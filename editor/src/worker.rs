@@ -5,7 +5,7 @@ use std::{
     thread,
 };
 use serde_json::Value;
-use crate::{documents::DocId, fs_io, session::valid_session_id};
+use crate::{documents::DocId, fs_io, session::valid_session_id, workspace_tree};
 
 pub(crate) type CliFn = dyn Fn(&[&str], Option<&str>) -> Result<String, String> + Send;
 pub(crate) type CliRunner = Box<CliFn>;
@@ -261,7 +261,7 @@ pub(crate) fn execute_write_op(op: &WriteOp) -> Result<WriteOutcome, String> {
             content,
             clear_recovery,
         } => {
-            fs_io::atomic_write_text(path, content)?;
+            write_workspace_file(path, content)?;
             if let Some(recovery) = clear_recovery {
                 clear_recovery_copy(recovery)?;
             }
@@ -359,7 +359,14 @@ fn write_mirror(path: &Path, expected_sha256: Option<&str>, after: &str) -> Resu
     if fs_io::sha256_text(&current) != expected {
         return Err("Linked draft changed outside the editor".into());
     }
-    fs_io::atomic_write_text(path, after)
+    write_workspace_file(path, after)
+}
+
+fn write_workspace_file(path: &Path, content: &str) -> Result<(), String> {
+    if workspace_tree::is_protected_voice_path(path) {
+        return Err(format!("Protected voice data is read-only: {}", path.display()));
+    }
+    fs_io::atomic_write_text(path, content)
 }
 
 pub(crate) fn run_finish(project: &Path, session_id: &str, runner: &CliFn) -> Result<(), String> {
@@ -436,6 +443,26 @@ mod tests {
             assert_eq!(fs_io::read_utf8(&session_dir.join("notes.md")).unwrap(), "Local notes");
         }
         assert!(!missing.exists());
+
+        // A valid snapshot can still be saved when its mirror points at voice data.
+        fs::write(base.join("manifest.json"), r#"{"kind":"ghostless"}"#).unwrap();
+        for directory in ["corpus", "transcripts", "holdouts", "gold"] {
+            let protected = base.join(directory).join("example.md");
+            fs_io::atomic_write_text(&protected, before).unwrap();
+            let error = execute_write_op(&WriteOp::File {
+                path: protected.clone(),
+                content: "Attempted overwrite".into(),
+                clear_recovery: None,
+            }).unwrap_err();
+            assert!(error.contains("Protected voice data"));
+            let outcome = write_session_direct(
+                &base, session_id, Some(&before_sha), "Local edits", "Local notes",
+                Some(&protected), Some(&before_sha),
+            ).unwrap();
+            assert!(matches!(outcome, WriteOutcome::MirrorSkipped(error) if error.contains("Protected voice data")));
+            assert_eq!(fs_io::read_utf8(&protected).unwrap(), before);
+            assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Local edits");
+        }
 
         // Tampered before.md must be refused without overwriting after.md.
         fs_io::atomic_write_text(&session_dir.join("before.md"), "Tampered!\n").unwrap();

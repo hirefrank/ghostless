@@ -20,7 +20,7 @@ use crate::{
         CliRunner, InFlight, WakeFn, Worker, WorkerReply, WorkerRequest, WriteRunner,
         WriteOutcome, clear_recovery_copy, execute_write_op,
     },
-    workspace_tree::{self, FileKind, SessionSummary, WorkspaceEntry},
+    workspace_tree::{self, SessionSummary, WorkspaceEntry},
 };
 
 pub(crate) const SESSION_AUTOSAVE_DELAY: Duration = Duration::from_millis(800);
@@ -85,6 +85,7 @@ pub(crate) struct Editor {
     pub(crate) pending_close: Option<DocId>,
     pub(crate) last_window_title: Option<String>,
     pub(crate) flushed: bool,
+    quit_recovery_needed: bool,
     pub(crate) reopen_window: Option<Box<dyn Fn()>>,
     pub(crate) status: String,
     pub(crate) worker: Worker,
@@ -186,6 +187,7 @@ impl Editor {
             pending_close: None,
             last_window_title: None,
             flushed: false,
+            quit_recovery_needed: false,
             reopen_window: None,
             status,
             worker,
@@ -236,6 +238,7 @@ impl Editor {
             pending_close: None,
             last_window_title: None,
             flushed: false,
+            quit_recovery_needed: false,
             reopen_window: None,
             status: "Ready".into(),
             worker,
@@ -1641,21 +1644,31 @@ impl Editor {
     }
 
     pub(crate) fn on_application_quit(&mut self) {
-        if self.flush_on_exit() {
+        if self.flushed {
             return;
         }
+        self.quit_recovery_needed = !self.drain_autosave_work() && !self.write_quit_recovery();
+        // The system can still cancel shutdown. Keep the worker available to the
+        // live editor, or to the final flush if the editor is dropped.
+        if self.workspace.is_some() {
+            self.save_open_tabs_pref();
+            self.save_ui_prefs_if_workspace();
+        }
+    }
+
+    fn write_quit_recovery(&self) -> bool {
+        let mut recovered_all = true;
         for doc in self.documents.iter().filter(|doc| doc.is_dirty()) {
             let path = doc.recovery_path();
             match doc.recovery_contents().and_then(|text| fs_io::atomic_write_text(&path, &text)) {
                 Ok(()) => eprintln!("ghostless-editor: saved a recovery copy for {}", doc.title),
-                Err(error) => eprintln!("ghostless-editor: could not recover {}: {error}", doc.title),
+                Err(error) => {
+                    recovered_all = false;
+                    eprintln!("ghostless-editor: could not recover {}: {error}", doc.title);
+                }
             }
         }
-        if self.workspace.is_some() {
-            self.save_open_tabs_pref();
-        }
-        self.worker.shutdown();
-        self.flushed = true;
+        recovered_all
     }
 
     pub(crate) fn flush_on_exit(&mut self) -> bool {
@@ -1686,7 +1699,12 @@ pub(crate) fn on_window_close(editor: &mut Editor, tx: &mut Tx) {
 
 impl Drop for Editor {
     fn drop(&mut self) {
-        self.flush_on_exit();
+        if !self.flush_on_exit() {
+            if self.quit_recovery_needed {
+                self.write_quit_recovery();
+            }
+            self.worker.shutdown();
+        }
     }
 }
 
@@ -1704,25 +1722,14 @@ fn classify_file_flags(
     path: &Path,
     voice_project: Option<&Path>,
 ) -> (bool, bool) {
-    let is_pre_answers = path.file_name().and_then(|n| n.to_str()) == Some("pre-answers.md");
-    if let Some(entry) = tree_entry {
-        let lockable = entry.kind == FileKind::Corpus || is_pre_answers;
-        return (entry.read_only, lockable);
-    }
     let name = path.file_name().and_then(|n| n.to_str());
-    let mut read_only = name == Some("voice-guide.md");
-    let mut lockable = is_pre_answers;
-    if let Some(voice) = voice_project
-        && let Ok(rel) = path.strip_prefix(voice)
-    {
-        if rel.parent().is_some_and(workspace_tree::is_corpus_tree) {
-            lockable = true;
-        }
-        if workspace_tree::immutable(rel) {
-            read_only = true;
-        }
-    }
-    (read_only, lockable)
+    let read_only = name == Some("voice-guide.md")
+        || tree_entry.is_some_and(|entry| entry.read_only)
+        || voice_project
+            .and_then(|voice| path.strip_prefix(voice).ok())
+            .is_some_and(workspace_tree::is_protected_voice_relative)
+        || workspace_tree::is_protected_voice_path(path);
+    (read_only, !read_only && name == Some("pre-answers.md"))
 }
 
 fn rel_path_from_abs(root: &Path, abs: &Path) -> Option<String> {
@@ -2247,9 +2254,10 @@ mod tests {
         assert!(editor.active_doc_ref().unwrap().is_dirty());
         assert!(editor.status.contains("Could not close"));
         editor.on_application_quit();
-        assert!(editor.flushed);
+        assert!(!editor.flushed);
         let copy = editor.active_doc_ref().unwrap().recovery_path();
         assert!(copy.is_file());
+        drop(editor);
 
         let mut reopened = Editor::new(LaunchTarget::Session(session), noop_wake());
         assert!(matches!(reopened.active_dialog, Some(DialogKind::Recover { .. })));
@@ -2263,6 +2271,51 @@ mod tests {
         assert!(!copy.exists());
         assert_eq!(fs::read_to_string(folder.join("after.md")).unwrap(), "unsaved body");
         assert_eq!(fs::read_to_string(folder.join("notes.md")).unwrap(), "unsaved notes");
+        unsafe {
+            if let Some(value) = prev_home { std::env::set_var("GHOSTLESS_HOME", value); }
+            else { std::env::remove_var("GHOSTLESS_HOME"); }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn drop_retries_when_quit_could_not_save_or_recover() {
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("ghostless-quit-retry-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let blocked_home = root.join("recovery-unavailable");
+        fs::write(&blocked_home, "").unwrap();
+        let prev_home = std::env::var_os("GHOSTLESS_HOME");
+        unsafe { std::env::set_var("GHOSTLESS_HOME", &blocked_home); }
+        let file = root.join("draft.md");
+        fs::write(&file, "disk version").unwrap();
+        let save_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ready = save_ready.clone();
+        let writer: WriteRunner = Box::new(move |op| {
+            if ready.load(std::sync::atomic::Ordering::SeqCst) {
+                execute_write_op(op)
+            } else {
+                Err("Save temporarily unavailable".into())
+            }
+        });
+        let mut editor = Editor::empty_with_handlers(
+            prefs::EditorStateStore::default(), ok_runner(), writer, noop_wake(),
+        );
+        editor.open_workspace_file(file.clone(), true);
+        editor.active_working_edit_mut().text = "latest edit".into();
+        editor.changed_active(&mut Tx::default());
+        let recovery = editor.active_doc_ref().unwrap().recovery_path();
+
+        editor.on_application_quit();
+        assert!(!editor.flushed);
+        assert!(!recovery.is_file());
+        assert!(editor.active_doc_ref().unwrap().is_dirty());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "disk version");
+
+        fs::remove_file(blocked_home).unwrap();
+        save_ready.store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(editor);
+        assert_eq!(fs::read_to_string(file).unwrap(), "latest edit");
         unsafe {
             if let Some(value) = prev_home { std::env::set_var("GHOSTLESS_HOME", value); }
             else { std::env::remove_var("GHOSTLESS_HOME"); }
@@ -2434,11 +2487,18 @@ mod tests {
     }
 
     #[test]
-    fn session_working_files_are_read_only_even_outside_tree() {
+    fn voice_data_files_are_read_only_even_outside_tree() {
         let voice = Path::new("/tmp/voice");
-        for name in ["after.md", "notes.md"] {
-            let path = voice.join("sessions/2026-11-23").join(name);
-            assert!(classify_file_flags(None, &path, Some(voice)).0);
+        for relative in [
+            "corpus/gold/example.md",
+            "gold/example.md",
+            "holdouts/example.md",
+            "transcripts/example.txt",
+            "sessions/2026-11-23/after.md",
+            "sessions/2026-11-23/notes.md",
+        ] {
+            let path = voice.join(relative);
+            assert_eq!(classify_file_flags(None, &path, Some(voice)), (true, false));
         }
         assert!(!classify_file_flags(None, &voice.join("drafts/after.md"), Some(voice)).0);
     }

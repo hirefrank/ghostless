@@ -36,6 +36,8 @@ This starts a new session (`ghostless start` under the hood). To opt into mirror
 
 To open a workspace, launch with `--folder /path/to/writing` or use Open Folder. The editor searches the folder and its ancestors for a voice project or a nested `voice/` project. An unrelated folder opens without a voice project, even if `GHOSTLESS_PROJECT` or `defaultProject` is set; pass `--project /path/to/voice` to attach one explicitly. The welcome screen can show the global default before a folder is opened.
 
+Files in the voice project's corpus, transcripts, holdouts, and learned examples open read-only. Use the Sessions sidebar to edit a session's working copy and notes.
+
 ## Resume a saved session
 
 ```bash

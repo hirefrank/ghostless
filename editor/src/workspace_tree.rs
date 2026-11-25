@@ -196,12 +196,13 @@ impl WorkspaceScan<'_> {
                 }
             } else if self.show_all_files || is_writing(&path) {
                 let kind = file_kind(&path, voice_relative);
+                let read_only = voice_relative.is_some_and(is_protected_voice_relative);
                 debug_assert!(path.starts_with(self.root));
                 self.entries.push(WorkspaceEntry {
                     abs_path: path,
                     rel_path,
                     kind,
-                    read_only: kind == FileKind::ReadOnlyImmutable,
+                    read_only,
                 });
                 visible = true;
             }
@@ -218,7 +219,7 @@ fn is_writing(path: &Path) -> bool {
     })
 }
 
-pub(crate) fn immutable(path: &Path) -> bool {
+fn immutable(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(OsStr::to_str) else {
         return false;
     };
@@ -233,12 +234,14 @@ pub(crate) fn immutable(path: &Path) -> bool {
     }
 }
 
-pub(crate) fn is_corpus_tree(relative: &Path) -> bool {
+fn is_corpus_tree(relative: &Path) -> bool {
     relative.starts_with("corpus") || relative.starts_with("transcripts")
 }
 
-fn is_protected_voice_tree(relative: &Path) -> bool {
-    is_corpus_tree(relative)
+pub(crate) fn is_protected_voice_relative(relative: &Path) -> bool {
+    relative == Path::new("manifest.json")
+        || immutable(relative)
+        || is_corpus_tree(relative)
         || ["gold", "holdouts", "sessions"]
             .iter()
             .any(|name| relative.starts_with(name))
@@ -524,14 +527,25 @@ pub(crate) fn create_folder(root: &Path, parent_rel: &str, name: &str) -> Result
     Ok(path)
 }
 
-fn is_protected_voice_path(path: &Path) -> bool {
+fn in_protected_voice_project(path: &Path) -> bool {
     path.ancestors().skip(1).any(|base| {
         path.strip_prefix(base).is_ok_and(|relative| {
-            (is_protected_voice_tree(relative) || immutable(relative))
+            is_protected_voice_relative(relative)
                 && base.join("manifest.json").is_file()
                 && manifest_is_ghostless(base)
         })
     })
+}
+
+pub(crate) fn is_protected_voice_path(path: &Path) -> bool {
+    if in_protected_voice_project(path) {
+        return true;
+    }
+    let resolved = path.canonicalize().ok().or_else(|| {
+        let name = path.file_name()?;
+        Some(path.parent()?.canonicalize().ok()?.join(name))
+    });
+    resolved.as_deref().is_some_and(in_protected_voice_project)
 }
 
 fn ensure_creation_allowed(path: &Path) -> Result<(), String> {
@@ -548,11 +562,7 @@ fn ensure_mutable(path: &Path) -> Result<(), String> {
     let kind = fs::symlink_metadata(path)
         .map_err(|error| path_error(path, error))?
         .file_type();
-    let protected = |path: &Path| {
-        path.file_name() == Some(OsStr::new("manifest.json"))
-            || is_protected_voice_path(path)
-    };
-    if protected(path) || path.canonicalize().is_ok_and(|resolved| protected(&resolved)) {
+    if path.file_name() == Some(OsStr::new("manifest.json")) || is_protected_voice_path(path) {
         return Err(format!("Protected workspace file: {}", path.display()));
     }
     if kind.is_dir() {
@@ -798,10 +808,16 @@ mod tests {
             .as_ref()
             .unwrap();
         assert_eq!(corpus.kind, FileKind::Corpus);
+        assert!(corpus.read_only);
         assert_eq!(corpus.abs_path, voice.join("corpus/gold/a.md"));
         assert_eq!(corpus.rel_path, "voice/corpus/gold/a.md");
         let transcript = tree.get("voice/transcripts/a.txt").unwrap();
         assert_eq!(transcript.data.as_ref().unwrap().kind, FileKind::Corpus);
+        assert!(transcript.data.as_ref().unwrap().read_only);
+        let holdout = tree.get("voice/holdouts/b.markdown").unwrap();
+        assert!(holdout.data.as_ref().unwrap().read_only);
+        let draft = tree.get("voice/drafts/a.md").unwrap();
+        assert!(!draft.data.as_ref().unwrap().read_only);
 
         let tree = scan_workspace(&workspace.0, Some(&voice), true);
         assert!(tree.contains("legacy/old.py"));
