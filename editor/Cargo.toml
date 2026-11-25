@@ -10,7 +10,6 @@ rune-kit = { git = "https://github.com/anomalyco/rune.git", rev = "fa07f485dd52d
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-notify = "8"
 
 # Rune needs its patched wgpu-hal for native DX12 adapter selection on Windows.
 [patch.crates-io]
