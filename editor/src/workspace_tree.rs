@@ -229,8 +229,10 @@ fn immutable(path: &Path) -> bool {
     if parent.as_os_str().is_empty() {
         matches!(name, "voice-guide.md" | "voice-stats.json") || name.starts_with("edits-summary.")
     } else {
-        matches!(name, "before.md" | "after.md" | "notes.md" | "receipt.json" | "session.json")
-            && parent.parent() == Some(Path::new("sessions"))
+        matches!(
+            name,
+            "before.md" | "after.md" | "notes.md" | "receipt.json" | "session.json"
+        ) && parent.parent() == Some(Path::new("sessions"))
     }
 }
 
@@ -550,7 +552,9 @@ pub(crate) fn is_protected_voice_path(path: &Path) -> bool {
 
 fn ensure_creation_allowed(path: &Path) -> Result<(), String> {
     let parent = path.parent().ok_or("Destination has no parent")?;
-    let parent = parent.canonicalize().map_err(|error| path_error(parent, error))?;
+    let parent = parent
+        .canonicalize()
+        .map_err(|error| path_error(parent, error))?;
     let target = parent.join(path.file_name().ok_or("Destination has no name")?);
     if is_protected_voice_path(&target) {
         return Err(format!("Protected voice data: {}", target.display()));
@@ -604,7 +608,9 @@ pub(crate) fn duplicate_file(root: &Path, rel_path: &str) -> Result<PathBuf, Str
 }
 
 fn duplicate_file_with_limit(root: &Path, rel_path: &str, limit: u32) -> Result<PathBuf, String> {
-    let root = root.canonicalize().map_err(|error| path_error(root, error))?;
+    let root = root
+        .canonicalize()
+        .map_err(|error| path_error(root, error))?;
     let source = entry_path(&root, rel_path)?;
     ensure_mutable(&source)?;
     if !source.is_file() {
@@ -617,7 +623,11 @@ fn duplicate_file_with_limit(root: &Path, rel_path: &str, limit: u32) -> Result<
         .file_stem()
         .and_then(OsStr::to_str)
         .ok_or("Invalid workspace filename")?;
-    let extension = source.extension().and_then(OsStr::to_str).map(|ext| format!(".{ext}")).unwrap_or_default();
+    let extension = source
+        .extension()
+        .and_then(OsStr::to_str)
+        .map(|ext| format!(".{ext}"))
+        .unwrap_or_default();
     let bytes = fs::read(&source).map_err(|error| path_error(&source, error))?;
     for number in 1..=limit {
         let name = if number == 1 {
@@ -902,7 +912,10 @@ mod tests {
         workspace.write("draft-copy.md", "first");
         workspace.write("draft-copy-2.md", "second");
         assert!(duplicate_file_with_limit(root, "draft.md", 2).is_err());
-        assert_eq!(fs::read_to_string(root.join("draft-copy.md")).unwrap(), "first");
+        assert_eq!(
+            fs::read_to_string(root.join("draft-copy.md")).unwrap(),
+            "first"
+        );
     }
 
     #[test]
@@ -912,9 +925,18 @@ mod tests {
         workspace.write("sample.txt", "plain");
         workspace.write("sample.markdown", "markdown");
         workspace.write("extensionless", "text");
-        assert_eq!(duplicate_file(root, "sample.txt").unwrap(), root.join("sample-copy.txt"));
-        assert_eq!(duplicate_file(root, "sample.markdown").unwrap(), root.join("sample-copy.markdown"));
-        assert_eq!(duplicate_file(root, "extensionless").unwrap(), root.join("extensionless-copy"));
+        assert_eq!(
+            duplicate_file(root, "sample.txt").unwrap(),
+            root.join("sample-copy.txt")
+        );
+        assert_eq!(
+            duplicate_file(root, "sample.markdown").unwrap(),
+            root.join("sample-copy.markdown")
+        );
+        assert_eq!(
+            duplicate_file(root, "extensionless").unwrap(),
+            root.join("extensionless-copy")
+        );
         let folder = create_folder(root, "", "work").unwrap();
         let path = create_file(root, "work", "draft").unwrap();
         assert_eq!(path, folder.join("draft.md"));
@@ -960,8 +982,14 @@ mod tests {
         }
         for parent in ["voice/corpus", "voice/transcripts"] {
             let opened_subfolder = root.join(parent);
-            assert!(create_file(&opened_subfolder, "", "new").is_err(), "{parent}");
-            assert!(create_folder(&opened_subfolder, "", "new").is_err(), "{parent}");
+            assert!(
+                create_file(&opened_subfolder, "", "new").is_err(),
+                "{parent}"
+            );
+            assert!(
+                create_folder(&opened_subfolder, "", "new").is_err(),
+                "{parent}"
+            );
         }
         assert!(delete_entry(&root.join("voice/corpus"), "gold/a.md").is_err());
         assert!(create_file(root, "voice/drafts", "new").is_ok());

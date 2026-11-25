@@ -1,9 +1,9 @@
+use crate::state::Editor;
 use rune::{Cx, El, Tx, col, row};
 use rune_kit::{
     Divider, Kit, file_icon,
     shell::{TabItem, TabItemStatus, TabOrientation, TabStrip},
 };
-use crate::state::Editor;
 
 pub(crate) fn build(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
     let active_id = editor.active_doc_ref().map(|d| d.id.tab_key());

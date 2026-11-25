@@ -1,17 +1,17 @@
+use crate::state::{DialogKind, Editor, ViewMode};
 use rune::{Cx, El, col, icon, row, text};
 use rune_kit::{
-    Button, ButtonVariant, ControlSize, Dialog, Divider, Kit, SegmentedControl, TextArea, TextInput,
-    glyphs, shell::SplitView,
+    Button, ButtonVariant, ControlSize, Dialog, Divider, Kit, SegmentedControl, TextArea,
+    TextInput, glyphs, shell::SplitView,
 };
-use crate::state::{DialogKind, Editor, ViewMode};
 
 mod canvas;
 mod compare;
 mod find_bar;
-mod inspector;
 pub(crate) mod folder_search;
-pub(crate) mod quick_switcher;
+mod inspector;
 mod preview;
+pub(crate) mod quick_switcher;
 pub(crate) use preview::{PREVIEW_BODY, reveal_find_position};
 pub(crate) mod reference;
 mod sidebar;
@@ -43,15 +43,33 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
 
     let stage = build_stage(editor, cx, &kit);
     let stage = if editor.reference.open && editor.view_mode != ViewMode::Compare {
-        row().grow(1.0).w_full().min_h(0.0)
-            .child(col().grow(1.0).w(0.0).min_h(0.0).child(reference::build(editor, &kit, &mut overlays)))
+        row()
+            .grow(1.0)
+            .w_full()
+            .min_h(0.0)
+            .child(col().grow(1.0).w(0.0).min_h(0.0).child(reference::build(
+                editor,
+                &kit,
+                &mut overlays,
+            )))
             .child(col().w(1.0).h_full().fill(kit.c.border_muted))
             .child(col().grow(1.0).w(0.0).min_h(0.0).child(stage))
-    } else { stage };
-    let stage = if editor.find.open && editor.view_mode != ViewMode::Compare && editor.active_doc_ref().is_some() {
-        col().grow(1.0).w_full().min_h(0.0).child(stage)
+    } else {
+        stage
+    };
+    let stage = if editor.find.open
+        && editor.view_mode != ViewMode::Compare
+        && editor.active_doc_ref().is_some()
+    {
+        col()
+            .grow(1.0)
+            .w_full()
+            .min_h(0.0)
+            .child(stage)
             .child(find_bar::build(editor, &kit).pin(None, Some(8.0), Some(8.0), None))
-    } else { stage };
+    } else {
+        stage
+    };
     let mut main = col()
         .key("stage")
         .w_full()
@@ -63,20 +81,48 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
     }
     main = main.child(stage);
     if editor.focus_mode {
-        let count = editor.active_doc_ref().map(|doc| doc.word_counts().0).unwrap_or(0);
-        main = main.child(row().w_full().px(12.0).center_y()
-            .child(text(format!("{count} words")).font(kit.ty.small).color(kit.c.text_faint))
-            .child(row().grow(1.0))
-            .child(Button::new("Exit Focus (Esc / F11)").variant(ButtonVariant::GhostMuted)
-                .on_press(|e: &mut Editor| e.focus_mode = false).build(&kit)));
-    } else { main = main.child(status_bar::build(editor, &kit)); }
+        let count = editor
+            .active_doc_ref()
+            .map(|doc| doc.word_counts().0)
+            .unwrap_or(0);
+        main = main.child(
+            row()
+                .w_full()
+                .px(12.0)
+                .center_y()
+                .child(
+                    text(format!("{count} words"))
+                        .font(kit.ty.small)
+                        .color(kit.c.text_faint),
+                )
+                .child(row().grow(1.0))
+                .child(
+                    Button::new("Exit Focus (Esc / F11)")
+                        .variant(ButtonVariant::GhostMuted)
+                        .on_press(|e: &mut Editor| e.focus_mode = false)
+                        .build(&kit),
+                ),
+        );
+    } else {
+        main = main.child(status_bar::build(editor, &kit));
+    }
 
     let mut split = SplitView::new(main);
     if !editor.focus_mode {
-        split = split.sidebar(&editor.sidebar_pane, |e: &mut Editor| &mut e.sidebar_pane, sb)
-            .inspector(&editor.inspector_pane, |e: &mut Editor| &mut e.inspector_pane, insp);
+        split = split
+            .sidebar(
+                &editor.sidebar_pane,
+                |e: &mut Editor| &mut e.sidebar_pane,
+                sb,
+            )
+            .inspector(
+                &editor.inspector_pane,
+                |e: &mut Editor| &mut e.inspector_pane,
+                insp,
+            );
     }
-    let shell = split.toolbar(tb)
+    let shell = split
+        .toolbar(tb)
         .titlebar_inset(cx.titlebar_inset())
         .reduced_motion(cx.is_reduced_motion())
         .build(&kit);
@@ -123,7 +169,11 @@ fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
             .center()
             .gap(10.0)
             .padding(24.0)
-            .child(text("No draft open").font(kit.ty.ui_medium).color(kit.c.text_base))
+            .child(
+                text("No draft open")
+                    .font(kit.ty.ui_medium)
+                    .color(kit.c.text_base),
+            )
             .child(
                 text("Select a file from the sidebar or press Cmd/Ctrl+N to create a new draft.")
                     .font(kit.ty.ui)
@@ -132,7 +182,11 @@ fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
     };
 
     if editor.active_uses_rendered_preview() {
-        return with_conflict_banner(editor, kit, preview::build(&doc.edit.text, &editor.store.ui, kit, Some(&editor.find)));
+        return with_conflict_banner(
+            editor,
+            kit,
+            preview::build(&doc.edit.text, &editor.store.ui, kit, Some(&editor.find)),
+        );
     }
 
     let stage = match editor.view_mode {
@@ -193,7 +247,11 @@ fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
 }
 
 fn with_conflict_banner(editor: &Editor, kit: &Kit, body: El) -> El {
-    if editor.active_doc_ref().and_then(|doc| doc.conflict.as_ref()).is_none() {
+    if editor
+        .active_doc_ref()
+        .and_then(|doc| doc.conflict.as_ref())
+        .is_none()
+    {
         return body;
     }
     col()
@@ -209,10 +267,34 @@ fn with_conflict_banner(editor: &Editor, kit: &Kit, body: El) -> El {
                 .gap(8.0)
                 .center_y()
                 .fill(kit.c.warning.bg)
-                .child(text("This file changed on disk outside the edit session.").font(kit.ty.small).color(kit.c.text_base).grow(1.0).shrink())
-                .child(Button::new("Load Disk").control_size(ControlSize::Small).on_press_tx(|editor: &mut Editor, tx| editor.load_disk_conflict(tx)).build(kit).key("load-disk"))
-                .child(Button::new("Keep Session").control_size(ControlSize::Small).on_press_tx(|editor: &mut Editor, tx| editor.keep_session_conflict(tx)).build(kit).key("keep-session"))
-                .child(Button::new("Compare").control_size(ControlSize::Small).on_press_tx(|editor: &mut Editor, tx| editor.compare_conflict(tx)).build(kit).key("compare-conflict")),
+                .child(
+                    text("This file changed on disk outside the edit session.")
+                        .font(kit.ty.small)
+                        .color(kit.c.text_base)
+                        .grow(1.0)
+                        .shrink(),
+                )
+                .child(
+                    Button::new("Load Disk")
+                        .control_size(ControlSize::Small)
+                        .on_press_tx(|editor: &mut Editor, tx| editor.load_disk_conflict(tx))
+                        .build(kit)
+                        .key("load-disk"),
+                )
+                .child(
+                    Button::new("Keep Session")
+                        .control_size(ControlSize::Small)
+                        .on_press_tx(|editor: &mut Editor, tx| editor.keep_session_conflict(tx))
+                        .build(kit)
+                        .key("keep-session"),
+                )
+                .child(
+                    Button::new("Compare")
+                        .control_size(ControlSize::Small)
+                        .on_press_tx(|editor: &mut Editor, tx| editor.compare_conflict(tx))
+                        .build(kit)
+                        .key("compare-conflict"),
+                ),
         )
         .child(body)
 }
@@ -251,7 +333,12 @@ fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
                     .build(kit),
             );
             if let Some(err) = &editor.dialog_error {
-                body = body.child(text(err.clone()).font(kit.ty.small).color(kit.c.danger.fg).wrap());
+                body = body.child(
+                    text(err.clone())
+                        .font(kit.ty.small)
+                        .color(kit.c.danger.fg)
+                        .wrap(),
+                );
             }
             body = body.child(
                 row()
@@ -297,7 +384,12 @@ fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
                     .build(kit),
             );
             if let Some(err) = &editor.dialog_error {
-                body = body.child(text(err.clone()).font(kit.ty.small).color(kit.c.danger.fg).wrap());
+                body = body.child(
+                    text(err.clone())
+                        .font(kit.ty.small)
+                        .color(kit.c.danger.fg)
+                        .wrap(),
+                );
             }
             body = body.child(
                 row()
@@ -333,13 +425,20 @@ fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
             let kind_word = if *is_dir { "folder" } else { "file" };
             let mut body = col().w_full().px(16.0).pb(16.0).gap(12.0);
             body = body.child(
-                text(format!("Delete {kind_word} \"{display_name}\"? This cannot be undone."))
-                    .font(kit.ty.ui)
-                    .color(kit.c.text_base)
-                    .wrap(),
+                text(format!(
+                    "Delete {kind_word} \"{display_name}\"? This cannot be undone."
+                ))
+                .font(kit.ty.ui)
+                .color(kit.c.text_base)
+                .wrap(),
             );
             if let Some(err) = &editor.dialog_error {
-                body = body.child(text(err.clone()).font(kit.ty.small).color(kit.c.danger.fg).wrap());
+                body = body.child(
+                    text(err.clone())
+                        .font(kit.ty.small)
+                        .color(kit.c.danger.fg)
+                        .wrap(),
+                );
             }
             body = body.child(Divider::horizontal().build(kit));
             body = body.child(
@@ -372,13 +471,38 @@ fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
             let mut body = col().w_full().px(16.0).pb(16.0).gap(12.0)
                 .child(text(format!("An unsaved recovery copy exists for \"{title}\". Restore it to the editor (auto-save may then write it to disk), or keep the disk file and discard the recovery copy.")).font(kit.ty.ui).color(kit.c.text_base).wrap());
             if let Some(err) = &editor.dialog_error {
-                body = body.child(text(err.clone()).font(kit.ty.small).color(kit.c.danger.fg).wrap());
+                body = body.child(
+                    text(err.clone())
+                        .font(kit.ty.small)
+                        .color(kit.c.danger.fg)
+                        .wrap(),
+                );
             }
-            body = body.child(row().w_full().gap(8.0)
-                .child(Button::new("Keep Disk File").variant(ButtonVariant::Outline).on_press(|e: &mut Editor| e.resolve_recovery(false)).build(kit))
-                .child(row().grow(1.0))
-                .child(Button::new("Restore Recovery").variant(ButtonVariant::Submit).on_press(|e: &mut Editor| e.resolve_recovery(true)).build(kit)));
-            Dialog::new("recover-file", "Unsaved Recovery").open(true).fit().width(480.0).child(body).on_close(|e: &mut Editor| e.close_dialog()).build(kit, overlays);
+            body = body.child(
+                row()
+                    .w_full()
+                    .gap(8.0)
+                    .child(
+                        Button::new("Keep Disk File")
+                            .variant(ButtonVariant::Outline)
+                            .on_press(|e: &mut Editor| e.resolve_recovery(false))
+                            .build(kit),
+                    )
+                    .child(row().grow(1.0))
+                    .child(
+                        Button::new("Restore Recovery")
+                            .variant(ButtonVariant::Submit)
+                            .on_press(|e: &mut Editor| e.resolve_recovery(true))
+                            .build(kit),
+                    ),
+            );
+            Dialog::new("recover-file", "Unsaved Recovery")
+                .open(true)
+                .fit()
+                .width(480.0)
+                .child(body)
+                .on_close(|e: &mut Editor| e.close_dialog())
+                .build(kit, overlays);
         }
         DialogKind::ConfirmClose { title, .. } => {
             let mut body = col().w_full().px(16.0).pb(16.0).gap(12.0);
@@ -389,7 +513,12 @@ fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
                     .wrap(),
             );
             if let Some(error) = &editor.dialog_error {
-                body = body.child(text(error.clone()).font(kit.ty.small).color(kit.c.danger.fg).wrap());
+                body = body.child(
+                    text(error.clone())
+                        .font(kit.ty.small)
+                        .color(kit.c.danger.fg)
+                        .wrap(),
+                );
             }
             body = body.child(Divider::horizontal().build(kit));
             body = body.child(
@@ -425,7 +554,11 @@ fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
                 .build(kit, overlays);
         }
         DialogKind::StartSession => {
-            let origin = if editor.session_origin == "writer-first" { 1 } else { 0 };
+            let origin = if editor.session_origin == "writer-first" {
+                1
+            } else {
+                0
+            };
             let mut body = col().w_full().px(16.0).pb(16.0).gap(12.0);
             body = body.child(text("Origin").font(kit.ty.small).color(kit.c.text_muted));
             body = body.child(
@@ -433,7 +566,12 @@ fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
                     .width(Some(240.0))
                     .label("Session origin")
                     .on_pick(|editor: &mut Editor, index, _tx| {
-                        editor.session_origin = if index == 1 { "writer-first" } else { "ai-first" }.into();
+                        editor.session_origin = if index == 1 {
+                            "writer-first"
+                        } else {
+                            "ai-first"
+                        }
+                        .into();
                     })
                     .build(kit),
             );
@@ -455,26 +593,75 @@ fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
                     .build(kit),
             );
             if let Some(err) = &editor.dialog_error {
-                body = body.child(text(err.clone()).font(kit.ty.small).color(kit.c.danger.fg).wrap());
+                body = body.child(
+                    text(err.clone())
+                        .font(kit.ty.small)
+                        .color(kit.c.danger.fg)
+                        .wrap(),
+                );
             }
             body = body.child(
-                row().gap(8.0).justify_end().child(
-                    Button::new("Cancel").variant(ButtonVariant::Outline).on_press(|editor: &mut Editor| editor.close_dialog()).build(kit),
-                ).child(
-                    Button::new("Start").variant(ButtonVariant::Submit).on_press_tx(|editor: &mut Editor, tx| editor.submit_dialog(tx)).build(kit),
-                ),
+                row()
+                    .gap(8.0)
+                    .justify_end()
+                    .child(
+                        Button::new("Cancel")
+                            .variant(ButtonVariant::Outline)
+                            .on_press(|editor: &mut Editor| editor.close_dialog())
+                            .build(kit),
+                    )
+                    .child(
+                        Button::new("Start")
+                            .variant(ButtonVariant::Submit)
+                            .on_press_tx(|editor: &mut Editor, tx| editor.submit_dialog(tx))
+                            .build(kit),
+                    ),
             );
-            Dialog::new("start-session", "Start Edit Session").open(true).fit().width(440.0).child(body)
-                .on_close(|editor: &mut Editor| editor.close_dialog()).build(kit, overlays);
+            Dialog::new("start-session", "Start Edit Session")
+                .open(true)
+                .fit()
+                .width(440.0)
+                .child(body)
+                .on_close(|editor: &mut Editor| editor.close_dialog())
+                .build(kit, overlays);
         }
         DialogKind::ConfirmRevert => {
-            let body = col().w_full().px(16.0).pb(16.0).gap(12.0)
-                .child(text("Replace the working draft with the session baseline? You can undo it.").font(kit.ty.ui).color(kit.c.text_base).wrap())
-                .child(row().gap(8.0).justify_end()
-                    .child(Button::new("Cancel").variant(ButtonVariant::Outline).on_press(|editor: &mut Editor| editor.close_dialog()).build(kit))
-                    .child(Button::new("Revert").variant(ButtonVariant::Submit).on_press_tx(|editor: &mut Editor, tx| editor.submit_dialog(tx)).build(kit).key("confirm-revert")));
-            Dialog::new("confirm-revert", "Revert to Original").open(true).fit().width(420.0).child(body)
-                .on_close(|editor: &mut Editor| editor.close_dialog()).build(kit, overlays);
+            let body = col()
+                .w_full()
+                .px(16.0)
+                .pb(16.0)
+                .gap(12.0)
+                .child(
+                    text("Replace the working draft with the session baseline? You can undo it.")
+                        .font(kit.ty.ui)
+                        .color(kit.c.text_base)
+                        .wrap(),
+                )
+                .child(
+                    row()
+                        .gap(8.0)
+                        .justify_end()
+                        .child(
+                            Button::new("Cancel")
+                                .variant(ButtonVariant::Outline)
+                                .on_press(|editor: &mut Editor| editor.close_dialog())
+                                .build(kit),
+                        )
+                        .child(
+                            Button::new("Revert")
+                                .variant(ButtonVariant::Submit)
+                                .on_press_tx(|editor: &mut Editor, tx| editor.submit_dialog(tx))
+                                .build(kit)
+                                .key("confirm-revert"),
+                        ),
+                );
+            Dialog::new("confirm-revert", "Revert to Original")
+                .open(true)
+                .fit()
+                .width(420.0)
+                .child(body)
+                .on_close(|editor: &mut Editor| editor.close_dialog())
+                .build(kit, overlays);
         }
     }
 }

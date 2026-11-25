@@ -125,7 +125,10 @@ impl JudgeReport {
     }
 
     pub(crate) fn gap_count(&self) -> usize {
-        self.checks.iter().filter(|check| check.status != "ok").count()
+        self.checks
+            .iter()
+            .filter(|check| check.status != "ok")
+            .count()
     }
 }
 
@@ -344,7 +347,8 @@ impl BridgeClient {
         });
         let shared_thread = Arc::clone(&shared);
         let submitted = Arc::new(AtomicU64::new(0));
-        let join = thread::spawn(move || worker_loop(job_rx, rep_tx, wake, transport, shared_thread));
+        let join =
+            thread::spawn(move || worker_loop(job_rx, rep_tx, wake, transport, shared_thread));
         Self {
             tx: Some(job_tx),
             rx: rep_rx,
@@ -387,7 +391,9 @@ impl BridgeClient {
 
     #[cfg(test)]
     pub(crate) fn recv_timeout(&self, timeout: Duration) -> Result<BridgeReply, String> {
-        self.rx.recv_timeout(timeout).map_err(|error| error.to_string())
+        self.rx
+            .recv_timeout(timeout)
+            .map_err(|error| error.to_string())
     }
 
     pub(crate) fn shutdown(&mut self) {
@@ -518,10 +524,7 @@ fn default_command() -> Command {
     command
 }
 
-fn spawn_process(
-    launcher: &dyn Fn() -> Command,
-    shared: &Shared,
-) -> Result<LiveProcess, String> {
+fn spawn_process(launcher: &dyn Fn() -> Command, shared: &Shared) -> Result<LiveProcess, String> {
     if shared.stop.load(Ordering::Relaxed) {
         return Err("Voice bridge stopped".into());
     }
@@ -529,14 +532,8 @@ fn spawn_process(
     let mut child = command
         .spawn()
         .map_err(|error| format!("Cannot launch ghostless bridge: {error}"))?;
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or("Cannot open bridge input")?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("Cannot open bridge output")?;
+    let stdin = child.stdin.take().ok_or("Cannot open bridge input")?;
+    let stdout = child.stdout.take().ok_or("Cannot open bridge output")?;
     if let Some(stderr) = child.stderr.take() {
         thread::spawn(move || {
             let mut sink = String::new();
@@ -590,14 +587,20 @@ impl Job {
             return self.fail("Bridge response did not match the request".to_owned());
         }
         if !envelope.ok {
-            return self.fail(envelope.error.unwrap_or_else(|| "Bridge request failed".into()));
+            return self.fail(
+                envelope
+                    .error
+                    .unwrap_or_else(|| "Bridge request failed".into()),
+            );
         }
         let result = envelope.result.unwrap_or(Value::Null);
         match self.op {
             BridgeOp::JudgeText { .. } => {
                 let doc_id = self.doc_id.clone().unwrap_or(DocId::File(PathBuf::new()));
-                let report = serde_json::from_value::<JudgeReport>(result)
-                    .unwrap_or_else(|error| JudgeReport::from_error(format!("Invalid judge report: {error}")));
+                let report =
+                    serde_json::from_value::<JudgeReport>(result).unwrap_or_else(|error| {
+                        JudgeReport::from_error(format!("Invalid judge report: {error}"))
+                    });
                 BridgeReply::Judge {
                     request_id: self.id,
                     doc_id,
@@ -626,7 +629,9 @@ impl Job {
             BridgeOp::RulesDecide { .. } => BridgeReply::RulesDecide { result: Ok(result) },
             BridgeOp::ChecksList { .. } => BridgeReply::ChecksList { result: Ok(result) },
             BridgeOp::ChecksDecide { .. } => BridgeReply::ChecksDecide { result: Ok(result) },
-            BridgeOp::SaveNote { .. } => BridgeReply::SaveNote { result: parse_value(result) },
+            BridgeOp::SaveNote { .. } => BridgeReply::SaveNote {
+                result: parse_value(result),
+            },
             BridgeOp::Promote { .. } => BridgeReply::Promote { result: Ok(result) },
         }
     }
@@ -682,7 +687,9 @@ impl BridgeOp {
                 json!({"project": path(project)?, "text": text, "section": section}),
             ),
             BridgeOp::Build { project } => ("build", json!({"project": path(project)?})),
-            BridgeOp::SessionsList { project } => ("sessions_list", json!({"project": path(project)?})),
+            BridgeOp::SessionsList { project } => {
+                ("sessions_list", json!({"project": path(project)?}))
+            }
             BridgeOp::SessionStart {
                 project,
                 draft,
@@ -751,7 +758,11 @@ impl BridgeOp {
                     "text": text,
                 }),
             ),
-            BridgeOp::SaveNote { project, kind, text } => (
+            BridgeOp::SaveNote {
+                project,
+                kind,
+                text,
+            } => (
                 "save_note",
                 json!({"project": path(project)?, "kind": kind, "text": text}),
             ),
@@ -877,9 +888,17 @@ mod tests {
     fn every_bridge_op_names_its_method() {
         let project = PathBuf::from("/voice");
         let ops = vec![
-            BridgeOp::JudgeText { project: project.clone(), text: "Hi".into(), section: Some("notes".into()) },
-            BridgeOp::Build { project: project.clone() },
-            BridgeOp::SessionsList { project: project.clone() },
+            BridgeOp::JudgeText {
+                project: project.clone(),
+                text: "Hi".into(),
+                section: Some("notes".into()),
+            },
+            BridgeOp::Build {
+                project: project.clone(),
+            },
+            BridgeOp::SessionsList {
+                project: project.clone(),
+            },
             BridgeOp::SessionStart {
                 project: project.clone(),
                 draft: PathBuf::from("/draft.md"),
@@ -896,12 +915,35 @@ mod tests {
                 promote: false,
                 final_path: None,
             },
-            BridgeOp::RulesList { project: project.clone() },
-            BridgeOp::RulesDecide { project: project.clone(), action: "confirm".into(), rule_id: "cut:very".into(), section: None },
-            BridgeOp::ChecksList { project: project.clone() },
-            BridgeOp::ChecksDecide { project: project.clone(), action: "reject".into(), target: "pair".into(), section: None, text: None },
-            BridgeOp::SaveNote { project: project.clone(), kind: "style".into(), text: "Short sentences.".into() },
-            BridgeOp::Promote { project, slug: "demo".into(), demote: false },
+            BridgeOp::RulesList {
+                project: project.clone(),
+            },
+            BridgeOp::RulesDecide {
+                project: project.clone(),
+                action: "confirm".into(),
+                rule_id: "cut:very".into(),
+                section: None,
+            },
+            BridgeOp::ChecksList {
+                project: project.clone(),
+            },
+            BridgeOp::ChecksDecide {
+                project: project.clone(),
+                action: "reject".into(),
+                target: "pair".into(),
+                section: None,
+                text: None,
+            },
+            BridgeOp::SaveNote {
+                project: project.clone(),
+                kind: "style".into(),
+                text: "Short sentences.".into(),
+            },
+            BridgeOp::Promote {
+                project,
+                slug: "demo".into(),
+                demote: false,
+            },
         ];
         let methods = [
             "judge_text",
@@ -918,7 +960,13 @@ mod tests {
         ];
         for (op, method) in ops.into_iter().zip(methods) {
             let (_name, params) = op.params().unwrap();
-            let job = Job { id: 7, doc_id: None, generation: 1, section_label: String::new(), op };
+            let job = Job {
+                id: 7,
+                doc_id: None,
+                generation: 1,
+                section_label: String::new(),
+                op,
+            };
             let line = job.payload().unwrap();
             let value: Value = serde_json::from_str(&line).unwrap();
             assert_eq!(value["method"], method);
@@ -949,7 +997,9 @@ mod tests {
             .unwrap();
         let reply = client.recv_timeout(Duration::from_secs(2)).unwrap();
         match reply {
-            BridgeReply::Judge { generation, result, .. } => {
+            BridgeReply::Judge {
+                generation, result, ..
+            } => {
                 assert_eq!(generation, 3);
                 assert_eq!(result.score, 86);
                 assert_eq!(result.confidence.unwrap().written_words, 1800);
@@ -969,7 +1019,13 @@ mod tests {
             failing_command()
         });
         client
-            .request(None, 0, BridgeOp::Build { project: PathBuf::from("/voice") })
+            .request(
+                None,
+                0,
+                BridgeOp::Build {
+                    project: PathBuf::from("/voice"),
+                },
+            )
             .unwrap();
         let reply = client.recv_timeout(Duration::from_secs(2)).unwrap();
         match reply {
@@ -986,13 +1042,18 @@ mod tests {
         } else {
             command.args(["-c", "exit 1"]);
         }
-        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
         command
     }
 
     #[test]
     fn live_bridge_deserializes_sample_drafts_and_exits() {
-        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let _lock = crate::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/sample-voice");
         let root = std::env::temp_dir().join(format!("ghostless-bridge-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -1000,7 +1061,13 @@ mod tests {
         copy_dir(&fixture, &project).unwrap();
         let client = BridgeClient::spawn_process(Arc::new(Box::new(|| {})));
         client
-            .request(None, 0, BridgeOp::Build { project: project.clone() })
+            .request(
+                None,
+                0,
+                BridgeOp::Build {
+                    project: project.clone(),
+                },
+            )
             .unwrap();
         match client.recv_timeout(Duration::from_secs(30)).unwrap() {
             BridgeReply::Build { result, .. } => {
@@ -1015,7 +1082,11 @@ mod tests {
                 .request(
                     Some(DocId::File(project.join("drafts").join(name))),
                     1,
-                    BridgeOp::JudgeText { project: project.clone(), text, section: None },
+                    BridgeOp::JudgeText {
+                        project: project.clone(),
+                        text,
+                        section: None,
+                    },
                 )
                 .unwrap();
             match client.recv_timeout(Duration::from_secs(30)).unwrap() {

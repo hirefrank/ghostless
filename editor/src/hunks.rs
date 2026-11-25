@@ -54,7 +54,12 @@ enum Op {
     Insert,
 }
 
-fn lcs_ops(before_text: &str, after_text: &str, before: &[(usize, usize)], after: &[(usize, usize)]) -> Vec<Op> {
+fn lcs_ops(
+    before_text: &str,
+    after_text: &str,
+    before: &[(usize, usize)],
+    after: &[(usize, usize)],
+) -> Vec<Op> {
     let n = before.len();
     let m = after.len();
     let mut scores = vec![0u32; (n + 1) * (m + 1)];
@@ -94,7 +99,12 @@ fn lcs_ops(before_text: &str, after_text: &str, before: &[(usize, usize)], after
     ops
 }
 
-fn coarse_ops(before_text: &str, after_text: &str, before: &[(usize, usize)], after: &[(usize, usize)]) -> Vec<Op> {
+fn coarse_ops(
+    before_text: &str,
+    after_text: &str,
+    before: &[(usize, usize)],
+    after: &[(usize, usize)],
+) -> Vec<Op> {
     let shared = before.len().min(after.len());
     let mut ops = Vec::new();
     let mut prefix = 0;
@@ -103,7 +113,16 @@ fn coarse_ops(before_text: &str, after_text: &str, before: &[(usize, usize)], af
         prefix += 1;
     }
     let mut suffix = 0;
-    while suffix < shared - prefix && line_eq(before_text, after_text, before, after, before.len() - 1 - suffix, after.len() - 1 - suffix) {
+    while suffix < shared - prefix
+        && line_eq(
+            before_text,
+            after_text,
+            before,
+            after,
+            before.len() - 1 - suffix,
+            after.len() - 1 - suffix,
+        )
+    {
         suffix += 1;
     }
     for _ in prefix..(before.len() - suffix) {
@@ -159,7 +178,10 @@ fn group_hunks(
         let before_bytes = span(before_lines, before_start, before_index, before_text.len());
         let after_bytes = span(after_lines, after_start, after_index, after_text.len());
         if before_text.get(before_bytes.clone()) != after_text.get(after_bytes.clone()) {
-            hunks.push(TextHunk { before_bytes, after_bytes });
+            hunks.push(TextHunk {
+                before_bytes,
+                after_bytes,
+            });
         }
     }
     hunks
@@ -186,7 +208,10 @@ mod tests {
         let hunks = diff_hunks(before, after);
         assert_eq!(hunks.len(), 3, "{hunks:?}");
         let reverted = revert_hunk_text(before, after, 1).unwrap();
-        assert_eq!(reverted, "Alpha changed.\n\nMiddle paragraph.\n\nOmega changed.\n");
+        assert_eq!(
+            reverted,
+            "Alpha changed.\n\nMiddle paragraph.\n\nOmega changed.\n"
+        );
         assert_eq!(diff_hunks(before, &reverted).len(), 2);
     }
 

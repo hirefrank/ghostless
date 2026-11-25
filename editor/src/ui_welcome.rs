@@ -1,19 +1,37 @@
-use rune::{col, row, text, Cx, El, FileDialogOptions, Tx};
-use rune_kit::{Button, ButtonVariant, Kit};
 use crate::state::Editor;
+use rune::{Cx, El, FileDialogOptions, Tx, col, row, text};
+use rune_kit::{Button, ButtonVariant, Kit};
 
 pub(crate) fn open_folder(tx: &mut Tx) {
-    tx.open_folder(FileDialogOptions { title: "Open Folder".into(), ..Default::default() }, |editor: &mut Editor, result, _| {
-        match result { Ok(Some(path)) => editor.open_workspace(path, None), Ok(None) => (), Err(error) => editor.status = error.to_string() }
-    });
+    tx.open_folder(
+        FileDialogOptions {
+            title: "Open Folder".into(),
+            ..Default::default()
+        },
+        |editor: &mut Editor, result, _| match result {
+            Ok(Some(path)) => editor.open_workspace(path, None),
+            Ok(None) => (),
+            Err(error) => editor.status = error.to_string(),
+        },
+    );
 }
 pub(crate) fn open_file(tx: &mut Tx) {
-    tx.open_file(FileDialogOptions { title: "Open File".into(), ..Default::default() }.filter("Writing", &["md", "markdown", "txt"]), |editor: &mut Editor, result, _| {
-        match result {
-            Ok(Some(path)) => { if let Some(parent) = path.parent() { editor.open_workspace(parent.to_path_buf(), Some(path)); } },
-            Ok(None) => (), Err(error) => editor.status = error.to_string(),
+    tx.open_file(
+        FileDialogOptions {
+            title: "Open File".into(),
+            ..Default::default()
         }
-    });
+        .filter("Writing", &["md", "markdown", "txt"]),
+        |editor: &mut Editor, result, _| match result {
+            Ok(Some(path)) => {
+                if let Some(parent) = path.parent() {
+                    editor.open_workspace(parent.to_path_buf(), Some(path));
+                }
+            }
+            Ok(None) => (),
+            Err(error) => editor.status = error.to_string(),
+        },
+    );
 }
 pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
     let kit = Kit::neutral(cx.system_dark());
@@ -26,8 +44,16 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
         .max_w(520.0)
         .gap(14.0)
         .padding(24.0)
-        .child(text("ghostless").font(kit.ty.ui_medium).color(kit.c.text_base))
-        .child(text("Calm writing & voice review studio").font(kit.ty.body).color(kit.c.text_muted));
+        .child(
+            text("ghostless")
+                .font(kit.ty.ui_medium)
+                .color(kit.c.text_base),
+        )
+        .child(
+            text("Calm writing & voice review studio")
+                .font(kit.ty.body)
+                .color(kit.c.text_muted),
+        );
     card = card.child(
         row()
             .gap(8.0)
@@ -52,7 +78,11 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
         .cloned()
         .collect();
     if !recents.is_empty() {
-        card = card.child(text("Recent Workspaces").font(kit.ty.ui_medium).color(kit.c.text_muted));
+        card = card.child(
+            text("Recent Workspaces")
+                .font(kit.ty.ui_medium)
+                .color(kit.c.text_muted),
+        );
         for path in recents {
             card = card.child(
                 Button::new(path.display().to_string())
@@ -63,5 +93,11 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
         }
     }
     card = card.child(text(voice).font(kit.ty.ui).color(kit.c.text_muted));
-    col().w_full().h_full().items_center().justify_center().fill(kit.c.bg_base).child(card)
+    col()
+        .w_full()
+        .h_full()
+        .items_center()
+        .justify_center()
+        .fill(kit.c.bg_base)
+        .child(card)
 }

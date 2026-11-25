@@ -43,7 +43,9 @@ pub(crate) fn build(editor: &Editor, cx: &Cx<Editor>, kit: &Kit, overlays: &mut 
                 .grow(1.0)
                 .w_full()
                 .min_h(0.0)
-                .scroll(ScrollSpec { stick_bottom: false })
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
                 .gap(8.0)
                 .child(body),
         )
@@ -92,7 +94,10 @@ fn section_select(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
             }
         }
     }
-    let current = editor.active_doc_ref().map(section_for_document).unwrap_or_else(|| "all".into());
+    let current = editor
+        .active_doc_ref()
+        .map(section_for_document)
+        .unwrap_or_else(|| "all".into());
     if !options.iter().any(|option| option == &current) {
         options.push(current.clone());
     }
@@ -146,18 +151,36 @@ fn report_body(editor: &Editor, report: &JudgeReport, kit: &Kit) -> El {
                 .padding(8.0)
                 .radius(6.0)
                 .fill(kit.c.warning.bg)
-                .child(text("Voice guide is stale. Rebuild before trusting this score.").font(kit.ty.small).color(kit.c.text_base).wrap())
+                .child(
+                    text("Voice guide is stale. Rebuild before trusting this score.")
+                        .font(kit.ty.small)
+                        .color(kit.c.text_base)
+                        .wrap(),
+                )
                 .child(build_button(kit)),
         );
     }
     if let Some(error) = &report.error {
-        column = column.child(text(error.clone()).font(kit.ty.small).color(kit.c.danger.fg).wrap());
+        column = column.child(
+            text(error.clone())
+                .font(kit.ty.small)
+                .color(kit.c.danger.fg)
+                .wrap(),
+        );
     }
     for check in &report.checks {
         column = column.child(range_bar(check, kit));
     }
     column = column.child(placeholder_list(editor, kit));
-    column = column.child(word_list("Banned tells", &report.banned.iter().map(|hit| hit.tell.clone()).collect::<Vec<_>>(), kit));
+    column = column.child(word_list(
+        "Banned tells",
+        &report
+            .banned
+            .iter()
+            .map(|hit| hit.tell.clone())
+            .collect::<Vec<_>>(),
+        kit,
+    ));
     let rules = report
         .confirmed_rules
         .iter()
@@ -186,9 +209,21 @@ fn range_bar(check: &crate::bridge::JudgeCheckMetric, kit: &Kit) -> El {
     let band_w = (x(band_hi) - band_x).max(2.0);
     let dot_x = (x(check.actual) - 4.0).clamp(0.0, 212.0);
     let ok = check.status == "ok";
-    let band = if ok { kit.c.success.fg } else { kit.c.warning.fg };
-    let dot = if ok { kit.c.success.fg } else { kit.c.danger.fg };
-    let actual = if check.actual.is_finite() { format!("{:.1}", check.actual) } else { "—".into() };
+    let band = if ok {
+        kit.c.success.fg
+    } else {
+        kit.c.warning.fg
+    };
+    let dot = if ok {
+        kit.c.success.fg
+    } else {
+        kit.c.danger.fg
+    };
+    let actual = if check.actual.is_finite() {
+        format!("{:.1}", check.actual)
+    } else {
+        "—".into()
+    };
     col()
         .gap(4.0)
         .w_full()
@@ -196,22 +231,48 @@ fn range_bar(check: &crate::bridge::JudgeCheckMetric, kit: &Kit) -> El {
             row()
                 .w_full()
                 .center_y()
-                .child(text(check.label.clone()).font(kit.ty.small).color(kit.c.text_base).grow(1.0).shrink())
+                .child(
+                    text(check.label.clone())
+                        .font(kit.ty.small)
+                        .color(kit.c.text_base)
+                        .grow(1.0)
+                        .shrink(),
+                )
                 .child(text(actual).font(kit.ty.small).color(kit.c.text_muted)),
         )
         .child(
-            el()
-                .w(220.0)
+            el().w(220.0)
                 .h(10.0)
-                .child(el().absolute(0.0, 2.0).w(220.0).h(6.0).radius(3.0).fill(kit.c.border_muted))
-                .child(el().absolute(band_x, 2.0).w(band_w).h(6.0).radius(3.0).fill(band))
-                .child(el().absolute(dot_x, 1.0).size(8.0, 8.0).radius(4.0).fill(dot)),
+                .child(
+                    el().absolute(0.0, 2.0)
+                        .w(220.0)
+                        .h(6.0)
+                        .radius(3.0)
+                        .fill(kit.c.border_muted),
+                )
+                .child(
+                    el().absolute(band_x, 2.0)
+                        .w(band_w)
+                        .h(6.0)
+                        .radius(3.0)
+                        .fill(band),
+                )
+                .child(
+                    el().absolute(dot_x, 1.0)
+                        .size(8.0, 8.0)
+                        .radius(4.0)
+                        .fill(dot),
+                ),
         )
 }
 
 fn placeholder_list(editor: &Editor, kit: &Kit) -> El {
-    let text = editor.active_doc_ref().map(|doc| doc.edit.text.clone()).unwrap_or_default();
-    let ranges = markdown_decor::find_placeholder_ranges(&text, editor.placeholder_token.as_deref());
+    let text = editor
+        .active_doc_ref()
+        .map(|doc| doc.edit.text.clone())
+        .unwrap_or_default();
+    let ranges =
+        markdown_decor::find_placeholder_ranges(&text, editor.placeholder_token.as_deref());
     let mut column = col().gap(4.0).child(quiet("Placeholders", kit));
     if ranges.is_empty() {
         return column.child(quiet("None in this draft.", kit));
@@ -267,7 +328,11 @@ fn structure_list(report: &JudgeReport, kit: &Kit) -> El {
             continue;
         }
         let excerpt = hit.excerpt.clone();
-        let label = if excerpt.is_empty() { hit.kind.clone() } else { excerpt.clone() };
+        let label = if excerpt.is_empty() {
+            hit.kind.clone()
+        } else {
+            excerpt.clone()
+        };
         column = column.child(
             Button::new(label)
                 .variant(ButtonVariant::Ghost)
@@ -288,13 +353,19 @@ fn live_checks(report: &JudgeReport, kit: &Kit) -> El {
     for (index, check) in report.confirmed_checks.iter().cloned().enumerate() {
         let mark = if check.pass { "pass" } else { "fail" };
         let label = format!("{mark} · {}", check.text);
-        let query = if check.span.is_empty() { check.text.clone() } else { check.span.clone() };
+        let query = if check.span.is_empty() {
+            check.text.clone()
+        } else {
+            check.span.clone()
+        };
         let detail = check.text.clone();
         column = column.child(
             Button::new(label)
                 .variant(ButtonVariant::Ghost)
                 .control_size(ControlSize::Small)
-                .on_press_tx(move |editor: &mut Editor, tx| editor.show_live_check(&query, &detail, tx))
+                .on_press_tx(move |editor: &mut Editor, tx| {
+                    editor.show_live_check(&query, &detail, tx)
+                })
                 .build(kit)
                 .key(format!("jump-check-{index}")),
         );
@@ -304,7 +375,10 @@ fn live_checks(report: &JudgeReport, kit: &Kit) -> El {
 
 fn notes_tab(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
     let mut column = col().key("inspector-notes").gap(8.0).w_full();
-    if editor.active_doc_ref().is_some_and(|doc| doc.notes.is_some()) {
+    if editor
+        .active_doc_ref()
+        .is_some_and(|doc| doc.notes.is_some())
+    {
         let max_h = cx
             .layout_size("inspector-notes")
             .map(|size| (size[1] - 64.0).max(120.0))
@@ -365,7 +439,12 @@ fn note_file(editor: &Editor, name: &'static str, kit: &Kit) -> El {
         }
         None => {
             column = column
-                .child(text(format!("{name} is not in this voice project yet.")).font(kit.ty.small).color(kit.c.text_faint).wrap())
+                .child(
+                    text(format!("{name} is not in this voice project yet."))
+                        .font(kit.ty.small)
+                        .color(kit.c.text_faint)
+                        .wrap(),
+                )
                 .child(edit_note_button(name, kit));
         }
     }
@@ -373,7 +452,10 @@ fn note_file(editor: &Editor, name: &'static str, kit: &Kit) -> El {
 }
 
 fn outline_tab(editor: &Editor, kit: &Kit) -> El {
-    let text = editor.active_doc_ref().map(|doc| doc.edit.text.clone()).unwrap_or_default();
+    let text = editor
+        .active_doc_ref()
+        .map(|doc| doc.edit.text.clone())
+        .unwrap_or_default();
     let headings = markdown_decor::extract_headings(&text);
     let mut column = col().gap(4.0).child(quiet("Document outline", kit));
     if headings.is_empty() {
@@ -422,7 +504,9 @@ fn edit_note_button(name: &'static str, kit: &Kit) -> El {
 }
 
 fn quiet(label: &str, kit: &Kit) -> El {
-    text(label).font(kit.ty.text_xsmall_medium).color(kit.c.text_muted)
+    text(label)
+        .font(kit.ty.text_xsmall_medium)
+        .color(kit.c.text_muted)
 }
 
 fn read_voice_note(editor: &Editor, name: &str) -> Option<String> {
@@ -435,5 +519,6 @@ fn read_voice_note(editor: &Editor, name: &str) -> Option<String> {
 }
 
 fn note_is_writable(voice: &Path, path: &Path) -> bool {
-    crate::fs_io::is_contained_in(voice, path) && !crate::workspace_tree::is_protected_voice_path(path)
+    crate::fs_io::is_contained_in(voice, path)
+        && !crate::workspace_tree::is_protected_voice_path(path)
 }

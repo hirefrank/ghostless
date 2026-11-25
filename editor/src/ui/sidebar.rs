@@ -1,10 +1,10 @@
+use crate::{state::Editor, workspace_tree::SessionStatus};
 use rune::{El, Icon, ScrollSpec, col, el, row, text};
 use rune_kit::{
     Button, ButtonVariant, Divider, FileNode, IconButton, IconButtonVariant, Kit, Menu, MenuItem,
     Tree, TreeItem, glyphs,
     shell::{RowStatus, SidebarHeader, SidebarRow, SidebarSection},
 };
-use crate::{state::Editor, workspace_tree::SessionStatus};
 
 static ICON_PLUS: Icon = Icon {
     name: "ghostless-plus",
@@ -75,12 +75,16 @@ pub(crate) fn build(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
                 .build(kit),
         )
         .child(
-            Button::new(if editor.store.ui.show_all_files { "All" } else { "Writing" })
-                .variant(ButtonVariant::GhostMuted)
-                .disabled(!has_ws)
-                .help("Toggle writing filter vs all workspace files")
-                .on_press(|e: &mut Editor| e.toggle_show_all_files())
-                .build(kit),
+            Button::new(if editor.store.ui.show_all_files {
+                "All"
+            } else {
+                "Writing"
+            })
+            .variant(ButtonVariant::GhostMuted)
+            .disabled(!has_ws)
+            .help("Toggle writing filter vs all workspace files")
+            .on_press(|e: &mut Editor| e.toggle_show_all_files())
+            .build(kit),
         );
 
     let mut root = col()
@@ -114,17 +118,19 @@ pub(crate) fn build(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
                         e.open_new_file_dialog();
                     }),
             )
-            .item(
-                MenuItem::new("New Folder…").on_select(|e: &mut Editor| {
-                    e.file_menu_open = false;
-                    e.open_new_folder_dialog();
-                }),
-            )
-            .separator()
-            .item(MenuItem::new("Pin to Reference Split").disabled(!is_file).on_select(|e: &mut Editor| {
+            .item(MenuItem::new("New Folder…").on_select(|e: &mut Editor| {
                 e.file_menu_open = false;
-                e.pin_selected_reference();
+                e.open_new_folder_dialog();
             }))
+            .separator()
+            .item(
+                MenuItem::new("Pin to Reference Split")
+                    .disabled(!is_file)
+                    .on_select(|e: &mut Editor| {
+                        e.file_menu_open = false;
+                        e.pin_selected_reference();
+                    }),
+            )
             .item(
                 MenuItem::new("Rename…")
                     .disabled(!can_mutate)
@@ -218,7 +224,9 @@ pub(crate) fn build(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
                 .subtitle(summary.id.clone())
                 .status(status)
                 .selected(selected)
-                .on_select(move |e: &mut Editor, _| e.open_session_entry(project.clone(), id.clone()))
+                .on_select(move |e: &mut Editor, _| {
+                    e.open_session_entry(project.clone(), id.clone())
+                })
                 .build(kit)
                 .key(format!("session-{}", summary.id));
             sessions_sec = sessions_sec.row(row_el);
@@ -226,11 +234,11 @@ pub(crate) fn build(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
 
         if editor.sessions.is_empty() && !editor.sessions_collapsed {
             sessions_sec = sessions_sec.row(
-                row()
-                    .key("sessions-empty")
-                    .px(8.0)
-                    .py(4.0)
-                    .child(text("No sessions yet").font(kit.ty.small).color(kit.c.text_faint)),
+                row().key("sessions-empty").px(8.0).py(4.0).child(
+                    text("No sessions yet")
+                        .font(kit.ty.small)
+                        .color(kit.c.text_faint),
+                ),
             );
         }
 
@@ -239,7 +247,9 @@ pub(crate) fn build(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
                 .key("sessions-scroll")
                 .w_full()
                 .max_h(190.0)
-                .scroll(ScrollSpec { stick_bottom: false })
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
                 .child(sessions_sec.build(kit)),
         );
 

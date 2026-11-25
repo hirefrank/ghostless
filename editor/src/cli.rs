@@ -1,5 +1,10 @@
-use std::{env, io::Write, path::{Path, PathBuf}, process::{Command, Stdio}};
 use serde_json::Value;
+use std::{
+    env,
+    io::Write,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+};
 
 pub(crate) fn cli_command() -> Command {
     if let Some(path) = env::var_os("GHOSTLESS_CLI") {
@@ -41,7 +46,8 @@ pub(crate) fn python_module_command(root: &std::path::Path) -> Command {
 
 pub(crate) fn run_cli(args: &[&str], input: Option<&str>) -> Result<String, String> {
     let mut command = cli_command();
-    command.args(args)
+    command
+        .args(args)
         .env("GHOSTLESS_NO_UPDATE", "1")
         // Keep the CLI on UTF-8 stdin/stdout on every OS (Windows defaults to
         // the locale, which would double-encode non-ASCII working text).
@@ -50,12 +56,20 @@ pub(crate) fn run_cli(args: &[&str], input: Option<&str>) -> Result<String, Stri
         command.stdin(Stdio::piped());
     }
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|error| format!("Cannot launch ghostless CLI: {error}"))?;
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Cannot launch ghostless CLI: {error}"))?;
     if let Some(value) = input {
-        child.stdin.take().ok_or("Cannot open CLI input")?
-            .write_all(value.as_bytes()).map_err(|error| error.to_string())?;
+        child
+            .stdin
+            .take()
+            .ok_or("Cannot open CLI input")?
+            .write_all(value.as_bytes())
+            .map_err(|error| error.to_string())?;
     }
-    let output = child.wait_with_output().map_err(|error| error.to_string())?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| error.to_string())?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
     }
@@ -67,18 +81,29 @@ pub(crate) fn resolve_project(explicit: Option<PathBuf>) -> Result<PathBuf, Stri
         return require_project(&path);
     }
     let output = run_cli(&["which"], None)?;
-    let reported = output.lines().find_map(|line| line.strip_prefix("project="));
+    let reported = output
+        .lines()
+        .find_map(|line| line.strip_prefix("project="));
     match reported.map(str::trim) {
-        Some(value) if !value.is_empty() && value != "none" => require_project(&PathBuf::from(value)),
-        _ => Err("Pass --project DIR, or run `ghostless init` in the folder where your writing lives.".into()),
+        Some(value) if !value.is_empty() && value != "none" => {
+            require_project(&PathBuf::from(value))
+        }
+        _ => Err(
+            "Pass --project DIR, or run `ghostless init` in the folder where your writing lives."
+                .into(),
+        ),
     }
 }
 
 pub(crate) fn discover_voice_project(workspace: &Path, explicit: Option<&Path>) -> Option<PathBuf> {
-    if let Some(path) = explicit { return require_project(path).ok(); }
+    if let Some(path) = explicit {
+        return require_project(path).ok();
+    }
     for ancestor in workspace.ancestors() {
         for candidate in [ancestor.to_path_buf(), ancestor.join("voice")] {
-            if manifest_is_ghostless(&candidate) { return candidate.canonicalize().ok(); }
+            if manifest_is_ghostless(&candidate) {
+                return candidate.canonicalize().ok();
+            }
         }
     }
     None
@@ -98,7 +123,10 @@ pub(crate) fn require_project(path: &std::path::Path) -> Result<PathBuf, String>
         ));
     }
     path.canonicalize().map_err(|error| {
-        format!("Project directory does not exist: {} ({error})", path.display())
+        format!(
+            "Project directory does not exist: {} ({error})",
+            path.display()
+        )
     })
 }
 
@@ -106,15 +134,19 @@ pub(crate) fn require_draft(path: &std::path::Path) -> Result<PathBuf, String> {
     if !path.is_file() {
         return Err(format!("Draft does not exist: {}", path.display()));
     }
-    path.canonicalize().map_err(|error| format!("Draft does not exist: {} ({error})", path.display()))
+    path.canonicalize()
+        .map_err(|error| format!("Draft does not exist: {} ({error})", path.display()))
 }
 
 pub(crate) fn manifest_is_ghostless(dir: &std::path::Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(dir.join("manifest.json")) else { return false };
-    let Ok(value) = serde_json::from_str::<Value>(&text) else { return false };
+    let Ok(text) = std::fs::read_to_string(dir.join("manifest.json")) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
     value.get("kind").and_then(Value::as_str) == Some("ghostless")
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -160,7 +192,8 @@ mod tests {
     }
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ghostless-editor-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("ghostless-editor-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -175,7 +208,10 @@ mod tests {
         let missing = scratch("missing-project");
         std::fs::remove_dir_all(&missing).unwrap();
         let error = require_project(&missing).unwrap_err();
-        assert!(error.contains("Project directory does not exist"), "{error}");
+        assert!(
+            error.contains("Project directory does not exist"),
+            "{error}"
+        );
         assert!(error.contains(&missing.display().to_string()), "{error}");
         assert!(error.contains("ghostless init"), "{error}");
 
@@ -218,7 +254,11 @@ mod tests {
         assert_eq!(via_env, canonical);
 
         let payload = serde_json::json!({"defaultProject": canonical});
-        std::fs::write(data.join("config.json"), serde_json::to_string(&payload).unwrap()).unwrap();
+        std::fs::write(
+            data.join("config.json"),
+            serde_json::to_string(&payload).unwrap(),
+        )
+        .unwrap();
         let via_default = resolve_project(None).expect("defaultProject");
         assert_eq!(via_default, canonical);
     }

@@ -1,3 +1,11 @@
+use crate::{
+    documents::DocId,
+    fs_io,
+    quick_open::{FolderMatch, search_workspace_files},
+    session::valid_session_id,
+    workspace_tree::{self, WorkspaceEntry},
+};
+use serde_json::Value;
 use std::{
     collections::HashMap,
     fs,
@@ -8,13 +16,6 @@ use std::{
         mpsc,
     },
     thread,
-};
-use serde_json::Value;
-use crate::{
-    documents::DocId, fs_io,
-    quick_open::{FolderMatch, search_workspace_files},
-    session::valid_session_id,
-    workspace_tree::{self, WorkspaceEntry},
 };
 
 pub(crate) type CliFn = dyn Fn(&[&str], Option<&str>) -> Result<String, String> + Send;
@@ -143,9 +144,12 @@ struct SearchMailbox {
 
 impl SearchMailbox {
     fn receive(&self) -> Option<SearchRequest> {
-        let mut queue = self.ready.wait_while(self.queue.lock().unwrap(), |queue| {
-            queue.pending.is_none() && !queue.closed
-        }).unwrap();
+        let mut queue = self
+            .ready
+            .wait_while(self.queue.lock().unwrap(), |queue| {
+                queue.pending.is_none() && !queue.closed
+            })
+            .unwrap();
         queue.pending.take()
     }
 }
@@ -158,7 +162,13 @@ pub(crate) struct SearchWorker {
 impl SearchWorker {
     fn spawn(wake: Arc<WakeFn>) -> Self {
         Self::spawn_with_search(wake, |request, cancelled| {
-            search_workspace_files(&request.files, &request.buffers, &request.query, 200, cancelled)
+            search_workspace_files(
+                &request.files,
+                &request.buffers,
+                &request.query,
+                200,
+                cancelled,
+            )
         })
     }
 
@@ -176,7 +186,14 @@ impl SearchWorker {
                     continue;
                 }
                 let matches = search(&request, &cancelled);
-                if !cancelled() && replies.send(SearchReply { id: request.id, matches }).is_ok() {
+                if !cancelled()
+                    && replies
+                        .send(SearchReply {
+                            id: request.id,
+                            matches,
+                        })
+                        .is_ok()
+                {
                     wake();
                 }
             }
@@ -194,8 +211,17 @@ impl SearchWorker {
         if queue.closed {
             return Err("Workspace search is unavailable".into());
         }
-        let id = self.mailbox.generation.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-        queue.pending = Some(SearchRequest { id, files, buffers, query });
+        let id = self
+            .mailbox
+            .generation
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        queue.pending = Some(SearchRequest {
+            id,
+            files,
+            buffers,
+            query,
+        });
         self.mailbox.ready.notify_one();
         Ok(id)
     }
@@ -448,7 +474,10 @@ pub(crate) fn write_session_direct(
     }
     let folder = project.join("sessions").join(session_id);
     if !folder.join("session.json").is_file() {
-        return Err(format!("Session {session_id} not found in {}.", project.display()));
+        return Err(format!(
+            "Session {session_id} not found in {}.",
+            project.display()
+        ));
     }
     if folder.join("receipt.json").exists() {
         return Err("This session is already finished. Start a new session to edit again.".into());
@@ -462,13 +491,24 @@ pub(crate) fn write_session_direct(
     let expected_sha = meta
         .get("beforeSha256")
         .and_then(Value::as_str)
-        .ok_or_else(|| format!("Session metadata missing beforeSha256 in {}", folder.display()))?;
+        .ok_or_else(|| {
+            format!(
+                "Session metadata missing beforeSha256 in {}",
+                folder.display()
+            )
+        })?;
     if cached_before_sha256.is_some_and(|cached| cached != expected_sha) {
-        return Err(format!("The immutable baseline metadata changed in {}.", folder.display()));
+        return Err(format!(
+            "The immutable baseline metadata changed in {}.",
+            folder.display()
+        ));
     }
     let before = fs_io::read_utf8(&folder.join("before.md"))?;
     if fs_io::sha256_text(&before) != expected_sha {
-        return Err(format!("The immutable baseline has changed in {}.", folder.display()));
+        return Err(format!(
+            "The immutable baseline has changed in {}.",
+            folder.display()
+        ));
     }
     let after_path = folder.join("after.md");
     fs_io::atomic_write_text(&after_path, after)?;
@@ -488,30 +528,49 @@ pub(crate) fn clear_recovery_copy(path: &Path) -> Result<(), String> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("Cannot remove recovery copy {}: {error}", path.display())),
+        Err(error) => Err(format!(
+            "Cannot remove recovery copy {}: {error}",
+            path.display()
+        )),
     }
 }
 
-fn write_mirror(path: &Path, expected_sha256: Option<&str>, after: &str, force: bool) -> Result<(), String> {
-    if !path.is_absolute() || path.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
+fn write_mirror(
+    path: &Path,
+    expected_sha256: Option<&str>,
+    after: &str,
+    force: bool,
+) -> Result<(), String> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
         return Err("Linked path is outside the workspace".into());
     }
     if !force {
-        let expected = expected_sha256.filter(|hash| !hash.is_empty())
+        let expected = expected_sha256
+            .filter(|hash| !hash.is_empty())
             .ok_or("Linked draft has no known sync state")?;
         let current = fs_io::read_utf8(path)?;
         if fs_io::sha256_text(&current) != expected {
             return Err("Linked draft changed outside the editor".into());
         }
     } else if path.exists() && workspace_tree::is_protected_voice_path(path) {
-        return Err(format!("Protected voice data is read-only: {}", path.display()));
+        return Err(format!(
+            "Protected voice data is read-only: {}",
+            path.display()
+        ));
     }
     write_workspace_file(path, after)
 }
 
 fn write_workspace_file(path: &Path, content: &str) -> Result<(), String> {
     if workspace_tree::is_protected_voice_path(path) {
-        return Err(format!("Protected voice data is read-only: {}", path.display()));
+        return Err(format!(
+            "Protected voice data is read-only: {}",
+            path.display()
+        ));
     }
     fs_io::atomic_write_text(path, content)
 }
@@ -519,7 +578,14 @@ fn write_workspace_file(path: &Path, content: &str) -> Result<(), String> {
 pub(crate) fn run_finish(project: &Path, session_id: &str, runner: &CliFn) -> Result<(), String> {
     let project = project.to_str().ok_or("Project path is not UTF-8")?;
     runner(
-        &["finish", "--session", session_id, "--project", project, "--json"],
+        &[
+            "finish",
+            "--session",
+            session_id,
+            "--project",
+            project,
+            "--json",
+        ],
         None,
     )?;
     Ok(())
@@ -554,47 +620,77 @@ mod tests {
                 Vec::new()
             },
         );
-        worker.search.submit(Vec::new(), HashMap::new(), "old".into()).unwrap();
+        worker
+            .search
+            .submit(Vec::new(), HashMap::new(), "old".into())
+            .unwrap();
         assert_eq!(searches.recv_timeout(wait).unwrap(), "old");
-        worker.search.submit(Vec::new(), HashMap::new(), "skipped".into()).unwrap();
-        let latest = worker.search.submit(Vec::new(), HashMap::new(), "latest".into()).unwrap();
+        worker
+            .search
+            .submit(Vec::new(), HashMap::new(), "skipped".into())
+            .unwrap();
+        let latest = worker
+            .search
+            .submit(Vec::new(), HashMap::new(), "latest".into())
+            .unwrap();
 
         let path = PathBuf::from("worker-search-test.md");
         let doc_id = DocId::File(path.clone());
-        worker.send(WorkerRequest::WriteFile {
-            doc_id: doc_id.clone(),
-            generation: 1,
-            path,
-            content: "draft".into(),
-            clear_recovery: None,
-        }).unwrap();
-        worker.send(WorkerRequest::Finish {
-            doc_id,
-            generation: 1,
-            project: std::env::temp_dir(),
-            session_id: "session".into(),
-            before_sha256: None,
-            snapshot: None,
-            mirror_path: None,
-            mirror_expected_sha256: None,
-        }).unwrap();
+        worker
+            .send(WorkerRequest::WriteFile {
+                doc_id: doc_id.clone(),
+                generation: 1,
+                path,
+                content: "draft".into(),
+                clear_recovery: None,
+            })
+            .unwrap();
+        worker
+            .send(WorkerRequest::Finish {
+                doc_id,
+                generation: 1,
+                project: std::env::temp_dir(),
+                session_id: "session".into(),
+                before_sha256: None,
+                snapshot: None,
+                mirror_path: None,
+                mirror_expected_sha256: None,
+            })
+            .unwrap();
         let save = worker.rx.recv_timeout(wait);
         let finish = worker.rx.recv_timeout(wait);
         release.send(()).unwrap();
 
-        assert!(matches!(save, Ok(WorkerReply::Saved { result: Ok(WriteOutcome::Local), .. })));
-        assert!(matches!(finish, Ok(WorkerReply::Finished { result: Ok(()), .. })));
+        assert!(matches!(
+            save,
+            Ok(WorkerReply::Saved {
+                result: Ok(WriteOutcome::Local),
+                ..
+            })
+        ));
+        assert!(matches!(
+            finish,
+            Ok(WorkerReply::Finished { result: Ok(()), .. })
+        ));
         assert_eq!(searches.recv_timeout(wait).unwrap(), "latest");
         assert_eq!(worker.search.rx.recv_timeout(wait).unwrap().id, latest);
 
         // The same worker can go idle after delivering a reply and accept more work.
         for _ in 0..32 {
             worker.search.cancel();
-            let id = worker.search.submit(Vec::new(), HashMap::new(), "again".into()).unwrap();
+            let id = worker
+                .search
+                .submit(Vec::new(), HashMap::new(), "again".into())
+                .unwrap();
             assert_eq!(worker.search.rx.recv_timeout(wait).unwrap().id, id);
         }
         worker.shutdown();
-        assert!(worker.search.submit(Vec::new(), HashMap::new(), "closed".into()).is_err());
+        assert!(
+            worker
+                .search
+                .submit(Vec::new(), HashMap::new(), "closed".into())
+                .is_err()
+        );
     }
 
     #[test]
@@ -633,38 +729,80 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Revised prose.\n");
-        assert_eq!(fs_io::read_utf8(&session_dir.join("notes.md")).unwrap(), "Tightened lead.");
+        assert_eq!(
+            fs_io::read_utf8(&session_dir.join("after.md")).unwrap(),
+            "Revised prose.\n"
+        );
+        assert_eq!(
+            fs_io::read_utf8(&session_dir.join("notes.md")).unwrap(),
+            "Tightened lead."
+        );
         assert_eq!(fs_io::read_utf8(&mirror).unwrap(), "Revised prose.\n");
 
         fs_io::atomic_write_text(&mirror, "external edit").unwrap();
         let outcome = write_session_direct(
-            &base, session_id, Some(&before_sha), "Local edits", "Local notes",
-            Some(&mirror), Some(&fs_io::sha256_text("Revised prose.\n")),
+            &base,
+            session_id,
+            Some(&before_sha),
+            "Local edits",
+            "Local notes",
+            Some(&mirror),
+            Some(&fs_io::sha256_text("Revised prose.\n")),
             false,
-        ).unwrap();
-        assert!(matches!(outcome, WriteOutcome::MirrorSkipped(error) if error.contains("changed outside")));
+        )
+        .unwrap();
+        assert!(
+            matches!(outcome, WriteOutcome::MirrorSkipped(error) if error.contains("changed outside"))
+        );
         assert_eq!(fs_io::read_utf8(&mirror).unwrap(), "external edit");
-        assert_eq!(fs_io::read_utf8(&session_dir.join("before.md")).unwrap(), before);
+        assert_eq!(
+            fs_io::read_utf8(&session_dir.join("before.md")).unwrap(),
+            before
+        );
         let forced = write_session_direct(
-            &base, session_id, Some(&before_sha), "Kept session.\n", "Kept notes",
-            Some(&mirror), Some(&before_sha), true,
-        ).unwrap();
+            &base,
+            session_id,
+            Some(&before_sha),
+            "Kept session.\n",
+            "Kept notes",
+            Some(&mirror),
+            Some(&before_sha),
+            true,
+        )
+        .unwrap();
         assert!(matches!(forced, WriteOutcome::Mirrored));
         assert_eq!(fs_io::read_utf8(&mirror).unwrap(), "Kept session.\n");
-        assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Kept session.\n");
-        assert_eq!(fs_io::read_utf8(&session_dir.join("before.md")).unwrap(), before);
+        assert_eq!(
+            fs_io::read_utf8(&session_dir.join("after.md")).unwrap(),
+            "Kept session.\n"
+        );
+        assert_eq!(
+            fs_io::read_utf8(&session_dir.join("before.md")).unwrap(),
+            before
+        );
 
         let missing = base.join("missing.md");
         for invalid_mirror in [missing.as_path(), Path::new("../outside.md")] {
             let outcome = write_session_direct(
-                &base, session_id, Some(&before_sha), "Local edits", "Local notes",
-                Some(invalid_mirror), Some(&before_sha),
+                &base,
+                session_id,
+                Some(&before_sha),
+                "Local edits",
+                "Local notes",
+                Some(invalid_mirror),
+                Some(&before_sha),
                 false,
-            ).unwrap();
+            )
+            .unwrap();
             assert!(matches!(outcome, WriteOutcome::MirrorSkipped(_)));
-            assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Local edits");
-            assert_eq!(fs_io::read_utf8(&session_dir.join("notes.md")).unwrap(), "Local notes");
+            assert_eq!(
+                fs_io::read_utf8(&session_dir.join("after.md")).unwrap(),
+                "Local edits"
+            );
+            assert_eq!(
+                fs_io::read_utf8(&session_dir.join("notes.md")).unwrap(),
+                "Local notes"
+            );
         }
         assert!(!missing.exists());
 
@@ -677,35 +815,77 @@ mod tests {
                 path: protected.clone(),
                 content: "Attempted overwrite".into(),
                 clear_recovery: None,
-            }).unwrap_err();
+            })
+            .unwrap_err();
             assert!(error.contains("Protected voice data"));
             let outcome = write_session_direct(
-                &base, session_id, Some(&before_sha), "Local edits", "Local notes",
-                Some(&protected), Some(&before_sha),
+                &base,
+                session_id,
+                Some(&before_sha),
+                "Local edits",
+                "Local notes",
+                Some(&protected),
+                Some(&before_sha),
                 false,
-            ).unwrap();
-            assert!(matches!(outcome, WriteOutcome::MirrorSkipped(error) if error.contains("Protected voice data")));
-            assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Local edits");
+            )
+            .unwrap();
+            assert!(
+                matches!(outcome, WriteOutcome::MirrorSkipped(error) if error.contains("Protected voice data"))
+            );
+            assert_eq!(
+                fs_io::read_utf8(&session_dir.join("after.md")).unwrap(),
+                "Local edits"
+            );
             let forced = write_session_direct(
-                &base, session_id, Some(&before_sha), "Forced protected", "notes",
-                Some(&protected), Some(&before_sha), true,
-            ).unwrap();
-            assert!(matches!(forced, WriteOutcome::MirrorSkipped(error) if error.contains("Protected voice data")));
+                &base,
+                session_id,
+                Some(&before_sha),
+                "Forced protected",
+                "notes",
+                Some(&protected),
+                Some(&before_sha),
+                true,
+            )
+            .unwrap();
+            assert!(
+                matches!(forced, WriteOutcome::MirrorSkipped(error) if error.contains("Protected voice data"))
+            );
             assert_eq!(fs_io::read_utf8(&protected).unwrap(), before);
         }
 
         // Tampered before.md must be refused without overwriting after.md.
         fs_io::atomic_write_text(&session_dir.join("before.md"), "Tampered!\n").unwrap();
-        let err = write_session_direct(&base, session_id, Some(&before_sha), "Bad write", "", None, None, false)
-            .unwrap_err();
+        let err = write_session_direct(
+            &base,
+            session_id,
+            Some(&before_sha),
+            "Bad write",
+            "",
+            None,
+            None,
+            false,
+        )
+        .unwrap_err();
         assert!(err.contains("immutable baseline has changed"), "{err}");
-        assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Forced protected");
+        assert_eq!(
+            fs_io::read_utf8(&session_dir.join("after.md")).unwrap(),
+            "Forced protected"
+        );
 
         // Restore before.md, add receipt.json -> finished session must be refused.
         fs_io::atomic_write_text(&session_dir.join("before.md"), before).unwrap();
         fs_io::atomic_write_text(&session_dir.join("receipt.json"), "{}\n").unwrap();
-        let err = write_session_direct(&base, session_id, Some(&before_sha), "After finish", "", None, None, false)
-            .unwrap_err();
+        let err = write_session_direct(
+            &base,
+            session_id,
+            Some(&before_sha),
+            "After finish",
+            "",
+            None,
+            None,
+            false,
+        )
+        .unwrap_err();
         assert!(err.contains("already finished"), "{err}");
 
         let _ = fs::remove_dir_all(&base);
