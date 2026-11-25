@@ -121,6 +121,10 @@ pub(crate) fn build(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
                 }),
             )
             .separator()
+            .item(MenuItem::new("Pin to Reference Split").disabled(!is_file).on_select(|e: &mut Editor| {
+                e.file_menu_open = false;
+                e.pin_selected_reference();
+            }))
             .item(
                 MenuItem::new("Rename…")
                     .disabled(!can_mutate)

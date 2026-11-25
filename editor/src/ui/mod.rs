@@ -6,6 +6,8 @@ use rune_kit::{
 use crate::state::{DialogKind, Editor, ViewMode};
 
 mod canvas;
+mod preview;
+pub(crate) mod reference;
 mod sidebar;
 mod status_bar;
 mod tabs;
@@ -34,6 +36,12 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
     let insp = build_inspector(editor, cx, &kit);
 
     let stage = build_stage(editor, cx, &kit);
+    let stage = if editor.reference.open && editor.view_mode != ViewMode::Compare {
+        row().grow(1.0).w_full().min_h(0.0)
+            .child(col().grow(1.0).w(0.0).min_h(0.0).child(reference::build(editor, &kit, &mut overlays)))
+            .child(col().w(1.0).h_full().fill(kit.c.border_muted))
+            .child(col().grow(1.0).w(0.0).min_h(0.0).child(stage))
+    } else { stage };
     let mut main = col()
         .key("stage")
         .w_full()
@@ -86,20 +94,7 @@ fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
     };
 
     match editor.view_mode {
-        ViewMode::Preview => col()
-            .key("preview-body")
-            .grow(1.0)
-            .w_full()
-            .min_h(0.0)
-            .center()
-            .gap(8.0)
-            .padding(24.0)
-            .child(text("Markdown Preview").font(kit.ty.ui_medium).color(kit.c.text_base))
-            .child(
-                text("Preview rendering arrives in Wave 2.3; switch back to Write to keep editing.")
-                    .font(kit.ty.ui)
-                    .color(kit.c.text_muted),
-            ),
+        ViewMode::Preview => preview::build(&doc.edit.text, &editor.store.ui, kit),
         ViewMode::Compare if editor.active_has_baseline() => col()
             .key("compare-body")
             .grow(1.0)
@@ -109,6 +104,7 @@ fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
                 DiffView::new(|e: &Editor| &e.diff, |e: &mut Editor| &mut e.diff)
                     .build(editor, kit),
             ),
+        ViewMode::Compare | ViewMode::Write if doc.read_only && doc.path.file_name().is_some_and(|name| name == "voice-guide.md") => preview::build(&doc.edit.text, &editor.store.ui, kit),
         ViewMode::Compare | ViewMode::Write => {
             let locked = editor.active_is_locked();
             let body = canvas::build(editor, cx, kit, locked);

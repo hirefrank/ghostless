@@ -10,7 +10,7 @@ pub(crate) struct HeadingEntry {
     pub byte_offset: usize,
 }
 
-fn frontmatter_end(text: &str) -> Option<usize> {
+pub(crate) fn frontmatter_end(text: &str) -> Option<usize> {
     let first = text.find('\n')? + 1;
     if text[..first].trim_end_matches(['\r', '\n']) != "---" {
         return None;

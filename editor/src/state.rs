@@ -79,6 +79,7 @@ pub(crate) struct Editor {
     pub(crate) sidebar_pane: PaneState,
     pub(crate) inspector_pane: PaneState,
     pub(crate) view_mode: ViewMode,
+    pub(crate) reference: crate::ui::reference::ReferencePane,
     pub(crate) focus_mode: bool,
     pub(crate) view_settings_open: bool,
     fonts_initialized: bool,
@@ -186,6 +187,7 @@ impl Editor {
             sidebar_pane,
             inspector_pane,
             view_mode: ViewMode::Write,
+            reference: Default::default(),
             focus_mode: false,
             view_settings_open: false,
             fonts_initialized: false,
@@ -241,6 +243,7 @@ impl Editor {
             sidebar_pane: sb,
             inspector_pane: insp,
             view_mode: ViewMode::Write,
+            reference: Default::default(),
             focus_mode: false,
             view_settings_open: false,
             fonts_initialized: false,
@@ -371,6 +374,7 @@ impl Editor {
         self.store.record_workspace(&folder);
         self.workspace = Some(folder.clone());
         self.documents.clear();
+        self.reference = Default::default();
         self.active_doc = None;
         self.selected_tree_id = None;
         self.view_mode = ViewMode::Write;
@@ -606,6 +610,37 @@ impl Editor {
             doc.read_only = true;
             doc.last_saved_label = Some("Read-only".into());
         }
+    }
+
+    pub(crate) fn set_reference(&mut self, source: crate::ui::reference::ReferenceSource) {
+        use crate::ui::reference::ReferenceSource;
+        let (title, content) = match &source {
+            ReferenceSource::SessionOriginal => ("Original (before.md)".to_owned(), self.active_doc_ref().and_then(|d| d.original.clone()).unwrap_or_default()),
+            ReferenceSource::File(path) => match fs::read_to_string(path) {
+                Ok(content) => (path.file_name().unwrap_or_default().to_string_lossy().into_owned(), content),
+                Err(error) => { self.status = format!("Cannot read reference: {error}"); return; }
+            },
+        };
+        self.reference.source = Some(source);
+        self.reference.cached_title = title;
+        self.reference.cached_content = content;
+        self.reference.open = true;
+    }
+
+    pub(crate) fn toggle_reference(&mut self) {
+        if self.reference.open { self.reference.open = false; return; }
+        if self.reference.source.is_none() && let Some(doc) = self.active_doc_ref() {
+            let style = self.voice_project.as_ref().or(self.workspace.as_ref()).map(|p| p.join("STYLE.md"));
+            let source = crate::ui::reference::default_source(doc.is_session(), &doc.path, style.as_deref());
+            if let Some(source) = source { self.set_reference(source); }
+        }
+        self.reference.open = true;
+    }
+
+    pub(crate) fn pin_selected_reference(&mut self) {
+        let path = self.selected_tree_id.as_ref().and_then(|id| self.file_tree.get(id))
+            .filter(|node| !node.dir).and_then(|node| node.data.as_ref()).map(|entry| entry.abs_path.clone());
+        if let Some(path) = path { self.set_reference(crate::ui::reference::ReferenceSource::File(path)); }
     }
 
     pub(crate) fn on_tree_select(&mut self, id: &str, _tx: &mut Tx) {
@@ -1871,6 +1906,11 @@ pub(crate) fn on_key(editor: &mut Editor, key: &KeyEvent, tx: &mut Tx) -> bool {
         }
         if key.is_command('0') { editor.store.ui.font_size = 16.5; let _ = prefs::save_store(&editor.store); return true; }
     }
+    if key.is_command('v') && key.mods.shift && !key.mods.alt {
+        editor.view_mode = if editor.view_mode == ViewMode::Preview { ViewMode::Write } else { ViewMode::Preview };
+        return true;
+    }
+    if key.is_command('\\') && !key.mods.shift && !key.mods.alt { editor.toggle_reference(); return true; }
     if is_sidebar_toggle(key) {
         editor.toggle_sidebar();
         return true;
