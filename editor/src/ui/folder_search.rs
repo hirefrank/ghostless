@@ -26,7 +26,7 @@ pub(crate) fn mount(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
         .on_key(|e: &mut Editor, key, tx: &mut Tx| match key.key {
             Key::Escape => {
                 e.close_folder_search();
-                tx.focus("prose-input", false);
+                e.focus_document(tx);
                 true
             }
             Key::Down => {
@@ -112,10 +112,10 @@ pub(crate) fn mount(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
                 })
                 .child(list),
         );
-    Dialog::new("folder-search", "Search in Workspace")
+    let dialog = Dialog::new("folder-search", "Search in Workspace")
         .width(640.0)
         .open(true)
         .child(body)
-        .on_close(Editor::close_folder_search)
-        .build(kit, overlays);
+        .on_close(Editor::close_folder_search);
+    super::mount_search_dialog(dialog, editor, kit, overlays);
 }

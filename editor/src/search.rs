@@ -3,7 +3,7 @@ use std::ops::Range;
 use rune::TextEdit;
 
 pub(crate) const SOURCE_MATCH_KEY: &str = "find-source-match";
-pub(crate) const SOURCE_CARET_KEY: &str = "find-source-caret";
+pub(crate) const SOURCE_ANCHOR_KEY: &str = "find-source-anchor";
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct FindState {

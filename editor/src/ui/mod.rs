@@ -85,6 +85,20 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
     rune_kit::root(shell, overlays)
 }
 
+fn mount_search_dialog(dialog: Dialog, editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
+    let before = overlays.len();
+    dialog.build(kit, overlays);
+    // Rune-Kit appends the scrim, then the layer containing the entire dialog.
+    // Set the return target on that layer so the close button and outside click
+    // restore focus as well as Escape, even if the dialog opened without focus.
+    if let Some(key) = editor.document_focus_key()
+        && overlays.len() > before
+        && let Some(layer) = overlays.pop()
+    {
+        overlays.push(layer.focus_return(key));
+    }
+}
+
 fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
     let Some(doc) = editor.active_doc_ref() else {
         return col()
@@ -110,6 +124,9 @@ fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
     match editor.view_mode {
         ViewMode::Compare if editor.active_has_baseline() => col()
             .key("compare-body")
+            .focusable(true)
+            .role("region")
+            .label("Draft comparison")
             .grow(1.0)
             .w_full()
             .min_h(0.0)

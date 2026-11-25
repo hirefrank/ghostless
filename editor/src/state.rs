@@ -689,7 +689,7 @@ impl Editor {
                 QuickTarget::Session(id) => if let Some(project) = self.voice_project.clone() { self.open_session_entry(project, id); },
             }
             self.quick.open = false;
-            tx.focus("prose-input", false);
+            self.focus_document(tx);
         }
     }
 
@@ -784,7 +784,7 @@ impl Editor {
         self.view_mode = ViewMode::Write;
         self.reveal_find_position(tx);
         self.close_folder_search();
-        tx.focus("prose-input", false);
+        self.focus_document(tx);
     }
 
     pub(crate) fn set_reference(&mut self, source: crate::ui::reference::ReferenceSource) {
@@ -1424,17 +1424,26 @@ impl Editor {
 
     pub(crate) fn close_find(&mut self, tx: &mut Tx) {
         self.find.close();
-        if self.active_doc_ref().is_none() {
-            return;
-        }
-        let key = if self.active_uses_rendered_preview() {
+        self.focus_document(tx);
+    }
+
+    pub(crate) fn document_focus_key(&self) -> Option<&'static str> {
+        self.active_doc_ref()?;
+        Some(if self.active_uses_rendered_preview() {
             crate::ui::PREVIEW_BODY
+        } else if self.view_mode == ViewMode::Compare && self.active_has_baseline() {
+            "compare-body"
         } else if self.active_is_locked() {
             "working-body"
         } else {
             "prose-input"
-        };
-        tx.focus(key, false);
+        })
+    }
+
+    pub(crate) fn focus_document(&self, tx: &mut Tx) {
+        if let Some(key) = self.document_focus_key() {
+            tx.focus(key, false);
+        }
     }
 
     fn refresh_find(&mut self) {
@@ -1471,7 +1480,7 @@ impl Editor {
         } else if self.find.current_range().is_some() {
             tx.scroll_into_view_in("working-body", crate::search::SOURCE_MATCH_KEY);
         } else if self.find.navigation_anchor().is_some() {
-            tx.scroll_into_view_in("working-body", crate::search::SOURCE_CARET_KEY);
+            tx.scroll_into_view_in("working-body", crate::search::SOURCE_ANCHOR_KEY);
         }
     }
 
@@ -2527,6 +2536,24 @@ mod tests {
             assert_eq!(rt.state.find.current, None);
             assert_eq!(rt.state.find.matches.len(), remaining);
             assert_eq!(rt.state.active_working_edit().range(), caret);
+
+            // The writer can move the caret independently of Find. Switching
+            // back to Write should still reveal the saved occurrence's position.
+            rt.update(|editor, tx| {
+                editor.active_working_edit_mut().set_caret(0);
+                editor.set_view_mode(ViewMode::Write, tx);
+            });
+            rt.frame(0.0);
+            let elements = rt.elements();
+            let element = |key| elements.iter().find(|e| e.key.as_deref() == Some(key)).unwrap();
+            let viewport = element("working-body").rect;
+            let mark = element(crate::search::SOURCE_ANCHOR_KEY);
+            assert_eq!(mark.text.as_deref(), Some("t"));
+            assert!(
+                mark.rect[1] >= viewport[1] && mark.rect[1] + mark.rect[3] <= viewport[1] + viewport[3],
+                "saved anchor {:?} is outside Write viewport {viewport:?}", mark.rect,
+            );
+            assert_eq!(rt.state.active_working_edit().range(), (0, 0));
         }
     }
 
@@ -2565,6 +2592,124 @@ mod tests {
             let focused = elements.iter().find(|element| element.focused)
                 .and_then(|element| element.key.as_deref());
             assert_eq!(focused, Some(expected), "{mode:?}, {title}, read-only={read_only}");
+        }
+    }
+
+    #[test]
+    fn search_dialogs_restore_document_focus_on_all_dismissal_paths() {
+        for (mode, read_only, title, expected) in [
+            (ViewMode::Preview, false, "draft.md", "preview-body"),
+            (ViewMode::Write, true, "voice-guide.md", "preview-body"),
+            (ViewMode::Compare, false, "draft.md", "compare-body"),
+        ] {
+            for folder in [false, true] {
+                for dismissal in ["Escape", "Close", "Outside"] {
+                    let mut editor = Editor::with_handlers(
+                        test_session(), prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake(),
+                    );
+                    let doc = editor.active_doc_mut().unwrap();
+                    doc.title = title.into();
+                    doc.path.set_file_name(title);
+                    doc.read_only = read_only;
+                    editor.view_mode = mode;
+                    editor.reference.open = true;
+                    editor.reference.source = Some(crate::ui::reference::ReferenceSource::SessionOriginal);
+
+                    let mut rt = rune::Runtime::new(
+                        editor, crate::ui::view, (1120.0, 800.0), rune::Env::new(false, 1.0),
+                    );
+                    rt.on_key = Some(on_key);
+                    rt.frame(0.0);
+                    assert!(!rt.elements().iter().any(|e| e.focused));
+                    rt.update(|editor, tx| {
+                        if folder {
+                            editor.workspace = Some(PathBuf::from("/tmp"));
+                            editor.open_folder_search(tx);
+                            editor.workspace = None;
+                        } else {
+                            editor.open_quick(tx);
+                        }
+                    });
+                    rt.frame(0.0);
+                    let label = if folder { "Search in workspace" } else { "Go to file or session" };
+                    assert!(rt.elements().iter().any(|e| e.focused && e.label.as_deref() == Some(label)));
+                    match dismissal {
+                        "Escape" => rt.key(KeyEvent { key: Key::Escape, mods: Default::default() }),
+                        "Close" => {
+                            let [x, y, w, h] = rt.elements().iter()
+                                .find(|e| e.key.as_deref() == Some("close")).unwrap().rect;
+                            rt.pointer_down(x + w / 2.0, y + h / 2.0);
+                            rt.pointer_up(x + w / 2.0, y + h / 2.0);
+                        }
+                        _ => {
+                            rt.pointer_down(10.0, 80.0);
+                            rt.pointer_up(10.0, 80.0);
+                        }
+                    }
+                    rt.frame(0.0);
+
+                    assert!(!rt.state.quick.open && !rt.state.folder_search.open);
+                    let elements = rt.elements();
+                    let focused = elements.iter().find(|e| e.focused).and_then(|e| e.key.as_deref());
+                    assert_eq!(focused, Some(expected), "{mode:?}, {title}, folder={folder}, {dismissal}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn accepting_search_results_focuses_the_rendered_document() {
+        use crate::quick_open::{QuickItem, QuickTarget, search_workspace_files};
+
+        for folder in [false, true] {
+            let mut editor = Editor::empty_with_handlers(
+                prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake(),
+            );
+            let name = if folder { "voice-guide.md" } else { "draft.md" };
+            let path = PathBuf::from(name);
+            let source = "A Café note.";
+            editor.documents.push(DocumentBuffer::from_workspace_file(
+                path.clone(), name.into(), source.into(), folder, false, true, None,
+            ));
+            editor.active_doc = Some(0);
+            editor.view_mode = ViewMode::Preview;
+
+            let mut rt = rune::Runtime::new(
+                editor, crate::ui::view, (1120.0, 800.0), rune::Env::new(false, 1.0),
+            );
+            rt.frame(0.0);
+            rt.update(|editor, tx| {
+                if folder {
+                    editor.workspace = Some(PathBuf::from("/tmp"));
+                    editor.open_folder_search(tx);
+                    editor.workspace = None;
+                    editor.folder_search.query.replace_text("café");
+                    editor.folder_search.matches = search_workspace_files(
+                        &[WorkspaceEntry {
+                            abs_path: path.clone(), rel_path: name.into(),
+                            kind: workspace_tree::FileKind::Writing, read_only: true,
+                        }],
+                        &[(path, Some(source.into()))].into_iter().collect(),
+                        "café", 10, || false,
+                    );
+                } else {
+                    editor.open_quick(tx);
+                    editor.quick.items.push(QuickItem {
+                        id: name.into(), title: name.into(), subtitle: String::new(),
+                        target: QuickTarget::File(path),
+                    });
+                }
+            });
+            rt.frame(0.0);
+            rt.key(KeyEvent { key: Key::Enter, mods: Default::default() });
+            rt.frame(0.0);
+
+            assert!(!rt.state.quick.open && !rt.state.folder_search.open);
+            assert!(rt.elements().iter().any(|e| e.focused && e.key.as_deref() == Some("preview-body")));
+            assert_eq!(rt.state.active_working_edit().text, source);
+            if folder {
+                assert_eq!(rt.state.active_working_edit().selected(), "Café");
+            }
         }
     }
 

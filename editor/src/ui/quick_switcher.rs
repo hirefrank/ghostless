@@ -23,7 +23,7 @@ pub(crate) fn mount(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
         .on_change(|e: &mut Editor, _| e.quick.selected = 0)
         .on_submit(|e: &mut Editor, tx| e.choose_quick(e.quick.selected, tx))
         .on_key(|e: &mut Editor, key, tx: &mut Tx| match key.key {
-            Key::Escape => { e.quick.open = false; tx.focus("prose-input", false); true },
+            Key::Escape => { e.quick.open = false; e.focus_document(tx); true },
             Key::Down => { let len = filtered(&e.quick).len(); if len > 0 { e.quick.selected = (e.quick.selected + 1) % len; } true },
             Key::Up => { let len = filtered(&e.quick).len(); if len > 0 { e.quick.selected = (e.quick.selected + len - 1) % len; } true },
             _ => false,
@@ -40,6 +40,8 @@ pub(crate) fn mount(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
     }
     let body = col().w_full().grow(1.0).min_h(0.0).px(16.0).pb(16.0).gap(8.0).child(query)
         .child(col().grow(1.0).w_full().min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(list));
-    Dialog::new("quick-switcher", "Go to File or Session").width(560.0).open(true).child(body)
-        .on_close(|e: &mut Editor| e.quick.open = false).build(kit, overlays);
+    let dialog = Dialog::new("quick-switcher", "Go to File or Session")
+        .width(560.0).open(true).child(body)
+        .on_close(|e: &mut Editor| e.quick.open = false);
+    super::mount_search_dialog(dialog, editor, kit, overlays);
 }

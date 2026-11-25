@@ -36,12 +36,13 @@ pub(crate) fn build(editor: &Editor, cx: &Cx<Editor>, kit: &Kit, locked: bool) -
         .disabled(locked);
     if editor.find.open && doc.edit.preedit().is_none() {
         // The transparent mark gives Rune a scroll target without taking focus
-        // from Find. After the last replacement it follows the collapsed caret.
+        // from Find. With no current match, reveal the saved find anchor.
         let target = editor.find.current_range().cloned()
             .map(|range| (range, crate::search::SOURCE_MATCH_KEY))
             .or_else(|| {
-                crate::search::caret_reveal_range(&doc.edit.text, doc.edit.focus)
-                    .map(|range| (range, crate::search::SOURCE_CARET_KEY))
+                let anchor = editor.find.navigation_anchor()?;
+                crate::search::caret_reveal_range(&doc.edit.text, anchor)
+                    .map(|range| (range, crate::search::SOURCE_ANCHOR_KEY))
             });
         if let Some((range, key)) = target {
             field = field.text_highlight(

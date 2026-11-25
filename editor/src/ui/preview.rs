@@ -1,7 +1,10 @@
 use std::ops::Range;
 
 use rune::{Color, El, ScrollSpec, TextHighlight, Tx, col, row, text};
-use rune_kit::{Badge, Kit, Markdown, markdown::Highlight};
+use rune_kit::{
+    Badge, Kit, Markdown,
+    markdown::{Case, Highlight},
+};
 
 use crate::{
     markdown_decor,
@@ -16,28 +19,67 @@ const PREVIEW_FRONTMATTER: &str = "preview-frontmatter";
 const PREVIEW_FIND_ANCHOR: &str = "preview-find-anchor";
 
 pub(crate) fn reveal_find_position(source: &str, find: &FindState, tx: &mut Tx) {
-    let Some(anchor) = find.navigation_anchor() else {
-        return;
-    };
+    if let Some((scope, key)) = find_scroll_target(source, find) {
+        tx.scroll_into_view_in(scope, key);
+    }
+}
+
+fn find_scroll_target(source: &str, find: &FindState) -> Option<(&'static str, String)> {
+    let anchor = find.navigation_anchor()?;
     let end = markdown_decor::frontmatter_end(source).unwrap_or(0);
     if let Some(index) = find.current {
-        tx.scroll_into_view_in(find_scope(end, anchor), Markdown::highlight_key(index));
-        return;
+        return Some((find_scope(end, anchor), Markdown::highlight_key(index)));
+    }
+    if let Some(range) = anchor_range(source, end, anchor)
+        && (range.start < end || has_rendered_anchor(source, end, &range))
+    {
+        return Some((find_scope(end, range.start), PREVIEW_FIND_ANCHOR.to_owned()));
     }
 
-    // Markdown can hide a whole source line, such as an HTML comment. Try the
-    // nearest match first as a fallback, then reveal the actual anchor if drawn.
-    if let Some((index, hit)) = find
+    // Source-only syntax may have no rendered box. Pick a visible fallback
+    // before issuing the scroll so there is no intermediate jump.
+    if find.matches.is_empty() {
+        return None;
+    }
+    let case = if find.case_sensitive {
+        Case::Sensitive
+    } else {
+        Case::Insensitive
+    };
+    let rendered: Vec<_> = if find.matches.last().is_some_and(|hit| hit.end > end) {
+        Markdown::find(&source[end..], &find.query.text, case)
+            .into_iter()
+            .flatten()
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let (index, hit) = find
         .matches
         .iter()
         .enumerate()
-        .min_by_key(|(_, hit)| hit.start.abs_diff(anchor))
-    {
-        tx.scroll_into_view_in(find_scope(end, hit.start), Markdown::highlight_key(index));
-    }
-    if let Some(range) = anchor_range(source, end, anchor) {
-        tx.scroll_into_view_in(find_scope(end, range.start), PREVIEW_FIND_ANCHOR);
-    }
+        .filter(|(_, hit)| {
+            let first = rendered.partition_point(|visible| visible.end + end <= hit.start);
+            hit.start < end
+                || rendered
+                    .get(first)
+                    .is_some_and(|visible| visible.start + end < hit.end)
+        })
+        .min_by_key(|(_, hit)| hit.start.abs_diff(anchor))?;
+    Some((find_scope(end, hit.start), Markdown::highlight_key(index)))
+}
+
+fn has_rendered_anchor(source: &str, body_start: usize, range: &Range<usize>) -> bool {
+    let start = range.start - body_start;
+    let end = range.end - body_start;
+    Markdown::find(
+        &source[body_start..],
+        &source[range.clone()],
+        Case::Sensitive,
+    )
+    .into_iter()
+    .flatten()
+    .any(|visible| visible.start <= start && end <= visible.end)
 }
 
 fn anchor_range(source: &str, frontmatter_end: usize, anchor: usize) -> Option<Range<usize>> {
@@ -208,6 +250,34 @@ fn section_range(hit: &Range<usize>, section: Range<usize>) -> Option<Range<usiz
 mod tests {
     use super::*;
     use crate::search::find_matches;
+
+    #[test]
+    fn orphaned_preview_find_chooses_one_drawable_target() {
+        for (before, after, target) in [
+            (
+                "First Café.\n\nMiddle Café.\n\nLast Café.",
+                "First Café.\n\nMiddle tea.\n\nLast Café.",
+                PREVIEW_FIND_ANCHOR,
+            ),
+            (
+                "First Café with more text here.\n\n<!-- Café Café -->\n\nLast Café.",
+                "First Café with more text here.\n\n<!-- Café tea -->\n\nLast Café.",
+                "md-mark-2",
+            ),
+        ] {
+            let start = before.rfind("Café").unwrap();
+            let anchor = before[..start].rfind("Café").unwrap();
+            let mut find = FindState::default();
+            find.query.replace_text("café");
+            find.refresh(before, anchor);
+            find.document_changed(after, anchor + 3);
+            assert_eq!(find.current, None);
+            assert_eq!(find.navigation_anchor(), Some(anchor));
+            let (scope, key) = find_scroll_target(after, &find).unwrap();
+            assert_eq!(scope, PREVIEW_BODY);
+            assert_eq!(key, target);
+        }
+    }
 
     #[test]
     fn preview_maps_matches_on_both_sides_of_frontmatter() {
