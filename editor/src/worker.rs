@@ -2,7 +2,11 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}, mpsc},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
     thread,
 };
 use serde_json::Value;
@@ -122,11 +126,31 @@ pub(crate) struct SearchReply {
     pub(crate) matches: Vec<FolderMatch>,
 }
 
+#[derive(Default)]
+struct SearchQueue {
+    pending: Option<SearchRequest>,
+    closed: bool,
+}
+
+#[derive(Default)]
+struct SearchMailbox {
+    queue: Mutex<SearchQueue>,
+    ready: Condvar,
+    generation: AtomicU64,
+}
+
+impl SearchMailbox {
+    fn receive(&self) -> Option<SearchRequest> {
+        let mut queue = self.ready.wait_while(self.queue.lock().unwrap(), |queue| {
+            queue.pending.is_none() && !queue.closed
+        }).unwrap();
+        queue.pending.take()
+    }
+}
+
 pub(crate) struct SearchWorker {
-    tx: Option<mpsc::SyncSender<()>>,
-    pending: Arc<Mutex<Option<SearchRequest>>>,
+    mailbox: Arc<SearchMailbox>,
     rx: mpsc::Receiver<SearchReply>,
-    latest: Arc<AtomicU64>,
 }
 
 impl SearchWorker {
@@ -140,16 +164,12 @@ impl SearchWorker {
         wake: Arc<WakeFn>,
         search: impl Fn(&SearchRequest, &dyn Fn() -> bool) -> Vec<FolderMatch> + Send + 'static,
     ) -> Self {
-        let (tx, requests) = mpsc::sync_channel(1);
         let (replies, rx) = mpsc::channel();
-        let pending = Arc::new(Mutex::new(None::<SearchRequest>));
-        let queue = Arc::clone(&pending);
-        let latest = Arc::new(AtomicU64::new(0));
-        let generation = Arc::clone(&latest);
+        let mailbox = Arc::new(SearchMailbox::default());
+        let reader = Arc::clone(&mailbox);
         thread::spawn(move || {
-            while requests.recv().is_ok() {
-                let Some(request) = queue.lock().unwrap().take() else { continue };
-                let cancelled = || request.id != generation.load(Ordering::Relaxed);
+            while let Some(request) = reader.receive() {
+                let cancelled = || request.id != reader.generation.load(Ordering::Relaxed);
                 if cancelled() {
                     continue;
                 }
@@ -159,7 +179,7 @@ impl SearchWorker {
                 }
             }
         });
-        Self { tx: Some(tx), rx, pending, latest }
+        Self { mailbox, rx }
     }
 
     pub(crate) fn submit(
@@ -168,32 +188,40 @@ impl SearchWorker {
         buffers: HashMap<PathBuf, Option<String>>,
         query: String,
     ) -> Result<u64, String> {
-        let id = self.latest.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-        let tx = self.tx.as_ref().ok_or("Workspace search is unavailable")?;
-        *self.pending.lock().unwrap() = Some(SearchRequest { id, files, buffers, query });
-        match tx.try_send(()) {
-            Ok(()) | Err(mpsc::TrySendError::Full(())) => Ok(id),
-            Err(mpsc::TrySendError::Disconnected(())) => {
-                self.pending.lock().unwrap().take();
-                Err("Workspace search is unavailable".to_owned())
-            }
+        let mut queue = self.mailbox.queue.lock().unwrap();
+        if queue.closed {
+            return Err("Workspace search is unavailable".into());
         }
+        let id = self.mailbox.generation.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        queue.pending = Some(SearchRequest { id, files, buffers, query });
+        self.mailbox.ready.notify_one();
+        Ok(id)
     }
 
     pub(crate) fn cancel(&self) {
-        self.latest.fetch_add(1, Ordering::Relaxed);
-        self.pending.lock().unwrap().take();
+        let mut queue = self.mailbox.queue.lock().unwrap();
+        self.mailbox.generation.fetch_add(1, Ordering::Relaxed);
+        queue.pending = None;
     }
 
     pub(crate) fn try_recv(&self) -> Result<SearchReply, mpsc::TryRecvError> {
         self.rx.try_recv()
     }
 
-    fn shutdown(&mut self) {
-        // A cancelled reader may still be inside filesystem I/O. It has no writes
-        // to flush, so closing the editor does not wait on that read.
-        self.cancel();
-        self.tx.take();
+    fn shutdown(&self) {
+        // Closing also wakes an idle reader. A reader already in filesystem I/O
+        // can exit once the read returns, independently of the save worker.
+        let mut queue = self.mailbox.queue.lock().unwrap();
+        queue.closed = true;
+        self.mailbox.generation.fetch_add(1, Ordering::Relaxed);
+        queue.pending = None;
+        self.mailbox.ready.notify_one();
+    }
+}
+
+impl Drop for SearchWorker {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
@@ -537,7 +565,15 @@ mod tests {
         assert!(matches!(finish, Ok(WorkerReply::Finished { result: Ok(()), .. })));
         assert_eq!(searches.recv_timeout(wait).unwrap(), "latest");
         assert_eq!(worker.search.rx.recv_timeout(wait).unwrap().id, latest);
+
+        // The same worker can go idle after delivering a reply and accept more work.
+        for _ in 0..32 {
+            worker.search.cancel();
+            let id = worker.search.submit(Vec::new(), HashMap::new(), "again".into()).unwrap();
+            assert_eq!(worker.search.rx.recv_timeout(wait).unwrap().id, id);
+        }
         worker.shutdown();
+        assert!(worker.search.submit(Vec::new(), HashMap::new(), "closed".into()).is_err());
     }
 
     #[test]

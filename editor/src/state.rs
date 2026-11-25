@@ -1423,7 +1423,7 @@ impl Editor {
     pub(crate) fn update_find_query(&mut self, tx: &mut Tx) {
         let Some(index) = self.active_doc else { return };
         let doc = &self.documents[index];
-        let anchor = self.find.current_range().map_or(doc.edit.range().0, |range| range.start);
+        let anchor = self.find.navigation_anchor().unwrap_or_else(|| doc.edit.range().0);
         self.find.refresh(&doc.edit.text, anchor);
         self.select_find_match(tx);
     }
@@ -1443,8 +1443,8 @@ impl Editor {
         if self.find.matches.is_empty() {
             return;
         }
-        self.find.current = match self.find.current_range() {
-            Some(range) => crate::search::next_match(&self.find.matches, range.start, forward),
+        self.find.current = match self.find.navigation_anchor() {
+            Some(anchor) => crate::search::next_match(&self.find.matches, anchor, forward),
             None if forward => Some(0),
             None => Some(self.find.matches.len() - 1),
         };
@@ -1466,14 +1466,13 @@ impl Editor {
             return;
         }
         let Some(range) = self.find.current_range().cloned() else { return };
-        let inserted = range.start..range.start + replacement.len();
-        if edit.text.get(range.clone()) != Some(replacement)
-            && crate::search::replace_one(edit, range, replacement)
-        {
+        let start = range.start;
+        if crate::search::replace_one(edit, range, replacement) {
+            let inserted = start..edit.range().1;
             self.changed_active(tx);
+            self.find.select_after_replacement(inserted);
+            self.select_find_match(tx);
         }
-        self.find.select_after_replacement(inserted);
-        self.select_find_match(tx);
     }
 
     pub(crate) fn refresh_diff(&mut self) {
@@ -2306,6 +2305,77 @@ mod tests {
     }
 
     #[test]
+    fn editing_inside_a_match_keeps_navigation_anchored_there() {
+        let mut session = test_session();
+        session.after = "Café / Café / Café".into();
+        let mut editor = Editor::with_handlers(
+            session, prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake(),
+        );
+        let mut tx = Tx::default();
+        editor.find.query.replace_text("café");
+        editor.open_find(false, &mut tx);
+        editor.step_find(true, &mut tx);
+        let middle = editor.find.current_range().unwrap().start;
+
+        let edit = editor.active_working_edit_mut();
+        edit.set_selection(middle + 1, middle + 2);
+        edit.insert("A");
+        editor.changed_active(&mut tx);
+        assert_eq!(editor.find.current, Some(1));
+
+        let edit = editor.active_working_edit_mut();
+        edit.set_caret(middle + 3);
+        edit.insert("✨");
+        editor.changed_active(&mut tx);
+        assert_eq!(editor.find.matches.len(), 2);
+        assert_eq!(editor.find.current, None);
+        assert_eq!(editor.find.navigation_anchor(), Some(middle));
+        let caret = middle + 3 + "✨".len();
+        assert_eq!(editor.active_working_edit().range(), (caret, caret));
+
+        editor.active_working_edit_mut().undo();
+        editor.changed_active(&mut tx);
+        assert_eq!(editor.find.current, Some(1));
+        assert_eq!(editor.find.current_range().unwrap().start, middle);
+
+        editor.active_working_edit_mut().redo();
+        editor.changed_active(&mut tx);
+        editor.step_find(true, &mut tx);
+        assert_eq!(editor.find.current, Some(1));
+        assert!(editor.active_working_edit().range().0 > middle);
+    }
+
+    #[test]
+    fn unsuccessful_replace_preserves_selection_and_document_generation() {
+        let mut session = test_session();
+        session.after = "Café / Café".into();
+        let mut editor = Editor::with_handlers(
+            session, prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake(),
+        );
+        let mut tx = Tx::default();
+        editor.find.query.replace_text("café");
+        editor.open_find(true, &mut tx);
+        let selection = editor.active_working_edit().range();
+        let generation = editor.active_doc_ref().unwrap().generation;
+
+        editor.find.replacement.replace_text("Café");
+        editor.replace_find(false, &mut tx);
+        editor.replace_find(true, &mut tx);
+        assert_eq!(editor.find.current, Some(0));
+        assert_eq!(editor.active_working_edit().range(), selection);
+        assert_eq!(editor.active_doc_ref().unwrap().generation, generation);
+
+        // A range that lands inside é is rejected without moving to the next hit.
+        editor.find.matches[0] = 4..5;
+        editor.find.replacement.replace_text("Tea");
+        editor.replace_find(false, &mut tx);
+        assert_eq!(editor.find.current, Some(0));
+        assert_eq!(editor.active_working_edit().range(), selection);
+        assert_eq!(editor.active_doc_ref().unwrap().generation, generation);
+        assert_eq!(editor.active_working_edit().text, "Café / Café");
+    }
+
+    #[test]
     fn compare_closes_find_and_find_shortcut_returns_to_write() {
         let mut editor = Editor::with_handlers(
             test_session(), prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake(),
@@ -2332,7 +2402,7 @@ mod tests {
         let entry = WorkspaceEntry {
             abs_path: path.clone(), rel_path: "draft.md".into(), kind: FileKind::Writing, read_only: false,
         };
-        let source = "Opening\nSecond CAFÉtéria";
+        let source = "Opening\nSecond CAFÉtéria\nSeparator\nSecond CAFÉtéria";
         let buffers = [(path.clone(), Some(source.into()))].into_iter().collect();
         editor.documents.push(DocumentBuffer::from_workspace_file(
             path, "draft.md".into(), format!("New ✨ line\n{source}"), false, false, true, None,
@@ -2353,7 +2423,10 @@ mod tests {
         assert_eq!(editor.active_working_edit().selected(), "CAFÉ");
         assert_eq!(editor.active_working_edit().range().0, "New ✨ line\nOpening\nSecond ".len());
         assert_eq!(editor.view_mode, ViewMode::Write);
-        assert!(editor.find.notice.is_none());
+        assert_eq!(
+            editor.find.notice.as_deref(),
+            Some("File changed. Showing the closest match."),
+        );
     }
 
     fn noop_wake() -> WakeFn {

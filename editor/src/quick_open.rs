@@ -72,8 +72,8 @@ pub(crate) fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
 }
 
 impl FolderMatch {
-    /// Revalidate the line and column in the live buffer. The same line can move
-    /// when the writer inserts or removes text before it.
+    /// Return the match index and whether it was found on the original line.
+    /// Identical text elsewhere can be a duplicate rather than a moved hit.
     pub(crate) fn locate(&self, text: &str, matches: &[Range<usize>]) -> Option<(usize, bool)> {
         let mut offset = 0;
         let mut best = None;
@@ -93,7 +93,7 @@ impl FolderMatch {
             offset += line.len();
         }
         if let Some((_, index)) = best {
-            return Some((index, true));
+            return Some((index, false));
         }
         matches
             .iter()
@@ -157,7 +157,7 @@ pub(crate) fn search_workspace_files(
             if cancelled() {
                 return results;
             }
-            let mut found = match_ranges(line, query, false, false).peekable();
+            let mut found = match_ranges(line, query, false, false, &cancelled).peekable();
             if found.peek().is_some() {
                 let source_line = Arc::<str>::from(line.trim_end_matches(['\r', '\n']));
                 let preview = Arc::<str>::from(line.trim().chars().take(240).collect::<String>());
