@@ -19,6 +19,7 @@ from ghostless.schema import (
     Confirmation,
     Kind,
     Manifest,
+    ManifestFile,
     MigrationResult,
     NoteSaveResult,
     Origin,
@@ -148,9 +149,7 @@ def parse_origin(value: str, *, path: str) -> Origin:
         case "ai-first" | "writer-first":
             return value
         case _:
-            raise ProjectError(
-                f"{path}: origin must be 'ai-first' or 'writer-first', got {value!r}"
-            )
+            raise ProjectError(f"{path}: origin must be 'ai-first' or 'writer-first', got {value!r}")
 
 
 def parse_provenance_origin(value: str, *, path: str) -> ProvenanceOrigin:
@@ -159,8 +158,7 @@ def parse_provenance_origin(value: str, *, path: str) -> ProvenanceOrigin:
             return value
         case _:
             raise ProjectError(
-                f"{path}: provenance.origin must be 'unaided', 'writer-first', or "
-                f"'ai-first', got {value!r}"
+                f"{path}: provenance.origin must be 'unaided', 'writer-first', or 'ai-first', got {value!r}"
             )
 
 
@@ -170,12 +168,11 @@ def parse_confirmation(value: str, *, path: str) -> Confirmation:
             return value
         case _:
             raise ProjectError(
-                f"{path}: provenance.confirmation must be 'none', 'origin', or "
-                f"'promoted', got {value!r}"
+                f"{path}: provenance.confirmation must be 'none', 'origin', or 'promoted', got {value!r}"
             )
 
 
-def read_provenance(meta: dict[str, object], *, path: str) -> Provenance:
+def read_provenance(meta: Mapping[str, object], *, path: str) -> Provenance:
     """Read provenance from a learn `meta.json`, with v0.1 defaults.
 
     v0.1 wrote only a top-level `origin`. A missing `origin` is left unknown:
@@ -251,7 +248,7 @@ def _never(value: Never) -> Never:
     raise RuntimeError(f"unhandled variant: {value!r}")
 
 
-def default_manifest() -> dict[str, object]:
+def default_manifest() -> ManifestFile:
     return {
         "kind": "ghostless",
         "version": 1,
@@ -276,7 +273,7 @@ def load_manifest(root: Path) -> Manifest:
     except json.JSONDecodeError as exc:
         raise ProjectError(f"{path}: {exc}") from exc
     if not isinstance(raw, dict) or raw.get("kind") != "ghostless":
-        raise ProjectError(f"{path} is not a ghostless manifest (kind must be \"ghostless\").")
+        raise ProjectError(f'{path} is not a ghostless manifest (kind must be "ghostless").')
     weights = dict(DEFAULT_WEIGHTS)
     custom = raw.get("weights") or {}
     if not isinstance(custom, dict):
@@ -327,15 +324,8 @@ def load_manifest(root: Path) -> Manifest:
         # caught it.
         placeholder = "WRITER"
     else:
-        if (
-            not isinstance(placeholder, str)
-            or not placeholder.strip()
-            or any(char in placeholder for char in "[]:")
-        ):
-            raise ProjectError(
-                f"{path}: placeholder must be a plain name such as \"FRANK\" "
-                "(no brackets or colon)."
-            )
+        if not isinstance(placeholder, str) or not placeholder.strip() or any(char in placeholder for char in "[]:"):
+            raise ProjectError(f'{path}: placeholder must be a plain name such as "FRANK" (no brackets or colon).')
         placeholder = placeholder.strip()
     pieces = raw.get("pieces") or []
     if not isinstance(pieces, list):
@@ -450,13 +440,9 @@ def init_project(directory: Path, *, force: bool = False, git: bool = True) -> P
     directory.mkdir(parents=True, exist_ok=True)
     manifest_path = directory / "manifest.json"
     if manifest_path.exists() and not force:
-        raise ProjectError(
-            f"{manifest_path} already exists. Pass --force to rewrite the manifest defaults."
-        )
+        raise ProjectError(f"{manifest_path} already exists. Pass --force to rewrite the manifest defaults.")
     gitignore_path = directory / ".gitignore"
-    if gitignore_path.exists() and LEGACY_GITIGNORE_MARKER in gitignore_path.read_text(
-        encoding="utf-8"
-    ):
+    if gitignore_path.exists() and LEGACY_GITIGNORE_MARKER in gitignore_path.read_text(encoding="utf-8"):
         raise ProjectError(
             f"{gitignore_path} still has the v0.1 ignore block, which keeps your writing "
             f"out of Git. Run `ghostless migrate --project {directory}` to review the change "
@@ -581,8 +567,9 @@ def ensure_local_git(directory: Path) -> str:
 
 def _git(arguments: list[str], cwd: Path) -> subprocess.CompletedProcess[str] | None:
     try:
-        return subprocess.run(
-            ["git", *arguments],
+        # git is resolved from PATH. arguments is an argv list, not a shell string.
+        return subprocess.run(  # noqa: S603
+            ["git", *arguments],  # noqa: S607
             cwd=str(cwd),
             check=False,
             capture_output=True,
@@ -605,7 +592,7 @@ def require_contained_path(base: Path, candidate: Path, *, label: str) -> Path:
 
 
 def pair_file_path(
-    meta: dict[str, object],
+    meta: Mapping[str, object],
     meta_path: Path,
     field: str,
     default: str,
@@ -730,11 +717,7 @@ def _piece_from_file(
     except UnicodeError as exc:
         raise ProjectError(f"{path} is not valid UTF-8.") from exc
     meta, body = split_frontmatter(raw)
-    tier = (
-        _override_tier(meta.get("tier"), default_tier, path=str(path))
-        if allow_tier_override
-        else default_tier
-    )
+    tier = _override_tier(meta.get("tier"), default_tier, path=str(path)) if allow_tier_override else default_tier
     kind = _override_kind(meta.get("kind"), default_kind, path=str(path))
     section = (
         meta.get("section")
@@ -846,11 +829,7 @@ def _apply_overrides(
         return pieces
     by_path = {piece.path: piece for piece in pieces}
     for entry in entries:
-        if (
-            not isinstance(entry, dict)
-            or not isinstance(entry.get("path"), str)
-            or not entry["path"].strip()
-        ):
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or not entry["path"].strip():
             raise ProjectError("manifest pieces entries need a path.")
         rel = entry["path"]
         path = require_contained_path(root, root / rel, label="manifest piece")

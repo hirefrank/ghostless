@@ -17,6 +17,7 @@ from ghostless.build import build_voice  # noqa: E402
 from ghostless.cli import main  # noqa: E402
 from ghostless.learn import learn_edit  # noqa: E402
 from ghostless.project import discover, init_project, load_manifest  # noqa: E402
+from ghostless.schema import LearnResult  # noqa: E402
 
 
 class ProvenanceTests(unittest.TestCase):
@@ -40,9 +41,7 @@ class ProvenanceTests(unittest.TestCase):
             self.assertEqual(result["warning"], None)
 
             slug = str(result["slug"])
-            meta = json.loads(
-                (project / "gold" / slug / "meta.json").read_text(encoding="utf-8")
-            )
+            meta = json.loads((project / "gold" / slug / "meta.json").read_text(encoding="utf-8"))
             # Provenance is its own block, mirrored top-level for v0.1 readers.
             self.assertEqual(meta["origin"], "ai-first")
             self.assertEqual(
@@ -71,9 +70,7 @@ class ProvenanceTests(unittest.TestCase):
             self.assertEqual(stats["provenance"]["ai-first"], 1)
             self.assertEqual(stats["files"][0]["model"], "sample-model")
             self.assertNotIn("model", stats["weighted"]["metrics"])
-            self.assertTrue(
-                any("measured as edited" in item for item in stats["warnings"])
-            )
+            self.assertTrue(any("measured as edited" in item for item in stats["warnings"]))
 
     def test_writer_first_final_is_gold(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -156,9 +153,7 @@ class ProvenanceTests(unittest.TestCase):
                 stats["weighted"]["metrics"]["medianParagraphLength"],
                 baseline["weighted"]["metrics"]["medianParagraphLength"],
             )
-            self.assertTrue(
-                any("capped at 25%" in item for item in stats["warnings"])
-            )
+            self.assertTrue(any("capped at 25%" in item for item in stats["warnings"]))
 
     def test_promote_moves_a_final_to_gold_with_visible_consequences(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -236,9 +231,7 @@ class ProvenanceTests(unittest.TestCase):
             # No origin means unknown, so the conservative default is edited.
             self.assertEqual(tiers["gold/2026-01-04-notes/after.md"], "edited")
             self.assertEqual(
-                {piece.path: piece.origin for piece in pieces}[
-                    "gold/2026-01-04-notes/after.md"
-                ],
+                {piece.path: piece.origin for piece in pieces}["gold/2026-01-04-notes/after.md"],
                 None,
             )
 
@@ -246,17 +239,13 @@ class ProvenanceTests(unittest.TestCase):
             self.assertEqual(stats["goldPieces"], 1)
             self.assertEqual(stats["counts"]["prose"]["edited"], 2)
             self.assertEqual(stats["provenance"]["unknown"], 1)
-            self.assertTrue(
-                any("no recorded origin" in item for item in stats["warnings"])
-            )
+            self.assertTrue(any("no recorded origin" in item for item in stats["warnings"]))
 
     def test_a_section_of_only_edited_finals_is_not_a_judge_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "voice"
             init_project(project, git=False)
-            (project / "corpus" / "gold" / "desk.md").write_text(
-                "I write at the desk.\n", encoding="utf-8"
-            )
+            (project / "corpus" / "gold" / "desk.md").write_text("I write at the desk.\n", encoding="utf-8")
             _learn_pair(
                 Path(tmp),
                 project,
@@ -271,9 +260,7 @@ class ProvenanceTests(unittest.TestCase):
             draft.write_text("An ordinary draft with a few sentences.", encoding="utf-8")
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
-                code = main(
-                    ["judge", str(draft), "--section", "notes", "--project", str(project)]
-                )
+                code = main(["judge", str(draft), "--section", "notes", "--project", str(project)])
             self.assertEqual(code, 2)
             self.assertIn("No targets for section 'notes'", stderr.getvalue())
 
@@ -319,7 +306,7 @@ def _learn_pair(
     model: str | None = None,
     tool: str | None = None,
     promote: bool = False,
-) -> dict[str, object]:
+) -> LearnResult:
     source = workdir / "src"
     source.mkdir(exist_ok=True)
     count = len(list(source.glob("before-*.md")))

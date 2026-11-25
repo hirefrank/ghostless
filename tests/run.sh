@@ -3,6 +3,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONUTF8=1
 export GHOSTLESS_NO_UPDATE=1
 python3 -m unittest discover -s "$ROOT/tests" -p 'test_*.py'
-bash -n "$ROOT/bin/ghostless" "$ROOT/setup"
+bash -n "$ROOT/bin/ghostless" "$ROOT/setup" "$ROOT/tests/run.sh"

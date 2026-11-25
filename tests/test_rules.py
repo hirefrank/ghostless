@@ -31,8 +31,10 @@ from ghostless.rules import (  # noqa: E402
     reject_rule,
     retire_rule,
     rules_summary,
+    save_rules,
     scope_rule,
 )
+from ghostless.schema import RuleCandidate, RuleDecisionRecord  # noqa: E402
 from ghostless.sessions import finish_session, snapshot_session, start_session  # noqa: E402
 
 
@@ -69,11 +71,9 @@ class RuleMiningTests(unittest.TestCase):
         )
         return str(result["slug"])
 
-    def candidates(self) -> dict[str, dict[str, object]]:
+    def candidates(self) -> dict[str, RuleCandidate]:
         edits = refresh_edit_summary(self.project)
-        return {
-            str(item["id"]): item for item in mine_candidates(self.project, edits)
-        }
+        return {str(item["id"]): item for item in mine_candidates(self.project, edits)}
 
     def cut_delve(self, index: int, *, section: str | None = None) -> str:
         return self.learn(
@@ -210,30 +210,29 @@ class RuleMiningTests(unittest.TestCase):
             ),
         )
         for rule_id, before_tpl, after_tpl in cases:
-            with self.subTest(rule_id=rule_id):
-                with tempfile.TemporaryDirectory() as tmp:
-                    base = Path(tmp)
-                    project = init_project(base / "voice", git=False)
-                    src = base / "src"
-                    src.mkdir()
-                    for idx in range(3):
-                        before_path = src / f"b-{idx}.md"
-                        after_path = src / f"a-{idx}.md"
-                        before_path.write_text(f"{before_tpl} Case {idx}.\n", encoding="utf-8")
-                        after_path.write_text(f"{after_tpl} Case {idx}.\n", encoding="utf-8")
-                        learn_edit(
-                            project,
-                            before=before_path,
-                            after=after_path,
-                            section="notes",
-                            origin="writer-first",
-                            date="2026-01-02",
-                        )
-                    edits = refresh_edit_summary(project)
-                    found = {str(item["id"]): item for item in mine_candidates(project, edits)}
-                    self.assertIn(rule_id, found)
-                    self.assertEqual(found[rule_id]["kind"], "struct")
-                    self.assertEqual(found[rule_id]["support"], 3)
+            with self.subTest(rule_id=rule_id), tempfile.TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                project = init_project(base / "voice", git=False)
+                src = base / "src"
+                src.mkdir()
+                for idx in range(3):
+                    before_path = src / f"b-{idx}.md"
+                    after_path = src / f"a-{idx}.md"
+                    before_path.write_text(f"{before_tpl} Case {idx}.\n", encoding="utf-8")
+                    after_path.write_text(f"{after_tpl} Case {idx}.\n", encoding="utf-8")
+                    learn_edit(
+                        project,
+                        before=before_path,
+                        after=after_path,
+                        section="notes",
+                        origin="writer-first",
+                        date="2026-01-02",
+                    )
+                edits = refresh_edit_summary(project)
+                found = {str(item["id"]): item for item in mine_candidates(project, edits)}
+                self.assertIn(rule_id, found)
+                self.assertEqual(found[rule_id]["kind"], "struct")
+                self.assertEqual(found[rule_id]["support"], 3)
 
     def test_split_paragraphs_counterexamples_track_merges(self) -> None:
         for idx in range(3):
@@ -302,9 +301,13 @@ class RuleDecisionTests(unittest.TestCase):
 
         result = confirm_rule(self.project, "cut:delve")
         self.assertEqual(result["status"], "confirmed")
-        self.assertEqual(sorted(result["pieces"]), sorted(slugs))
-        self.assertTrue(result["receipts"])
-        self.assertEqual(sorted(result["receipts"]), sorted(f"gold/{slug}" for slug in slugs))
+        pieces = result["pieces"]
+        receipts = result["receipts"]
+        assert isinstance(pieces, list)
+        assert isinstance(receipts, list)
+        self.assertEqual(sorted(str(item) for item in pieces), sorted(slugs))
+        self.assertTrue(receipts)
+        self.assertEqual(sorted(str(item) for item in receipts), sorted(f"gold/{slug}" for slug in slugs))
 
         state = load_rules(self.project)
         self.assertIn("cut:delve", state["confirmed"])
@@ -313,10 +316,9 @@ class RuleDecisionTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in confirmed], ["cut:delve"])
         self.assertIsNone(confirmed[0]["scope"])
         # The confirmation is traceable to the receipts it was based on.
-        self.assertEqual(
-            sorted(confirmed[0]["receipts"]),
-            sorted(state["confirmed"]["cut:delve"]["receipts"]),
-        )
+        stored = state["confirmed"]["cut:delve"]["receipts"]
+        assert isinstance(stored, list)
+        self.assertEqual(sorted(confirmed[0]["receipts"]), sorted(str(item) for item in stored))
 
     def test_confirmed_rule_appears_in_the_guide(self) -> None:
         self.three_cuts()
@@ -451,13 +453,13 @@ class RuleDecisionTests(unittest.TestCase):
         finish_session(self.project, None, session=str(session["id"]))
 
         edits = refresh_edit_summary(self.project)
-        candidate = next(
-            item for item in mine_candidates(self.project, edits) if item["id"] == "cut:delve"
-        )
+        candidate = next(item for item in mine_candidates(self.project, edits) if item["id"] == "cut:delve")
         receipt = f"sessions/{session['id']}/receipt.json"
         self.assertIn(receipt, candidate["receipts"])
         result = confirm_rule(self.project, "cut:delve")
-        self.assertIn(receipt, result["receipts"])
+        saved_receipts = result["receipts"]
+        assert isinstance(saved_receipts, list)
+        self.assertIn(receipt, saved_receipts)
 
     def test_structural_rules_governance_rendering_and_receipt_traceability(self) -> None:
         for index in range(2):
@@ -549,6 +551,63 @@ class RuleDecisionTests(unittest.TestCase):
         summary = rules_summary(self.project)
         self.assertEqual([item["id"] for item in summary["rejected"]], ["struct:split-paragraphs"])
         self.assertEqual(summary["hypotheses"], [])
+
+    def test_overlapping_buckets_keep_rejected_then_retired(self) -> None:
+        state = default_rules()
+        record: RuleDecisionRecord = {"at": "2026-01-02T00:00:00Z", "receipts": [], "pieces": []}
+        state["confirmed"] = {
+            "cut:delve": record,
+            "add:honestly": record,
+            "struct:keep": record,
+        }
+        state["rejected"] = {
+            "cut:delve": {"at": "2026-01-03T00:00:00Z"},
+            "struct:keep": {"at": "2026-01-03T00:00:00Z"},
+        }
+        state["retired"] = {
+            "add:honestly": {"at": "2026-01-03T00:00:00Z"},
+            "struct:keep": {"at": "2026-01-03T00:00:00Z"},
+        }
+        state["scope"] = {"cut:delve": "notes", "add:honestly": "essays"}
+        save_rules(self.project, state)
+        summary = rules_summary(self.project)
+        self.assertEqual([item["id"] for item in summary["confirmed"]], [])
+        self.assertEqual([item["id"] for item in summary["retired"]], ["add:honestly"])
+        self.assertEqual(
+            sorted(item["id"] for item in summary["rejected"]),
+            ["cut:delve", "struct:keep"],
+        )
+        self.assertEqual(active_rules(self.project), [])
+
+    def test_reconfirm_without_section_returns_to_global(self) -> None:
+        self.three_cuts()
+        confirm_rule(self.project, "cut:delve", section="notes")
+        self.assertEqual(active_rules(self.project)[0]["scope"], "notes")
+        cleared = confirm_rule(self.project, "cut:delve")
+        self.assertIsNone(cleared["scope"])
+        self.assertIsNone(active_rules(self.project)[0]["scope"])
+        self.assertNotIn("cut:delve", load_rules(self.project)["scope"])
+        confirm_rule(self.project, "cut:delve", section="essays")
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = main(["rules", "confirm", "cut:delve", "--global", "--project", str(self.project)])
+        self.assertEqual(code, 0)
+        self.assertIsNone(active_rules(self.project)[0]["scope"])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            conflict = main(
+                [
+                    "rules",
+                    "confirm",
+                    "cut:delve",
+                    "--global",
+                    "--section",
+                    "notes",
+                    "--project",
+                    str(self.project),
+                ]
+            )
+        self.assertEqual(conflict, 2)
+        self.assertIn("cannot be combined", err.getvalue())
 
 
 class RuleFileTests(unittest.TestCase):

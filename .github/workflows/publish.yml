@@ -64,11 +64,17 @@ jobs:
             exit 1
           fi
 
-      - name: Run tests
-        run: bash tests/run.sh
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
 
-      - name: Check CLI syntax
-        run: bash -n bin/ghostless setup
+      - name: Install pinned dev tools
+        run: python -m pip install ".[dev]"
+
+      - name: Run checks
+        run: ./scripts/check
+
+      - name: Package smoke
+        run: python tests/smoke_package.py
 
       - name: Publish to npm
         run: npm publish

@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +40,7 @@ from ghostless.judge import (  # noqa: E402
 from ghostless.learn import diff_texts  # noqa: E402
 from ghostless.paths import ProjectError  # noqa: E402
 from ghostless.project import discover, init_project, load_manifest  # noqa: E402
+from ghostless.schema import CompiledStats, EditSummary  # noqa: E402
 from ghostless.stats import Piece, compile_stats, summarize  # noqa: E402
 from ghostless.text import measure, normalize, strip_non_prose, words  # noqa: E402
 
@@ -97,8 +99,7 @@ def _make_corpus(root: Path) -> None:
     """Writer-authored gold so the held-out eval has voice to train on."""
     (root / "corpus" / "gold" / "desk.md").write_text(WRITER, encoding="utf-8")
     (root / "corpus" / "gold" / "walk.md").write_text(
-        "I take the long way home. So the walk clears my head.\n\n"
-        "And I leave the phone behind when I go.",
+        "I take the long way home. So the walk clears my head.\n\nAnd I leave the phone behind when I go.",
         encoding="utf-8",
     )
 
@@ -256,9 +257,7 @@ class ConfidenceTests(unittest.TestCase):
         self.assertEqual(high["level"], "high")
         self.assertEqual(high["note"], "")
 
-        spoken_only = corpus_confidence(
-            _confidence_stats(words=6000, written=0, sentences=300, pieces=12)
-        )
+        spoken_only = corpus_confidence(_confidence_stats(words=6000, written=0, sentences=300, pieces=12))
         self.assertEqual(spoken_only["level"], "low")
         self.assertIn("No written prose", spoken_only["note"])
 
@@ -267,9 +266,7 @@ class ConfidenceTests(unittest.TestCase):
         stats["sections"] = {
             "notes": {
                 "pieces": 2,
-                "unweighted": {
-                    "metrics": {"rhythmWords": 120, "dictionWords": 120, "rhythmSentences": 9}
-                },
+                "unweighted": {"metrics": {"rhythmWords": 120, "dictionWords": 120, "rhythmSentences": 9}},
             }
         }
         self.assertEqual(corpus_confidence(stats)["level"], "high")
@@ -350,7 +347,7 @@ class EvalTests(unittest.TestCase):
             _make_pair(root, "2026-01-02", WRITER)
             _make_pair(root, "2026-01-03", AI_DRAFT)
             _make_pair(root, "2026-01-04", AI_DRAFT)
-            report = evaluate(root, holdout=3, seed=0)
+            report: Any = evaluate(root, holdout=3, seed=0)
             pieces = discover(root, load_manifest(root))
 
         self.assertTrue(report["ok"], report)
@@ -388,10 +385,8 @@ class EvalTests(unittest.TestCase):
                 "I stop before the line gets tidy. I don't add a story.",
             ]
             for index, text in enumerate(variants):
-                (root / "corpus" / "gold" / f"note-{index}.md").write_text(
-                    text + "\n", encoding="utf-8"
-                )
-            report = evaluate(root, holdout=2, seed=1)
+                (root / "corpus" / "gold" / f"note-{index}.md").write_text(text + "\n", encoding="utf-8")
+            report: Any = evaluate(root, holdout=2, seed=1)
 
         self.assertTrue(report["ok"], report)
         self.assertEqual(report["mode"], "prose")
@@ -407,7 +402,7 @@ class EvalTests(unittest.TestCase):
             root = Path(tmp) / "voice"
             init_project(root, git=False)
             (root / "corpus" / "gold" / "only.md").write_text(WRITER + "\n", encoding="utf-8")
-            report = evaluate(root)
+            report: Any = evaluate(root)
             self.assertFalse(report["ok"])
             self.assertIn("at least two gold prose pieces", str(report["error"]))
             self.assertIn("ghostless eval:", format_eval(report))
@@ -527,7 +522,7 @@ class EvalTests(unittest.TestCase):
             self.assertEqual([piece.path for piece in pieces], ["holdouts/good.md"])
             self.assertEqual(notes, ["Skipped holdouts/bad.md: not valid UTF-8."])
 
-            report = evaluate(root)
+            report: Any = evaluate(root)
         self.assertTrue(report["ok"], report)
         self.assertIn("Skipped holdouts/bad.md: not valid UTF-8.", report["notes"])
         self.assertEqual(report["holdouts"]["pieces"], 1)
@@ -560,7 +555,7 @@ class EvalTests(unittest.TestCase):
             )
             build_voice(root)
             stats = json.loads((root / "voice-stats.json").read_text(encoding="utf-8"))
-            report = evaluate(root)
+            report: Any = evaluate(root)
 
         self.assertEqual(stats["counts"]["total"], 1)
         self.assertEqual([entry["path"] for entry in stats["files"]], ["corpus/gold/only.md"])
@@ -590,7 +585,7 @@ class EvalTests(unittest.TestCase):
             _make_corpus(root)
             (root / "holdouts" / "kept.md").write_text(WRITER + "\n", encoding="utf-8")
 
-            prose_report = evaluate(root, holdout=1, seed=0)
+            prose_report: Any = evaluate(root, holdout=1, seed=0)
             self.assertTrue(prose_report["ok"], prose_report)
             self.assertEqual(prose_report["mode"], "prose")
             self.assertIsInstance(prose_report["holdouts"], dict)
@@ -603,7 +598,7 @@ class EvalTests(unittest.TestCase):
             _make_pair(root, "2026-01-03", AI_DRAFT)
             _make_pair(root, "2026-01-04", AI_DRAFT)
 
-            edits_report = evaluate(root, holdout=3, seed=0)
+            edits_report: Any = evaluate(root, holdout=3, seed=0)
             self.assertTrue(edits_report["ok"], edits_report)
             self.assertEqual(edits_report["mode"], "edits")
             self.assertFalse(edits_report["cv"])
@@ -658,8 +653,8 @@ class EvalTests(unittest.TestCase):
                 *,
                 weights: dict[str, float],
                 gold_voice_minimum: int,
-                edits: dict[str, object] | None = None,
-            ) -> dict[str, object]:
+                edits: EditSummary | None = None,
+            ) -> CompiledStats:
                 seen_train_paths.append({piece.path for piece in train_pieces})
                 return compile_stats(
                     train_pieces,
@@ -669,7 +664,7 @@ class EvalTests(unittest.TestCase):
                 )
 
             with mock.patch("ghostless.eval.compile_stats", side_effect=spy_compile):
-                report = evaluate(root)
+                report: Any = evaluate(root)
 
         self.assertTrue(report["ok"], report)
         self.assertEqual(report["mode"], "edits")
@@ -732,11 +727,11 @@ class EvalTests(unittest.TestCase):
                 )
 
             # With only 2 pairs, auto-CV is off unless cv=True is requested.
-            two_pair_default = evaluate(root)
+            two_pair_default: Any = evaluate(root)
             self.assertFalse(two_pair_default["cv"])
             self.assertEqual(two_pair_default["holdoutCount"], 1)
 
-            two_pair_cv = evaluate(root, cv=True)
+            two_pair_cv: Any = evaluate(root, cv=True)
             self.assertTrue(two_pair_cv["ok"], two_pair_cv)
             self.assertTrue(two_pair_cv["cv"])
             self.assertEqual(two_pair_cv["holdoutCount"], 2)
@@ -780,11 +775,10 @@ class EvalTests(unittest.TestCase):
             root = Path(tmp) / "voice"
             init_project(root, git=False)
             _make_pair(root, "2026-01-01", WRITER)
-            report = evaluate(root, cv=True)
+            report: Any = evaluate(root, cv=True)
         self.assertFalse(report["ok"])
         self.assertTrue(report["cv"])
         self.assertIn("no corpus to build targets from", str(report["error"]))
-
 
 
 if __name__ == "__main__":

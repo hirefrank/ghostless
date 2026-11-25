@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Local gate matching .github/workflows/test.yml.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+export PYTHONUTF8=1
+export PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}"
+export GHOSTLESS_NO_UPDATE=1
+
+python3 -m ruff check lib tests
+python3 -m ruff format --check lib tests
+python3 -m mypy lib/ghostless tests
+shellcheck bin/ghostless setup tests/run.sh
+bash -n bin/ghostless setup tests/run.sh
+node --check bin/ghostless.cjs tests/run.cjs
+python3 -m coverage run -m unittest discover -s tests -p 'test_*.py'
+python3 -m coverage report --include='lib/ghostless/*' --fail-under=90
+report="$(mktemp)"
+python3 -m coverage json -o "$report" --include='lib/ghostless/*'
+python3 - "$report" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+bad: list[str] = []
+for name, meta in sorted(data["files"].items()):
+    summary = meta["summary"]
+    percent = summary["percent_covered"]
+    if not isinstance(percent, int | float):
+        raise SystemExit(f"coverage json missing percent for {name}")
+    if percent < 75:
+        bad.append(f"{name} {percent:.1f}%")
+if bad:
+    print("Modules under 75% coverage:", file=sys.stderr)
+    print("\n".join(bad), file=sys.stderr)
+    sys.exit(1)
+PY
+rm -f "$report"

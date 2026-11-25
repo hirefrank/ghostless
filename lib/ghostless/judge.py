@@ -4,31 +4,50 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Literal
+from typing import Literal, cast
 
 from ghostless.paths import ProjectError
 from ghostless.schema import (
     BOTH_DIRECTIONS as BOTH_DIRECTIONS,
+)
+from ghostless.schema import (
     METRIC_LABELS as METRIC_LABELS,
+)
+from ghostless.schema import (
     OVERRIDABLE_METRICS as OVERRIDABLE_METRICS,
+)
+from ghostless.schema import (
     BannedHit,
     ConfirmedRuleHit,
     JudgeCheck,
     JudgeReport,
     MetricBlock,
+    MetricMap,
     StructureHitDict,
 )
 from ghostless.stats import (
     CONFIDENCE_HIGH_PIECES as CONFIDENCE_HIGH_PIECES,
+)
+from ghostless.stats import (
     CONFIDENCE_HIGH_WORDS as CONFIDENCE_HIGH_WORDS,
+)
+from ghostless.stats import (
     CONFIDENCE_MIN_PIECES as CONFIDENCE_MIN_PIECES,
+)
+from ghostless.stats import (
     CONFIDENCE_MIN_WORDS as CONFIDENCE_MIN_WORDS,
+)
+from ghostless.stats import (
     Piece,
-    apply_overrides as apply_overrides,
     as_mapping,
-    corpus_confidence as corpus_confidence,
     metrics_of,
     summarize,
+)
+from ghostless.stats import (
+    apply_overrides as apply_overrides,
+)
+from ghostless.stats import (
+    corpus_confidence as corpus_confidence,
 )
 from ghostless.tells import ban_hits, structural_tells
 from ghostless.text import strip_code_and_comments, strip_non_prose
@@ -95,9 +114,7 @@ def judge_text(
     targets, target_label = _targets(stats, section)
     raw_overrides = stats.get("overrides")
     effective_overrides = (
-        overrides
-        if overrides is not None
-        else (raw_overrides if isinstance(raw_overrides, Mapping) else None)
+        overrides if overrides is not None else (raw_overrides if isinstance(raw_overrides, Mapping) else None)
     )
     target_metrics = apply_overrides(metrics_of(targets), effective_overrides)
     confidence = corpus_confidence(stats, section)
@@ -142,9 +159,7 @@ def judge_text(
     draft_metrics = metrics_of(draft)
     ban_list = _string_list(as_mapping(stats.get("weighted")).get("banList"))
     cleaned = strip_non_prose(text)
-    banned: list[BannedHit] = [
-        {"tell": tell, "count": count} for tell, count in ban_hits(cleaned, ban_list)
-    ]
+    banned: list[BannedHit] = [{"tell": tell, "count": count} for tell, count in ban_hits(cleaned, ban_list)]
     banned_words = {item["tell"].casefold() for item in banned}
     active_cuts = _active_cut_rules(stats, section)
     scope_by_word = {word.casefold(): rule_scope for word, rule_scope in active_cuts}
@@ -210,7 +225,7 @@ def judge_text(
         "confirmedRules": confirmed_hits,
         "structure": structure,
         "placeholders": placeholders,
-        "draft": dict(draft_metrics),
+        "draft": cast(MetricMap, dict(draft_metrics)),
         "targets": target_metrics,
         "confidence": confidence,
         "lowConfidence": not confidence["trustworthy"],
@@ -426,8 +441,7 @@ def _clean(value: float) -> float | int:
 
 def _has_comparable_targets(target_metrics: Mapping[str, object]) -> bool:
     return any(
-        isinstance(target_metrics.get(key), (int, float))
-        and not isinstance(target_metrics.get(key), bool)
+        isinstance(target_metrics.get(key), (int, float)) and not isinstance(target_metrics.get(key), bool)
         for key in BOTH_DIRECTIONS
     )
 
@@ -438,9 +452,7 @@ def _string_list(value: object) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
-def _active_cut_rules(
-    stats: Mapping[str, object], section: str | None
-) -> list[tuple[str, str | None]]:
+def _active_cut_rules(stats: Mapping[str, object], section: str | None) -> list[tuple[str, str | None]]:
     """Return deduplicated (word, scope) cut rules confirmed for `section`."""
     rules = as_mapping(stats.get("rules"))
     confirmed = rules.get("confirmed")

@@ -37,7 +37,7 @@ BOTH_DIRECTIONS = (
 
 # Metrics a manifest `overrides` entry may pin: the two-direction metrics
 # plus em dashes, which has its own comparison.
-OVERRIDABLE_METRICS = BOTH_DIRECTIONS + ("emDashesPer1k",)
+OVERRIDABLE_METRICS = (*BOTH_DIRECTIONS, "emDashesPer1k")
 
 METRIC_LABELS: dict[str, str] = {
     "medianSentenceLength": "median sentence length",
@@ -222,6 +222,23 @@ class TokenAlignment(TypedDict):
     unchangedTokens: int
 
 
+StructuralChange = TypedDict(
+    "StructuralChange",
+    {
+        "kind": str,
+        "mark": str,
+        "before": int,
+        "after": int,
+        "delta": int,
+        "change": str,
+        "from": int,
+        "to": int,
+        "preview": str,
+    },
+    total=False,
+)
+
+
 class DiffSummary(TypedDict):
     wordsBefore: int
     wordsAfter: int
@@ -246,7 +263,7 @@ class DiffSummary(TypedDict):
     paragraphsAfter: int
     sentencesBefore: int
     sentencesAfter: int
-    structuralChanges: list[dict[str, object]]
+    structuralChanges: list[StructuralChange]
     structuralChangeCount: int
 
 
@@ -315,26 +332,61 @@ class RuleSummary(TypedDict):
     retired: list[SuppressedRule]
 
 
+class RuleDecisionRecord(TypedDict, total=False):
+    at: str
+    receipts: list[str]
+    pieces: list[str]
+
+
+class RuleDecisionResult(TypedDict, total=False):
+    id: str
+    status: str
+    scope: str | None
+    receipts: list[str]
+    pieces: list[str]
+    at: str
+
+
 class RulesState(TypedDict):
     kind: Literal["ghostless-rules"]
     version: Literal[1]
-    confirmed: dict[str, dict[str, object]]
-    rejected: dict[str, dict[str, object]]
-    retired: dict[str, dict[str, object]]
+    confirmed: dict[str, RuleDecisionRecord]
+    rejected: dict[str, RuleDecisionRecord]
+    retired: dict[str, RuleDecisionRecord]
     scope: dict[str, str]
+
+
+class CheckRecord(TypedDict, total=False):
+    id: str
+    text: str
+    span: str
+    polarity: str
+    status: str
+    reused: bool
+    pair: str | None
+    section: str | None
+    at: str
+
+
+class CheckItem(CheckRecord):
+    pass
+
+
+class CheckDecisionResult(CheckRecord):
+    pass
 
 
 class ChecksState(TypedDict):
     kind: Literal["ghostless-checks"]
     version: Literal[1]
-    confirmed: dict[str, dict[str, object]]
-    rejected: dict[str, dict[str, object]]
+    confirmed: dict[str, CheckRecord]
+    rejected: dict[str, CheckRecord]
 
 
 class ChecksSummary(TypedDict):
-    confirmed: list[dict[str, object]]
-    pending: list[dict[str, object]]
-    rejected: list[dict[str, object]]
+    confirmed: list[CheckItem]
+    pending: list[CheckItem]
+    rejected: list[CheckItem]
 
 
 class CompiledStats(TypedDict):
@@ -391,6 +443,22 @@ class StructureHitDict(TypedDict):
     excerpt: str
 
 
+class MetricMap(TypedDict, total=False):
+    rhythmWords: float
+    rhythmSentences: float
+    dictionWords: float
+    formatParagraphs: float
+    medianSentenceLength: float | int | None
+    sentenceLengthDistribution: Distribution
+    contractionsPer1k: float | None
+    iPer1k: float | None
+    emDashesPer1k: float | int | None
+    questionsPer1k: float | None
+    medianParagraphLength: float | int | None
+    openerShare: float | None
+    openers: OpenerRates
+
+
 class JudgeReport(TypedDict):
     ok: bool
     score: int
@@ -403,8 +471,8 @@ class JudgeReport(TypedDict):
     confirmedRules: list[ConfirmedRuleHit]
     structure: list[StructureHitDict]
     placeholders: list[str]
-    draft: dict[str, object]
-    targets: dict[str, object]
+    draft: MetricMap
+    targets: MetricMap
     confidence: CorpusConfidence
     lowConfidence: bool
     stale: NotRequired[bool]
@@ -412,8 +480,299 @@ class JudgeReport(TypedDict):
     error: NotRequired[str]
 
 
+class EvalItem(TypedDict, total=False):
+    kind: str
+    path: str
+    slug: str
+    section: str | None
+    origin: str | None
+    before: str
+    words: int
+    score: int | None
+    ok: bool
+    editRate: float
+    accepted: bool
+    error: str
+
+
+class EvalSummary(TypedDict, total=False):
+    pieces: int
+    words: int
+    writtenWords: int
+    sentences: int
+    confidence: str
+    judged: int
+    meanScore: float | None
+    minScore: float | None
+    maxScore: float | None
+    meanEditRate: float | None
+    passRate: float | None
+
+
+class HoldoutSummary(EvalSummary):
+    pass
+
+
+class ScoreGroup(TypedDict):
+    count: int
+    meanScore: float | None
+
+
+class AcceptanceSummary(TypedDict):
+    threshold: float
+    accepted: ScoreGroup
+    revised: ScoreGroup
+    scoreGap: float | None
+
+
+class CorrelationSummary(TypedDict):
+    pearson: float | None
+    spearman: float | None
+    n: int
+
+
+class EvalReport(TypedDict, total=False):
+    ok: bool
+    mode: str
+    cv: bool
+    seed: int
+    totalCount: int
+    holdoutCount: int
+    train: EvalSummary | None
+    holdout: HoldoutSummary | None
+    holdouts: HoldoutEval | None
+    summary: EvalSummary
+    correlation: CorrelationSummary | None
+    acceptance: AcceptanceSummary | None
+    direction: str | None
+    verdict: str
+    items: list[EvalItem]
+    notes: list[str]
+    confirmedChecks: GradeReport
+    error: str
+    skillFiles: list[str]
+
+
 class HoldoutEval(TypedDict):
     pieces: int
-    train: dict[str, object]
-    summary: dict[str, object]
-    items: list[dict[str, object]]
+    train: EvalSummary
+    summary: HoldoutSummary
+    items: list[EvalItem]
+
+
+class SessionMeta(TypedDict):
+    kind: str
+    version: int
+    id: str
+    date: str
+    createdAt: str
+    section: str | None
+    origin: str
+    sources: list[str]
+    sourceDraftName: str
+    status: str
+    beforeFile: str
+    afterFile: str
+    notesFile: str
+    receiptFile: str
+    beforeSha256: str
+
+
+class SessionStartResult(SessionMeta):
+    path: str
+
+
+class SessionListEntry(TypedDict):
+    id: str | None
+    createdAt: str | None
+    sourceDraftName: str | None
+    status: str
+    path: str
+
+
+class SessionSnapshotResult(TypedDict):
+    id: str
+    path: str
+    savedAt: str
+
+
+class SessionChangesSummary(DiffSummary):
+    pass
+
+
+class SessionReceipt(TypedDict, total=False):
+    kind: str
+    version: int
+    sessionId: str
+    finishedAt: str
+    origin: str
+    section: str | None
+    sources: list[str]
+    sourceDraftName: str | None
+    beforeSha256: str
+    finalSha256: str
+    beforeFile: str
+    finalFile: str
+    notesFile: str | None
+    notesSha256: str | None
+    learnedPath: str
+    tier: str | None
+    confirmation: str | None
+    changes: SessionChangesSummary
+    checks: list[CheckItem]
+    promotion: LearnResult
+    rebuilt: bool
+
+
+class ManifestFile(TypedDict):
+    kind: Literal["ghostless"]
+    version: Literal[1]
+    weights: dict[str, float]
+    goldVoiceMinimum: int
+    updateCheck: bool
+    failUnder: int
+
+
+class LearnResult(TypedDict, total=False):
+    slug: str
+    path: str
+    meta: object
+    edits: EditSummary
+    origin: str | None
+    changed: bool
+    confirmation: str
+    tier: str
+    model: str | None
+    tool: str | None
+    checks: list[CheckItem]
+    warning: str | None
+    previous: str
+    gold: bool
+
+
+class HoldoutCase(TypedDict, total=False):
+    slug: str
+    section: str | None
+    before: str
+
+
+CheckGradeItem = TypedDict(
+    "CheckGradeItem",
+    {
+        "check": str,
+        "text": str,
+        "slug": str,
+        "case": str,
+        "pass": bool,
+    },
+)
+
+
+class GradeReport(TypedDict):
+    passes: int
+    total: int
+    label: str | None
+    session: str | None
+    fresh: bool
+    skillSha256: str | None
+    skillFiles: dict[str, str | None]
+    guideSha256: str | None
+    items: list[CheckGradeItem]
+    note: str | None
+
+
+BridgeParams = TypedDict(
+    "BridgeParams",
+    {
+        "project": str,
+        "path": str,
+        "text": str,
+        "section": str,
+        "action": str,
+        "ruleId": str,
+        "target": str,
+        "global": bool,
+        "session": str,
+        "after": str,
+        "notes": str,
+        "final": str,
+        "note": str,
+        "checks": list[str],
+        "slug": str,
+        "demote": bool,
+        "promote": bool,
+        "rebuild": bool,
+        "draft": str,
+        "origin": str,
+        "before": str,
+        "date": str,
+        "sources": list[str],
+    },
+    total=False,
+)
+
+
+class ProjectResolveResult(TypedDict):
+    project: str | None
+    source: str | None
+
+
+class BridgeRequest(TypedDict, total=False):
+    id: str | int | None
+    method: str
+    params: BridgeParams
+
+
+class BridgeSessionItem(SessionListEntry, total=False):
+    section: str | None
+    origin: str | None
+    editRate: float | None
+    learnedPath: str | None
+
+
+ConfirmedCheckView = TypedDict(
+    "ConfirmedCheckView",
+    {
+        "id": str,
+        "text": str | None,
+        "span": str,
+        "polarity": str,
+        "section": str | None,
+        "pass": bool,
+    },
+)
+
+
+class BridgeJudgeResult(TypedDict, total=False):
+    needsBuild: bool
+    error: str
+    ok: bool
+    score: int
+    failUnder: int
+    reviewRequired: bool
+    assessment: str
+    section: str
+    checks: list[JudgeCheck]
+    banned: list[BannedHit]
+    confirmedRules: list[ConfirmedRuleHit]
+    structure: list[StructureHitDict]
+    placeholders: list[str]
+    draft: MetricMap
+    targets: MetricMap
+    confidence: CorpusConfidence
+    lowConfidence: bool
+    stale: bool
+    staleSources: list[str]
+    availableSections: list[str]
+    confirmedChecks: list[ConfirmedCheckView]
+
+
+class BridgeBuildResult(CompiledStats):
+    pass
+
+
+class BridgeResponse(TypedDict, total=False):
+    id: str | int | None
+    ok: bool
+    error: str
+    result: object

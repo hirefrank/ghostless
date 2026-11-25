@@ -22,15 +22,26 @@ import hashlib
 import json
 import os
 import re
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from ghostless.harness import AGENTS, COPY_MARKER, agent_dir
 from ghostless.io import atomic_write_json, sha256_text, utc_now_iso
 from ghostless.paths import ProjectError, suite_root
-from ghostless.schema import ChecksState, ChecksSummary
+from ghostless.schema import (
+    CheckDecisionResult,
+    CheckGradeItem,
+    CheckItem,
+    CheckRecord,
+    ChecksState,
+    ChecksSummary,
+    GradeReport,
+)
 from ghostless.tells import AI_TELLS
 from ghostless.text import STOPWORDS, WORD_RE, normalize, strip_non_prose, word_tokens
+
+_Bucket = Literal["confirmed", "rejected"]
 
 MAX_CHECK_CHARS = 400
 MAX_SPAN_CHARS = 120
@@ -101,11 +112,11 @@ def default_checks() -> ChecksState:
     }
 
 
-def _records_dict(raw: dict[object, object]) -> dict[str, dict[str, object]]:
-    return {
-        str(key): dict(value) if isinstance(value, dict) else {}
-        for key, value in raw.items()
-    }
+def _records_dict(raw: dict[object, object]) -> dict[str, CheckRecord]:
+    mapped: dict[str, CheckRecord] = {}
+    for key, value in raw.items():
+        mapped[str(key)] = cast(CheckRecord, value) if isinstance(value, dict) else {}
+    return mapped
 
 
 def load_checks(root: Path) -> ChecksState:
@@ -158,7 +169,7 @@ def prepare_checks(
     before: str,
     after: str,
     texts: list[str],
-) -> list[dict[str, object]]:
+) -> list[CheckRecord]:
     """Turn writer sentences into pending checks, or refuse them.
 
     The text is stored as given (stripped). A model does not write it. A
@@ -166,7 +177,7 @@ def prepare_checks(
     rejected: saving it again does not create a new hypothesis.
     """
     state = load_checks(root)
-    prepared: list[dict[str, object]] = []
+    prepared: list[CheckRecord] = []
     seen: set[str] = set()
     for raw in texts:
         if not isinstance(raw, str):
@@ -175,14 +186,11 @@ def prepare_checks(
         if not cleaned:
             raise ProjectError("A check cannot be empty.")
         if "\n" in cleaned or len(cleaned) > MAX_CHECK_CHARS:
-            raise ProjectError(
-                "A check is one sentence from the edit, not a draft and not a list."
-            )
+            raise ProjectError("A check is one sentence from the edit, not a draft and not a list.")
         overlap = mechanical_overlap(cleaned)
         if overlap:
             raise ProjectError(
-                f"This check restates {overlap!r}, which judge already scores. "
-                "Save a judgment those counts cannot see."
+                f"This check restates {overlap!r}, which judge already scores. Save a judgment those counts cannot see."
             )
         identifier = check_id(cleaned)
         if identifier in seen:
@@ -190,10 +198,7 @@ def prepare_checks(
         seen.add(identifier)
         rejected = _record(state, "rejected", identifier)
         if rejected is not None:
-            raise ProjectError(
-                f"{identifier} was rejected and stays rejected. "
-                "A later edit does not bring it back."
-            )
+            raise ProjectError(f"{identifier} was rejected and stays rejected. A later edit does not bring it back.")
         confirmed = _record(state, "confirmed", identifier)
         if confirmed is not None:
             prepared.append({**confirmed, "id": identifier, "status": "confirmed", "reused": True})
@@ -216,7 +221,7 @@ def prepare_checks(
     return prepared
 
 
-def stored_check(item: dict[str, object]) -> dict[str, object]:
+def stored_check(item: CheckRecord) -> CheckRecord:
     """The fields kept on a pair. Decisions live in checks.json, not here."""
     return {
         "id": item["id"],
@@ -226,16 +231,12 @@ def stored_check(item: dict[str, object]) -> dict[str, object]:
     }
 
 
-def new_pair_checks(prepared: list[dict[str, object]]) -> list[dict[str, object]]:
+def new_pair_checks(prepared: list[CheckRecord]) -> list[CheckRecord]:
     """Checks this edit establishes. Reused and already-confirmed ones stay put."""
-    return [
-        stored_check(item)
-        for item in prepared
-        if item.get("status") == "pending" and not item.get("reused")
-    ]
+    return [stored_check(item) for item in prepared if item.get("status") == "pending" and not item.get("reused")]
 
 
-def write_pair_checks(root: Path, slug: str, texts: list[str]) -> list[dict[str, object]]:
+def write_pair_checks(root: Path, slug: str, texts: list[str]) -> list[CheckRecord]:
     """Attach checks to an existing learned pair. The pair is the edit."""
     folder = root / "gold" / slug
     meta_path = folder / "meta.json"
@@ -255,7 +256,9 @@ def write_pair_checks(root: Path, slug: str, texts: list[str]) -> list[dict[str,
     fresh = new_pair_checks(prepared)
     if fresh:
         current = meta.get("checks")
-        merged = [item for item in current if isinstance(item, dict)] if isinstance(current, list) else []
+        merged = (
+            [cast(CheckRecord, item) for item in current if isinstance(item, dict)] if isinstance(current, list) else []
+        )
         known = {item.get("id") for item in merged}
         for item in fresh:
             if item["id"] not in known:
@@ -270,11 +273,16 @@ def confirm_check(
     token: str,
     *,
     section: str | None = None,
-) -> dict[str, object]:
+    clear_section: bool = False,
+) -> CheckDecisionResult:
     """Make a saved check active. An explicit confirm can reverse a rejection.
 
     A rebuild or a new edit cannot. That is the same gate as a voice rule:
     rejection sticks until the writer confirms it again on purpose.
+    `clear_section` returns the check to every section. Omitting both that
+    and `section` keeps a section already stored on a live confirm, or the
+    section of a still-pending pair. A rejected record does not put a section
+    back.
     """
     state = load_checks(root)
     identifier = resolve_check_id(root, token)
@@ -284,8 +292,10 @@ def confirm_check(
             f"No check {token}. Save one from an edit with "
             "`ghostless learn --check` or `ghostless checks add <slug> --text`."
         )
-    checked = _checked_section(section)
-    if checked is None:
+    if clear_section and section is not None:
+        raise ProjectError("--global cannot be combined with --section.")
+    checked = None if clear_section else _checked_section(section)
+    if checked is None and not clear_section:
         current = proposal.get("section")
         checked = current if isinstance(current, str) and current else None
     state["confirmed"][identifier] = {
@@ -302,15 +312,13 @@ def confirm_check(
     return {"id": identifier, "status": "confirmed", **record}
 
 
-def reject_check(root: Path, token: str) -> dict[str, object]:
+def reject_check(root: Path, token: str) -> CheckDecisionResult:
     """Suppress a check. Later edits that repeat the sentence do not revive it."""
     state = load_checks(root)
     identifier = resolve_check_id(root, token)
     proposal = _proposal(root, state, identifier)
     if proposal is None:
-        raise ProjectError(
-            f"No check {token}. Save one from an edit before rejecting it."
-        )
+        raise ProjectError(f"No check {token}. Save one from an edit before rejecting it.")
     state["rejected"][identifier] = {
         "at": utc_now_iso(),
         "text": proposal["text"],
@@ -349,9 +357,10 @@ def resolve_check_id(root: Path, token: str) -> str:
 def checks_summary(root: Path) -> ChecksSummary:
     """Confirmed, still-pending, and rejected checks for the guide and the CLI."""
     state = load_checks(root)
-    confirmed_ids = set(state["confirmed"])
+    # Rejection wins when a merge leaves the same id in both buckets.
     rejected_ids = set(state["rejected"])
-    pending: list[dict[str, object]] = []
+    confirmed_ids = set(state["confirmed"]) - rejected_ids
+    pending: list[CheckRecord] = []
     seen: set[str] = set()
     for item in _pair_checks(root):
         identifier = str(item["id"])
@@ -360,11 +369,12 @@ def checks_summary(root: Path) -> ChecksSummary:
         seen.add(identifier)
         pending.append(item)
     confirmed = [
-        {"id": identifier, **record}
+        cast(CheckItem, {"id": identifier, **record})
         for identifier, record in _items(state, "confirmed")
+        if identifier in confirmed_ids
     ]
     rejected = [
-        {"id": identifier, "status": "rejected", **record}
+        cast(CheckItem, {"id": identifier, "status": "rejected", **record})
         for identifier, record in _items(state, "rejected")
     ]
     confirmed.sort(key=lambda item: str(item["id"]))
@@ -402,9 +412,7 @@ def witness_for(text: str, before: str, after: str) -> dict[str, str]:
                 f"is about, in double quotes. Candidates: {preview}."
             )
     if not passes_check(after, polarity, span):
-        raise ProjectError(
-            "The after file would fail this check, so it cannot be the case that already passes."
-        )
+        raise ProjectError("The after file would fail this check, so it cannot be the case that already passes.")
     return {"span": span, "polarity": polarity}
 
 
@@ -422,12 +430,12 @@ def passes_check(text: str, polarity: str, span: str) -> bool:
 
 def grade_confirmed(
     root: Path,
-    held: list[dict[str, object]],
+    held: Sequence[Mapping[str, object]],
     *,
     seed: int,
     skill_path: Path | None = None,
     guide_path: Path | None = None,
-) -> dict[str, object]:
+) -> GradeReport:
     """Grade confirmed checks on held-out befores plus each check's after.
 
     The result is passes/total. It is not a blended score. A new session id
@@ -470,8 +478,7 @@ def grade_confirmed(
         for item in held
     ]
     after_hashes = {
-        str(item["pair"]): _text_sha256(_read_after(root, str(item["pair"])))
-        for item in confirmed if item.get("pair")
+        str(item["pair"]): _text_sha256(_read_after(root, str(item["pair"]))) for item in confirmed if item.get("pair")
     }
     fingerprint = _fingerprint(skill_sha, guide_sha, seed, cases, after_hashes, confirmed)
     items, skipped, missing_afters = _grade_items(root, confirmed, held)
@@ -561,7 +568,7 @@ def _text_sha256(text: str | None) -> str | None:
     return sha256_text(text) if text is not None else None
 
 
-def empty_confirmed_checks(note: str) -> dict[str, object]:
+def empty_confirmed_checks(note: str) -> GradeReport:
     return {
         "passes": 0,
         "total": 0,
@@ -578,10 +585,10 @@ def empty_confirmed_checks(note: str) -> dict[str, object]:
 
 def _grade_items(
     root: Path,
-    confirmed: list[dict[str, object]],
-    held: list[dict[str, object]],
-) -> tuple[list[dict[str, object]], int, int]:
-    items: list[dict[str, object]] = []
+    confirmed: list[CheckRecord],
+    held: Sequence[Mapping[str, object]],
+) -> tuple[list[CheckGradeItem], int, int]:
+    items: list[CheckGradeItem] = []
     skipped = 0
     missing_afters = 0
     for check in confirmed:
@@ -636,7 +643,7 @@ def _grade_row(
     slug: str,
     case: str,
     passed: bool,
-) -> dict[str, object]:
+) -> CheckGradeItem:
     return {
         "check": check_id,
         "text": text,
@@ -666,9 +673,9 @@ def _fingerprint(
     skill_sha: str | None,
     guide_sha: str | None,
     seed: int,
-    cases: list[dict[str, object]],
+    cases: Sequence[Mapping[str, object]],
     after_hashes: dict[str, str | None],
-    confirmed: list[dict[str, object]],
+    confirmed: list[CheckRecord],
 ) -> str:
     payload = {
         "skill": skill_sha,
@@ -720,13 +727,9 @@ def _polarity_for_quote(span: str, before: str, after: str) -> str:
     if not _usable_span(span, quoted=True):
         if _judge_already_sees(span):
             raise ProjectError(
-                f"{span!r} is a tell judge already scores. "
-                "A check is for a judgment those counts cannot see."
+                f"{span!r} is a tell judge already scores. A check is for a judgment those counts cannot see."
             )
-        raise ProjectError(
-            f"{span!r} is not a span this check can grade. "
-            "Quote a short phrase the edit added or cut."
-        )
+        raise ProjectError(f"{span!r} is not a span this check can grade. Quote a short phrase the edit added or cut.")
     in_before = _contains(before, span)
     in_after = _contains(after, span)
     if in_before and not in_after:
@@ -734,12 +737,8 @@ def _polarity_for_quote(span: str, before: str, after: str) -> str:
     if in_after and not in_before:
         return "require"
     if in_before and in_after:
-        raise ProjectError(
-            f"{span!r} is in both the before and the after, so the edit did not decide it."
-        )
-    raise ProjectError(
-        f"{span!r} is not in this edit. Quote a span from the before or the after."
-    )
+        raise ProjectError(f"{span!r} is in both the before and the after, so the edit did not decide it.")
+    raise ProjectError(f"{span!r} is not in this edit. Quote a span from the before or the after.")
 
 
 def _candidate_spans(before: str, after: str) -> list[tuple[str, str]]:
@@ -774,11 +773,7 @@ def _candidate_spans(before: str, after: str) -> list[tuple[str, str]]:
 def _surface(text: str, tokens: list[str]) -> str | None:
     if not tokens:
         return None
-    pattern = (
-        rf"(?i)(?<!{_WORD_EDGE})"
-        + r"\W+".join(re.escape(token) for token in tokens)
-        + rf"(?!{_WORD_EDGE})"
-    )
+    pattern = rf"(?i)(?<!{_WORD_EDGE})" + r"\W+".join(re.escape(token) for token in tokens) + rf"(?!{_WORD_EDGE})"
     match = re.search(pattern, _body(text))
     if match is None:
         return " ".join(tokens)
@@ -794,8 +789,7 @@ def _usable_span(span: str, *, quoted: bool) -> bool:
     content = [
         token
         for token in tokens
-        if any(character.isdigit() for character in token)
-        or (token not in STOPWORDS and len(token) >= 3)
+        if any(character.isdigit() for character in token) or (token not in STOPWORDS and len(token) >= 3)
     ]
     if not content:
         return False
@@ -847,8 +841,8 @@ def _prose_words(text: str) -> list[str]:
     return WORD_RE.findall(_body(text))
 
 
-def _pair_checks(root: Path) -> list[dict[str, object]]:
-    found: list[dict[str, object]] = []
+def _pair_checks(root: Path) -> list[CheckRecord]:
+    found: list[CheckRecord] = []
     folder = root / "gold"
     if not folder.is_dir():
         return found
@@ -875,7 +869,7 @@ def _parse_pair_check(
     *,
     pair: str,
     section: str | None,
-) -> dict[str, object] | None:
+) -> CheckRecord | None:
     if not isinstance(item, dict):
         return None
     identifier = item.get("id")
@@ -886,54 +880,67 @@ def _parse_pair_check(
         return None
     if polarity not in ("forbid", "require"):
         return None
-    return {
-        "id": identifier,
-        "text": text,
-        "span": span,
-        "polarity": polarity,
-        "pair": pair,
-        "section": section,
-    }
+    return cast(
+        CheckRecord,
+        {
+            "id": identifier,
+            "text": text,
+            "span": span,
+            "polarity": polarity,
+            "pair": pair,
+            "section": section,
+        },
+    )
 
 
-def _find_pending(root: Path, identifier: str) -> dict[str, object] | None:
+def _find_pending(root: Path, identifier: str) -> CheckRecord | None:
     for item in _pair_checks(root):
         if item.get("id") == identifier:
             return item
     return None
 
 
-def _proposal(root: Path, state: ChecksState, identifier: str) -> dict[str, object] | None:
-    for key in ("confirmed", "rejected"):
+def _proposal(root: Path, state: ChecksState, identifier: str) -> CheckRecord | None:
+    buckets: tuple[_Bucket, ...] = ("confirmed", "rejected")
+    for key in buckets:
         record = _record(state, key, identifier)
         if record is not None and isinstance(record.get("text"), str) and isinstance(record.get("span"), str):
-            section = record.get("section") if isinstance(record.get("section"), str) else None
+            # A rejection remembers the sentence, not the scope. Copying the
+            # section here made a later confirm unable to return to global.
+            section = None
+            if key == "confirmed":
+                raw_section = record.get("section")
+                section = raw_section if isinstance(raw_section, str) else None
             pair = record.get("pair") if isinstance(record.get("pair"), str) else ""
-            return {
-                "text": record["text"],
-                "span": record["span"],
-                "polarity": record.get("polarity"),
-                "pair": pair,
-                "section": section,
-            }
+            return cast(
+                CheckRecord,
+                {
+                    "text": record["text"],
+                    "span": record["span"],
+                    "polarity": record.get("polarity"),
+                    "pair": pair,
+                    "section": section,
+                },
+            )
     return _find_pending(root, identifier)
 
 
 def _known(root: Path, state: ChecksState, identifier: str) -> bool:
-    if any(_record(state, key, identifier) is not None for key in ("confirmed", "rejected")):
+    buckets: tuple[_Bucket, ...] = ("confirmed", "rejected")
+    if any(_record(state, key, identifier) is not None for key in buckets):
         return True
     return _find_pending(root, identifier) is not None
 
 
-def _bucket(state: ChecksState, key: Literal["confirmed", "rejected"]) -> dict[str, dict[str, object]]:
+def _bucket(state: ChecksState, key: Literal["confirmed", "rejected"]) -> dict[str, CheckRecord]:
     return state["confirmed"] if key == "confirmed" else state["rejected"]
 
 
-def _record(state: ChecksState, key: Literal["confirmed", "rejected"], identifier: str) -> dict[str, object] | None:
+def _record(state: ChecksState, key: Literal["confirmed", "rejected"], identifier: str) -> CheckRecord | None:
     return _bucket(state, key).get(identifier)
 
 
-def _items(state: ChecksState, key: Literal["confirmed", "rejected"]) -> list[tuple[str, dict[str, object]]]:
+def _items(state: ChecksState, key: Literal["confirmed", "rejected"]) -> list[tuple[str, CheckRecord]]:
     return list(_bucket(state, key).items())
 
 

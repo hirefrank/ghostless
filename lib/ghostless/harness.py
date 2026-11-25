@@ -2,7 +2,10 @@
 
 The npm launcher and the Python console script both enter here. No command
 requires Bash, so the same project and edit-session files work on Windows.
+
+npm and git are invoked as argv lists, never through a shell.
 """
+# ruff: noqa: S603
 
 from __future__ import annotations
 
@@ -73,7 +76,10 @@ def npm_global_bin_dir() -> Path | None:
         try:
             completed = subprocess.run(
                 _npm_prefix_command(npm),
-                check=False, capture_output=True, text=True, timeout=30,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
         except (OSError, subprocess.SubprocessError):
             completed = None
@@ -101,13 +107,10 @@ def npm_bin_path_warning(bin_dir: Path | None = None) -> str | None:
     if os.path.normcase(str(bin_dir.resolve())) in entries:
         return None
     if os.name == "nt":
-        return (
-            f"npm global bin dir {bin_dir} is not on PATH, so `ghostless` will not be found. "
-            f"Add {bin_dir} to PATH."
-        )
+        return f"npm global bin dir {bin_dir} is not on PATH, so `ghostless` will not be found. Add {bin_dir} to PATH."
     return (
         f"npm global bin dir {bin_dir} is not on PATH, so `ghostless` will not be found. "
-        f"Add it with: export PATH=\"{bin_dir}:$PATH\""
+        f'Add it with: export PATH="{bin_dir}:$PATH"'
     )
 
 
@@ -275,9 +278,7 @@ def _owned(
             norm_abs, resolved, recorded_suite_root / "skills" / src.name
         ):
             return True
-        return _is_ghostless_package_skill(abs_target, src.name) or _is_ghostless_package_skill(
-            str(resolved), src.name
-        )
+        return _is_ghostless_package_skill(abs_target, src.name) or _is_ghostless_package_skill(str(resolved), src.name)
     if dest.is_dir():
         marker = dest / COPY_MARKER
         return marker.is_file() and marker.read_text(encoding="utf-8").strip() == f"ghostless:{src.name}"
@@ -295,9 +296,11 @@ def install_skills(*, agent: str, force: bool, copy: bool, no_launcher: bool, ve
     root = _root()
     transient = _ephemeral_package(root)
     custom = os.environ.get("GHOSTLESS_SKILLS_DIR")
-    targets = [("custom", Path(custom).expanduser())] if custom else [
-        (name, agent_dir(name)) for name in selected_agents(agent)
-    ]
+    targets = (
+        [("custom", Path(custom).expanduser())]
+        if custom
+        else [(name, agent_dir(name)) for name in selected_agents(agent)]
+    )
     source_dir = root / "skills"
     installed_entries = _load_installed()
     recorded_suite = _recorded_suite_root()
@@ -312,9 +315,7 @@ def install_skills(*, agent: str, force: bool, copy: bool, no_launcher: bool, ve
             dest = parent / skill
             present = dest.is_symlink() or dest.exists()
             owned = (
-                _owned(dest, src, installed=installed_entries, recorded_suite_root=recorded_suite)
-                if present
-                else False
+                _owned(dest, src, installed=installed_entries, recorded_suite_root=recorded_suite) if present else False
             )
             if present and not owned and not force:
                 skipped.append(str(dest))
@@ -484,10 +485,7 @@ def update(*, agent: str) -> int:
         )
         return 1
     if not in_node_modules:
-        print(
-            "This is a checkout. Update its Git branch, then run "
-            "`ghostless install-skills --force`."
-        )
+        print("This is a checkout. Update its Git branch, then run `ghostless install-skills --force`.")
         return 1
     npm = shutil.which("npm.cmd" if _is_windows() else "npm")
     if npm is None:
@@ -519,8 +517,9 @@ def main(argv: list[str]) -> int:
         parser.add_argument("-v", "--verbose", action="store_true")
         parser.add_argument("-y", "--yes", action="store_true")
         args = parser.parse_args(extra)
-        return install_skills(agent=args.agent, force=args.force, copy=args.copy,
-                              no_launcher=args.no_launcher, verbose=args.verbose)
+        return install_skills(
+            agent=args.agent, force=args.force, copy=args.copy, no_launcher=args.no_launcher, verbose=args.verbose
+        )
     if command == "agents":
         return list_agents()
     if command == "doctor":

@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +19,8 @@ sys.path.insert(0, str(ROOT / "lib"))
 
 from ghostless.checks import (  # noqa: E402
     check_id,
+    checks_summary,
+    confirm_check,
     grade_confirmed,
     passes_check,
 )
@@ -29,10 +32,7 @@ from ghostless.paths import ProjectError  # noqa: E402
 from ghostless.project import TRACKED_PATHS, init_project  # noqa: E402
 from ghostless.sessions import start_session  # noqa: E402
 
-WRITER = (
-    "I keep the note short. I don't polish the first line.\n\n"
-    "And I stop when the coffee is cold."
-)
+WRITER = "I keep the note short. I don't polish the first line.\n\nAnd I stop when the coffee is cold."
 LABEL = 'The opener does not copy "Level 9:".'
 MECHANICAL = "Keep the median sentence length near the target."
 
@@ -387,6 +387,59 @@ class CheckSaveTests(unittest.TestCase):
         with self.assertRaisesRegex(ProjectError, "checks.json"):
             build_voice(self.project)
 
+    def test_overlapping_confirmed_and_rejected_keeps_only_rejected(self) -> None:
+        identifier = check_id(LABEL)
+        other = "chk-other"
+        record = {
+            "at": "2026-01-02T00:00:00Z",
+            "text": LABEL,
+            "span": "Level 9:",
+            "polarity": "forbid",
+            "pair": "pair",
+            "section": "notes",
+        }
+        payload = {
+            "kind": "ghostless-checks",
+            "version": 1,
+            "confirmed": {identifier: record, other: {**record, "text": "Other."}},
+            "rejected": {identifier: {**record, "at": "2026-01-03T00:00:00Z"}},
+        }
+        (self.project / "checks.json").write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        summary = checks_summary(self.project)
+        confirmed_ids = [item["id"] for item in summary["confirmed"]]
+        rejected_ids = [item["id"] for item in summary["rejected"]]
+        self.assertEqual(confirmed_ids, [other])
+        self.assertEqual(rejected_ids, [identifier])
+        self.assertNotIn(identifier, [item["id"] for item in summary["pending"]])
+
+    def test_confirm_without_section_returns_a_check_to_global(self) -> None:
+        self.learn(
+            "Level 9: starts the note. Then we stop.",
+            "The correction starts the note. Then we stop.",
+            checks=[LABEL],
+        )
+        identifier = check_id(LABEL)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                main(["checks", "confirm", LABEL, "--section", "notes", "--project", str(self.project)]),
+                0,
+            )
+        scoped = json.loads((self.project / "checks.json").read_text(encoding="utf-8"))
+        self.assertEqual(scoped["confirmed"][identifier]["section"], "notes")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["checks", "reject", LABEL, "--project", str(self.project)]), 0)
+            self.assertEqual(main(["checks", "confirm", LABEL, "--project", str(self.project)]), 0)
+        revived = json.loads((self.project / "checks.json").read_text(encoding="utf-8"))
+        self.assertIsNone(revived["confirmed"][identifier]["section"])
+        self.assertNotIn(identifier, revived["rejected"])
+        again = confirm_check(self.project, identifier, section="essays")
+        self.assertEqual(again["section"], "essays")
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = main(["checks", "confirm", LABEL, "--global", "--project", str(self.project)])
+        self.assertEqual(code, 0)
+        cleared = json.loads((self.project / "checks.json").read_text(encoding="utf-8"))
+        self.assertIsNone(cleared["confirmed"][identifier]["section"])
+
 
 class CheckGradeTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -438,14 +491,14 @@ class CheckGradeTests(unittest.TestCase):
             section="essay",
             date="2026-01-03",
         )
-        before = evaluate(self.project, holdout=2, seed=0)
+        before: Any = evaluate(self.project, holdout=2, seed=0)
         self.assertTrue(before["ok"], before)
         self.assertIsNone(before["confirmedChecks"]["label"])
         scores = [item["score"] for item in before["items"]]
 
         with contextlib.redirect_stdout(io.StringIO()):
             main(["checks", "confirm", LABEL, "--section", "notes", "--project", str(self.project)])
-        after = evaluate(self.project, holdout=2, seed=0)
+        after: Any = evaluate(self.project, holdout=2, seed=0)
         self.assertEqual([item["score"] for item in after["items"]], scores)
         self.assertEqual(after["correlation"], before["correlation"])
         self.assertEqual(after["verdict"], before["verdict"])
@@ -459,7 +512,7 @@ class CheckGradeTests(unittest.TestCase):
         self.assertFalse(cases[(notes, "before")])
         self.assertTrue(cases[(notes, "after")])
         self.assertNotIn(("2026-01-03-essay", "before"), cases)
-        repeated = evaluate(self.project, holdout=2, seed=0)
+        repeated: Any = evaluate(self.project, holdout=2, seed=0)
         self.assertFalse(repeated["confirmedChecks"]["fresh"])
         self.assertEqual(repeated["confirmedChecks"]["session"], after["confirmedChecks"]["session"])
         self.assertEqual([item["score"] for item in repeated["items"]], scores)
@@ -474,7 +527,7 @@ class CheckGradeTests(unittest.TestCase):
         )
         with contextlib.redirect_stdout(io.StringIO()):
             main(["checks", "confirm", "The opener does not copy a raw label.", "--project", str(self.project)])
-        held = [
+        held: list[dict[str, object]] = [
             {
                 "slug": slug,
                 "section": "notes",
@@ -485,20 +538,18 @@ class CheckGradeTests(unittest.TestCase):
         skill.write_text("Draft from the guide.\n", encoding="utf-8")
         guide = self.project / "voice-guide.md"
         guide.write_text("# Voice guide\n\nFirst.\n", encoding="utf-8")
-        first = grade_confirmed(self.project, held, seed=0, skill_path=skill, guide_path=guide)
-        second = grade_confirmed(self.project, held, seed=0, skill_path=skill, guide_path=guide)
+        first: Any = grade_confirmed(self.project, held, seed=0, skill_path=skill, guide_path=guide)
+        second: Any = grade_confirmed(self.project, held, seed=0, skill_path=skill, guide_path=guide)
         self.assertTrue(first["fresh"])
         self.assertFalse(second["fresh"])
         self.assertEqual(first["session"], second["session"])
         self.assertEqual(first["label"], "1/2")
         guide.write_text("# Voice guide\n\nThe guide changed.\n", encoding="utf-8")
-        changed_guide = grade_confirmed(self.project, held, seed=0, skill_path=skill, guide_path=guide)
+        changed_guide: Any = grade_confirmed(self.project, held, seed=0, skill_path=skill, guide_path=guide)
         self.assertTrue(changed_guide["fresh"])
         self.assertNotEqual(changed_guide["session"], first["session"])
         skill.write_text("Draft from the guide.\nRead the confirmed checks.\n", encoding="utf-8")
-        changed_skill = grade_confirmed(
-            self.project, held, seed=0, skill_path=skill, guide_path=guide
-        )
+        changed_skill: Any = grade_confirmed(self.project, held, seed=0, skill_path=skill, guide_path=guide)
         self.assertTrue(changed_skill["fresh"])
         self.assertNotEqual(changed_skill["session"], changed_guide["session"])
         self.assertEqual(changed_skill["label"], "1/2")
@@ -541,7 +592,7 @@ class CheckGradeTests(unittest.TestCase):
         )
         with contextlib.redirect_stdout(io.StringIO()):
             main(["checks", "confirm", LABEL, "--project", str(self.project)])
-        before = evaluate(self.project, holdout=1, seed=0)
+        before: Any = evaluate(self.project, holdout=1, seed=0)
         scores = [item["score"] for item in before["items"]]
         decisions_path = self.project / "checks.json"
         decisions = json.loads(decisions_path.read_text(encoding="utf-8"))
@@ -556,7 +607,7 @@ class CheckGradeTests(unittest.TestCase):
         self.assertIn("no readable after file", rendered)
         self.assertIn("correlation:", rendered)
         self.assertNotIn("%", rendered.split("confirmed checks:")[1].split("\n", 1)[0])
-        after = evaluate(self.project, holdout=1, seed=0)
+        after: Any = evaluate(self.project, holdout=1, seed=0)
         self.assertEqual([item["score"] for item in after["items"]], scores)
         self.assertEqual(after["correlation"], before["correlation"])
         self.assertEqual(after["verdict"], before["verdict"])
@@ -565,7 +616,9 @@ class CheckGradeTests(unittest.TestCase):
         slug = self.learn(
             "Level 9: starts the note. Then we stop.",
             "The correction starts the note. Then we stop.",
-            section="notes", checks=[LABEL], date="2026-01-02",
+            section="notes",
+            checks=[LABEL],
+            date="2026-01-02",
         )
         with contextlib.redirect_stdout(io.StringIO()):
             main(["checks", "confirm", LABEL, "--project", str(self.project)])
@@ -573,27 +626,27 @@ class CheckGradeTests(unittest.TestCase):
 
     def test_changed_case_contents_or_scope_preserve_the_previous_session(self) -> None:
         held = self.confirmed_holdout()
-        first = grade_confirmed(self.project, held, seed=0)
+        first: Any = grade_confirmed(self.project, held, seed=0)
         original_path = self.project / "stats" / "check-grades" / f"{first['session']}.json"
         original = original_path.read_bytes()
         held[0]["before"] = "The correction starts the note."
-        changed_text = grade_confirmed(self.project, held, seed=0)
+        changed_text: Any = grade_confirmed(self.project, held, seed=0)
         self.assertEqual(first["label"], "1/2")
         self.assertEqual(changed_text["label"], "2/2")
         self.assertTrue(changed_text["fresh"])
         self.assertNotEqual(first["session"], changed_text["session"])
         held[0]["section"] = "essay"
-        changed_scope = grade_confirmed(self.project, held, seed=0)
+        changed_scope: Any = grade_confirmed(self.project, held, seed=0)
         self.assertEqual(changed_scope["label"], "1/1")
         self.assertTrue(changed_scope["fresh"])
         self.assertNotEqual(changed_text["session"], changed_scope["session"])
         (self.project / "gold" / str(held[0]["slug"]) / "after.md").write_text("Level 9: is back.")
-        changed_after = grade_confirmed(self.project, held, seed=0)
+        changed_after: Any = grade_confirmed(self.project, held, seed=0)
         self.assertEqual(changed_after["label"], "0/1")
         self.assertTrue(changed_after["fresh"])
         self.assertNotEqual(changed_scope["session"], changed_after["session"])
         self.assertEqual(original_path.read_bytes(), original)
-        repeated = grade_confirmed(self.project, held, seed=0)
+        repeated: Any = grade_confirmed(self.project, held, seed=0)
         self.assertFalse(repeated["fresh"])
         self.assertEqual(repeated["session"], changed_after["session"])
 
@@ -611,28 +664,28 @@ class CheckGradeTests(unittest.TestCase):
                     with mock.patch("ghostless.harness._print_path_warning"), contextlib.redirect_stdout(io.StringIO()):
                         install_skills(agent="codex", force=False, copy=True, no_launcher=True, verbose=False)
                     installed = parent / "ghostless-draft" / "SKILL.md"
-                    first = grade_confirmed(self.project, held, seed=0)
+                    first: Any = grade_confirmed(self.project, held, seed=0)
                     installed.write_text(installed.read_text() + "\nAlways start with the point.\n")
-                    changed = grade_confirmed(self.project, held, seed=0)
+                    changed: Any = grade_confirmed(self.project, held, seed=0)
                     self.assertIn(str(installed.resolve()), changed["skillFiles"])
                     self.assertTrue(changed["fresh"])
                     self.assertNotEqual(first["skillSha256"], changed["skillSha256"])
                     self.assertNotEqual(first["session"], changed["session"])
                     self.assertEqual(first["label"], changed["label"])
-                    repeated = grade_confirmed(self.project, held, seed=0)
+                    repeated: Any = grade_confirmed(self.project, held, seed=0)
                     self.assertFalse(repeated["fresh"])
                     self.assertEqual(repeated["session"], changed["session"])
 
     def test_a_wrapped_holdout_still_fails_and_a_bad_after_does_not_crash(self) -> None:
         held = self.confirmed_holdout()
         held[0]["before"] = "Level\n9: starts the note."
-        graded = grade_confirmed(self.project, held, seed=0)
+        graded: Any = grade_confirmed(self.project, held, seed=0)
         self.assertEqual(graded["label"], "1/2")
         before_case = next(item for item in graded["items"] if item["case"] == "before")
         self.assertFalse(before_case["pass"])
         after_path = self.project / "gold" / str(held[0]["slug"]) / "after.md"
         after_path.write_bytes(b"\xff\xfe not utf-8")
-        again = grade_confirmed(self.project, held, seed=0)
+        again: Any = grade_confirmed(self.project, held, seed=0)
         self.assertEqual(again["label"], "0/1")
         self.assertNotIn("after", {item["case"] for item in again["items"]})
         self.assertIn("readable after", again["note"])

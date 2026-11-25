@@ -18,7 +18,7 @@ jobs:
             binary: ghostless-editor.exe
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
           node-version: "24"
@@ -50,23 +50,34 @@ jobs:
       - name: Exercise the editor session
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
+          SNAP_DIR: ${{ runner.temp }}/ghostless-snaps
         run: |
+          mkdir -p "$SNAP_DIR"
           if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a python tests/smoke_editor.py
+            xvfb-run -a python tests/smoke_editor.py --artifacts-dir "$SNAP_DIR/wheel"
           else
-            python tests/smoke_editor.py
+            python tests/smoke_editor.py --artifacts-dir "$SNAP_DIR/wheel"
           fi
         shell: bash
       - name: Exercise the editor with the packed npm CLI
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
+          SNAP_DIR: ${{ runner.temp }}/ghostless-snaps
         run: |
+          mkdir -p "$SNAP_DIR"
           if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a python tests/smoke_editor.py --npm-pack
+            xvfb-run -a python tests/smoke_editor.py --npm-pack --artifacts-dir "$SNAP_DIR/npm"
           else
-            python tests/smoke_editor.py --npm-pack
+            python tests/smoke_editor.py --npm-pack --artifacts-dir "$SNAP_DIR/npm"
           fi
         shell: bash
+      - name: Upload editor snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghostless-editor-snapshots-${{ matrix.os }}
+          path: ${{ runner.temp }}/ghostless-snaps
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:
           name: ghostless-editor-${{ matrix.os }}

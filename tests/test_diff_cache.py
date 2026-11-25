@@ -22,6 +22,7 @@ from ghostless.learn import (  # noqa: E402
     refresh_edit_summary,
 )
 from ghostless.project import init_project  # noqa: E402
+from ghostless.schema import DiffSummary, LearnResult  # noqa: E402
 from ghostless.sessions import finish_session, snapshot_session, start_session  # noqa: E402
 
 
@@ -32,8 +33,7 @@ class MoveSpanTests(unittest.TestCase):
 
     def test_unrelated_paragraphs_sharing_stopwords_report_no_moves(self) -> None:
         before = (
-            "The old brown fox jumps over a fence in autumn.\n\n"
-            "A bright blue bird flies through the tall pine trees."
+            "The old brown fox jumps over a fence in autumn.\n\nA bright blue bird flies through the tall pine trees."
         )
         after = (
             "Several grey wolves trot beside a quiet river in winter.\n\n"
@@ -51,14 +51,8 @@ class MoveSpanTests(unittest.TestCase):
         self.assertEqual(bigram_diff["movedSpans"], [])
 
     def test_reordering_clause_across_paragraphs_detects_moves(self) -> None:
-        before = (
-            "First paragraph opens cleanly. Cold rain falls.\n\n"
-            "Second paragraph has many more words than before."
-        )
-        after = (
-            "First paragraph opens cleanly.\n\n"
-            "Second paragraph has many more words than before. Cold rain falls."
-        )
+        before = "First paragraph opens cleanly. Cold rain falls.\n\nSecond paragraph has many more words than before."
+        after = "First paragraph opens cleanly.\n\nSecond paragraph has many more words than before. Cold rain falls."
         diff = diff_texts(before, after)
         self.assertEqual(diff["deletions"], 0)
         self.assertEqual(diff["insertions"], 0)
@@ -83,7 +77,7 @@ class DiffCacheTests(unittest.TestCase):
         *,
         date: str = "2026-01-05",
         section: str = "notes",
-    ) -> dict[str, object]:
+    ) -> LearnResult:
         before_path = self.base / "before.md"
         after_path = self.base / "after.md"
         before_path.write_text(before, encoding="utf-8")
@@ -135,7 +129,7 @@ class DiffCacheTests(unittest.TestCase):
         real_diff = learn_mod.diff_texts
         calls = 0
 
-        def counting_diff(before: str, after: str) -> dict[str, object]:
+        def counting_diff(before: str, after: str) -> DiffSummary:
             nonlocal calls
             calls += 1
             return real_diff(before, after)
@@ -175,9 +169,7 @@ class DiffCacheTests(unittest.TestCase):
             self.assertEqual(meta_path.stat().st_mtime_ns, stale_mtime_ns)
             self.assertEqual(
                 recomputed["learns"][0]["wordsAfter"],
-                real_diff("We should delve deeper into the draft.\n", "I cut the filler.\n")[
-                    "wordsAfter"
-                ],
+                real_diff("We should delve deeper into the draft.\n", "I cut the filler.\n")["wordsAfter"],
             )
 
     def test_finish_session_calls_diff_texts_at_most_once_for_new_session(self) -> None:
@@ -202,12 +194,12 @@ class DiffCacheTests(unittest.TestCase):
         learn_calls = 0
         session_calls = 0
 
-        def count_learn_diff(before: str, after: str) -> dict[str, object]:
+        def count_learn_diff(before: str, after: str) -> DiffSummary:
             nonlocal learn_calls
             learn_calls += 1
             return real_diff(before, after)
 
-        def count_session_diff(before: str, after: str) -> dict[str, object]:
+        def count_session_diff(before: str, after: str) -> DiffSummary:
             nonlocal session_calls
             session_calls += 1
             return real_diff(before, after)

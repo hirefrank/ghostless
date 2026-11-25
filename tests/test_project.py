@@ -19,7 +19,7 @@ SAMPLE = ROOT / "fixtures" / "sample-voice"
 sys.path.insert(0, str(ROOT / "lib"))
 
 from ghostless import __version__  # noqa: E402
-from ghostless.build import build_voice  # noqa: E402
+from ghostless.build import build_voice, stale_inputs  # noqa: E402
 from ghostless.cli import main  # noqa: E402
 from ghostless.paths import ProjectError, find_project_with_source  # noqa: E402
 from ghostless.project import (  # noqa: E402
@@ -36,11 +36,7 @@ from ghostless.project import (  # noqa: E402
 
 class SampleProjectTests(unittest.TestCase):
     def test_sample_is_invented(self) -> None:
-        blob = "\n".join(
-            path.read_text(encoding="utf-8")
-            for path in SAMPLE.rglob("*")
-            if path.is_file()
-        )
+        blob = "\n".join(path.read_text(encoding="utf-8") for path in SAMPLE.rglob("*") if path.is_file())
         self.assertNotIn("Frank Harris", blob)
         self.assertIn("SAMPLE DATA", (SAMPLE / "README.md").read_text(encoding="utf-8"))
 
@@ -62,8 +58,8 @@ class SampleProjectTests(unittest.TestCase):
             self.assertEqual(stats["weighted"]["metrics"]["emDashesPer1k"], 0)
             notes = stats["sections"]["notes"]["weighted"]["metrics"]["medianSentenceLength"]
             archive = stats["sections"]["archive"]["weighted"]["metrics"]["medianSentenceLength"]
-            self.assertIsNotNone(notes)
-            self.assertIsNotNone(archive)
+            assert isinstance(notes, int | float) and not isinstance(notes, bool)
+            assert isinstance(archive, int | float) and not isinstance(archive, bool)
             self.assertGreater(archive, notes)
             guide = (project / "voice-guide.md").read_text(encoding="utf-8")
             self.assertNotIn("purple hedgehog", guide)
@@ -87,12 +83,8 @@ class NotesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "voice"
             shutil.copytree(SAMPLE, project)
-            (project / "STYLE.md").write_text(
-                "# Style\n\n- Every claim needs a source.\n", encoding="utf-8"
-            )
-            (project / "AUDIENCE.md").write_text(
-                "# Audience\n\n- Engineers who skim.\n", encoding="utf-8"
-            )
+            (project / "STYLE.md").write_text("# Style\n\n- Every claim needs a source.\n", encoding="utf-8")
+            (project / "AUDIENCE.md").write_text("# Audience\n\n- Engineers who skim.\n", encoding="utf-8")
             stats = build_voice(project)
             self.assertEqual(stats["style"], "# Style\n\n- Every claim needs a source.")
             self.assertEqual(stats["audience"], "# Audience\n\n- Engineers who skim.")
@@ -393,9 +385,7 @@ class ProjectTests(unittest.TestCase):
             project = _write_v01_project(Path(tmp) / "voice")
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
-                self.assertEqual(
-                    main(["migrate", "--project", str(project), "--no-git"]), 0
-                )
+                self.assertEqual(main(["migrate", "--project", str(project), "--no-git"]), 0)
             text = stdout.getvalue()
             self.assertIn("1 AI-first pair(s) are measured as edited", text)
             self.assertIn("ghostless promote <slug>", text)
@@ -421,9 +411,7 @@ class ProjectTests(unittest.TestCase):
             init_project(project, git=False)
             (project / "corpus" / "gold" / "desk.md").write_text("I write.\n", encoding="utf-8")
             (project / "sessions" / "2026-01-02-notes").mkdir(parents=True)
-            (project / "sessions" / "2026-01-02-notes" / "before.md").write_text(
-                "An AI draft.\n", encoding="utf-8"
-            )
+            (project / "sessions" / "2026-01-02-notes" / "before.md").write_text("An AI draft.\n", encoding="utf-8")
             (project / "holdouts" / "kept.md").write_text("Held out.\n", encoding="utf-8")
             pieces = discover(project, load_manifest(project))
             self.assertEqual([piece.path for piece in pieces], ["corpus/gold/desk.md"])
@@ -516,23 +504,15 @@ class DefaultProjectTests(unittest.TestCase):
                 try:
                     os.chdir(elsewhere)
                     # No manifest above, no env: the default wins.
-                    self.assertEqual(
-                        find_project_with_source(), (default.resolve(), "defaultProject")
-                    )
+                    self.assertEqual(find_project_with_source(), (default.resolve(), "defaultProject"))
                     # A cwd manifest beats the default.
                     os.chdir(nearby)
-                    self.assertEqual(
-                        find_project_with_source(), (nearby.resolve(), "cwd")
-                    )
+                    self.assertEqual(find_project_with_source(), (nearby.resolve(), "cwd"))
                     # The env var beats the cwd manifest.
                     with patch.dict(os.environ, {"GHOSTLESS_PROJECT": str(default)}):
-                        self.assertEqual(
-                            find_project_with_source(), (default.resolve(), "GHOSTLESS_PROJECT")
-                        )
+                        self.assertEqual(find_project_with_source(), (default.resolve(), "GHOSTLESS_PROJECT"))
                         # An explicit path beats the env var.
-                        self.assertEqual(
-                            find_project_with_source(nearby), (nearby.resolve(), "--project")
-                        )
+                        self.assertEqual(find_project_with_source(nearby), (nearby.resolve(), "--project"))
                 finally:
                     os.chdir(old)
 
@@ -567,15 +547,15 @@ class DefaultProjectTests(unittest.TestCase):
             home.mkdir()
             stale = base / "gone"
             stale.mkdir()
-            (home / "config.json").write_text(
-                json.dumps({"defaultProject": str(stale)}), encoding="utf-8"
-            )
+            (home / "config.json").write_text(json.dumps({"defaultProject": str(stale)}), encoding="utf-8")
             old = Path.cwd()
             try:
                 os.chdir(base)
-                with patch.dict(os.environ, {"GHOSTLESS_HOME": str(home)}):
-                    with self.assertRaises(ProjectError) as caught:
-                        find_project_with_source()
+                with (
+                    patch.dict(os.environ, {"GHOSTLESS_HOME": str(home)}),
+                    self.assertRaises(ProjectError) as caught,
+                ):
+                    find_project_with_source()
                 self.assertIn("Default project", str(caught.exception))
             finally:
                 os.chdir(old)
@@ -609,13 +589,20 @@ class DefaultProjectTests(unittest.TestCase):
 class VersionFileTests(unittest.TestCase):
     def test_versions_match(self) -> None:
         package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        version = package["version"]
+        self.assertIsInstance(version, str)
+        self.assertTrue(version)
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        cargo = (ROOT / "editor" / "Cargo.toml").read_text(encoding="utf-8")
 
         self.assertEqual(package["name"], "ghostless")
-        self.assertEqual(package["version"], "0.1.0")
-        self.assertEqual(__version__, "0.1.0")
-        self.assertIn('version = "0.1.0"', pyproject)
+        self.assertEqual(__version__, version)
+        self.assertIn(f'version = "{version}"', pyproject)
         self.assertIn('name = "ghostless"', pyproject)
+        self.assertEqual(_cargo_package_version(cargo), version)
+        for skill in ("ghostless-draft", "ghostless-edit", "ghostless-learn"):
+            text = (ROOT / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
+            self.assertEqual(_skill_metadata_version(text), version, skill)
 
     def test_changelog_and_publish_workflow_guards(self) -> None:
         package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
@@ -630,20 +617,10 @@ class VersionFileTests(unittest.TestCase):
             workflow.index("npm publish"),
         )
 
-        # Ensure Unreleased contains zero bullets and the current version section holds shipped items.
+        # Unreleased bullets are allowed between tags. The publish workflow
+        # rejects them at tag time; that awk guard is checked on fixtures below.
         lines = changelog.splitlines()
-        unreleased_idx = next(i for i, line in enumerate(lines) if line.startswith("## Unreleased"))
-        next_heading_idx = next(
-            i for i in range(unreleased_idx + 1, len(lines)) if lines[i].startswith("## ")
-        )
-        unreleased_bullets = [
-            line for line in lines[unreleased_idx + 1 : next_heading_idx] if line.startswith("- ")
-        ]
-        self.assertEqual(unreleased_bullets, [])
-
-        version_idx = next(
-            i for i, line in enumerate(lines) if line.startswith(f"## v{version}")
-        )
+        version_idx = next(i for i, line in enumerate(lines) if line.startswith(f"## v{version}"))
         version_end = next(
             (i for i in range(version_idx + 1, len(lines)) if lines[i].startswith("## ")),
             len(lines),
@@ -662,19 +639,7 @@ class VersionFileTests(unittest.TestCase):
             "inside && /^- / { found = 1 }\n"
             "END { exit(found ? 0 : 1) }"
         )
-        extract_awk = (
-            '$0 ~ ("^## v" ver "( |$)") { inside = 1; next }\n'
-            "inside && /^## / { exit }\n"
-            "inside { print }"
-        )
-        guard_real = subprocess.run(
-            [awk, unreleased_awk, str(ROOT / "CHANGELOG.md")],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(guard_real.returncode, 1)
-
+        extract_awk = '$0 ~ ("^## v" ver "( |$)") { inside = 1; next }\ninside && /^## / { exit }\ninside { print }'
         extracted = subprocess.run(
             [awk, "-v", f"ver={version}", extract_awk, str(ROOT / "CHANGELOG.md")],
             check=False,
@@ -686,18 +651,152 @@ class VersionFileTests(unittest.TestCase):
         self.assertIn("ghostless rules", extracted.stdout)
 
         with tempfile.TemporaryDirectory() as tmp:
-            synthetic = Path(tmp) / "CHANGELOG.md"
-            synthetic.write_text(
+            base = Path(tmp)
+            stranded = base / "stranded.md"
+            stranded.write_text(
                 f"# Changelog\n\n## Unreleased\n\n- Stranded item.\n\n## v{version} — 2026-11-23\n\n- Shipped.\n",
                 encoding="utf-8",
             )
-            guard_synthetic = subprocess.run(
-                [awk, unreleased_awk, str(synthetic)],
+            guard_stranded = subprocess.run(
+                [awk, unreleased_awk, str(stranded)],
                 check=False,
                 capture_output=True,
                 text=True,
             )
-            self.assertEqual(guard_synthetic.returncode, 0)
+            self.assertEqual(guard_stranded.returncode, 0)
+
+            clear = base / "clear.md"
+            clear.write_text(
+                f"# Changelog\n\n## Unreleased\n\n## v{version} — 2026-11-23\n\n- Shipped.\n",
+                encoding="utf-8",
+            )
+            guard_clear = subprocess.run(
+                [awk, unreleased_awk, str(clear)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(guard_clear.returncode, 1)
+
+            missing = base / "missing.md"
+            missing.write_text(
+                "# Changelog\n\n## Unreleased\n\n## v0.0.0 — 2026-11-23\n\n- Other.\n",
+                encoding="utf-8",
+            )
+            extracted_missing = subprocess.run(
+                [awk, "-v", f"ver={version}", extract_awk, str(missing)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(extracted_missing.returncode, 0, extracted_missing.stderr)
+            self.assertEqual(extracted_missing.stdout.strip(), "")
+
+
+class StaleDeletionTests(unittest.TestCase):
+    def test_deleted_inputs_mark_voice_stats_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "voice"
+            shutil.copytree(SAMPLE, project)
+            (project / "STYLE.md").write_text("Be direct.\n", encoding="utf-8")
+            (project / "AUDIENCE.md").write_text("Builders.\n", encoding="utf-8")
+            (project / "transcripts").mkdir()
+            (project / "transcripts" / "talk.md").write_text("I said this aloud.\n", encoding="utf-8")
+            pair = project / "gold" / "2026-01-02-notes"
+            pair.mkdir(parents=True)
+            (pair / "before.md").write_text("Before.\n", encoding="utf-8")
+            (pair / "after.md").write_text("After the edit.\n", encoding="utf-8")
+            (pair / "meta.json").write_text(
+                json.dumps(
+                    {
+                        "date": "2026-01-02",
+                        "origin": "writer-first",
+                        "beforeFile": "before.md",
+                        "afterFile": "after.md",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (project / "rules.json").write_text(
+                json.dumps(
+                    {
+                        "kind": "ghostless-rules",
+                        "version": 1,
+                        "confirmed": {"cut:delve": {"at": "2026-01-02T00:00:00Z", "receipts": [], "pieces": []}},
+                        "rejected": {},
+                        "retired": {},
+                        "scope": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (project / "checks.json").write_text(
+                json.dumps(
+                    {
+                        "kind": "ghostless-checks",
+                        "version": 1,
+                        "confirmed": {
+                            "chk-1": {
+                                "at": "2026-01-02T00:00:00Z",
+                                "text": "Keep it.",
+                                "span": "Keep",
+                                "polarity": "require",
+                                "pair": "pair",
+                                "section": "notes",
+                            }
+                        },
+                        "rejected": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            build_voice(project)
+            self.assertEqual(stale_inputs(project), [])
+            deleted = (
+                "corpus/gold/notes/desk.md",
+                "transcripts/talk.md",
+                "gold/2026-01-02-notes/after.md",
+                "STYLE.md",
+                "AUDIENCE.md",
+                "rules.json",
+                "checks.json",
+            )
+            for rel in deleted:
+                (project / rel).unlink()
+            stale = stale_inputs(project)
+            for rel in deleted:
+                self.assertIn(rel, stale)
+
+
+def _cargo_package_version(cargo: str) -> str:
+    in_package = False
+    for line in cargo.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_package = stripped == "[package]"
+            continue
+        if in_package and stripped.startswith("version"):
+            return stripped.split("=", 1)[1].strip().strip('"')
+    raise AssertionError("editor/Cargo.toml has no [package] version")
+
+
+def _skill_metadata_version(text: str) -> str:
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise AssertionError("SKILL.md is missing frontmatter")
+    in_metadata = False
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if line.startswith("metadata:"):
+            in_metadata = True
+            continue
+        if in_metadata and line.startswith("  version:"):
+            return line.split(":", 1)[1].strip().strip('"')
+        if in_metadata and line and not line.startswith((" ", "\t")):
+            in_metadata = False
+    raise AssertionError("SKILL.md is missing metadata.version")
 
 
 def _require_git(test: unittest.TestCase) -> None:

@@ -3,8 +3,9 @@
     {"t": 0.10, "type": "tap", "x": 200, "y": 125},
     {"t": 0.15, "type": "key", "name": "a", "cmd": true},
     {"t": 0.20, "type": "type", "text": "Unsaved close text.", "every": 0.01},
-    {"t": 0.45, "type": "tap", "x": 950, "y": 104},
-    {"t": 0.50, "type": "type", "text": "Flushed on exit.", "every": 0.01},
-    {"t": 0.70, "type": "mark", "name": "end"}
+    {"t": 0.42, "type": "tap", "x": 927, "y": 74},
+    {"t": 0.52, "type": "tap", "x": 965, "y": 141},
+    {"t": 0.60, "type": "type", "text": "Flushed on exit.", "every": 0.01},
+    {"t": 0.82, "type": "mark", "name": "end"}
   ]
 }

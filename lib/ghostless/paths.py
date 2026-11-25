@@ -38,11 +38,7 @@ def suite_root() -> Path | None:
 
 
 def _is_suite(path: Path) -> bool:
-    return (
-        (path / "package.json").is_file()
-        and (path / "bin" / "ghostless").is_file()
-        and (path / "skills").is_dir()
-    )
+    return (path / "package.json").is_file() and (path / "bin" / "ghostless").is_file() and (path / "skills").is_dir()
 
 
 def data_home() -> Path:
@@ -143,13 +139,10 @@ def find_project_with_source(start: Path | None = None) -> tuple[Path, str]:
             _require_project(path)
         except ProjectError as exc:
             raise ProjectError(
-                f"Default project is not a ghostless project: {path}. "
-                "Point `ghostless use` at the right directory."
+                f"Default project is not a ghostless project: {path}. Point `ghostless use` at the right directory."
             ) from exc
         return path, "defaultProject"
-    raise ProjectError(
-        "No ghostless project found. Run `ghostless init` in the folder where your writing lives."
-    )
+    raise ProjectError("No ghostless project found. Run `ghostless init` in the folder where your writing lives.")
 
 
 def _require_project(path: Path) -> None:
@@ -162,6 +155,8 @@ def _manifest_kind(path: Path) -> str | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
         return None
     kind = data.get("kind")
     return kind if isinstance(kind, str) else None

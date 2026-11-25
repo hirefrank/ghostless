@@ -15,6 +15,13 @@ from ghostless.build import stale_inputs
 from ghostless.checks import checks_summary, confirm_check, reject_check, write_pair_checks
 from ghostless.eval import evaluate, format_eval
 from ghostless.export import write_export
+from ghostless.format import (
+    _format_build,
+    _format_checks,
+    _format_rules,
+    _print_saved_checks,
+    _print_started,
+)
 from ghostless.harness import main as harness_main
 from ghostless.judge import format_report, judge_text
 from ghostless.launch import launch_editor
@@ -40,7 +47,7 @@ from ghostless.project import (
     save_note,
 )
 from ghostless.rules import confirm_rule, reject_rule, retire_rule, rules_summary
-from ghostless.schema import STRUCTURAL_RULE_LABELS, CompiledStats
+from ghostless.schema import SessionStartResult
 from ghostless.sessions import finish_session, list_sessions, snapshot_session, start_session
 from ghostless.updatecheck import run_once as check_for_update
 
@@ -264,6 +271,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Rule id, e.g. cut:delve, add:honestly, or struct:cut-em-dash",
     )
     rules_parser.add_argument("--section", help="Limit a confirmed rule to this section")
+    rules_parser.add_argument(
+        "--global",
+        dest="make_global",
+        action="store_true",
+        help="Return a confirmed rule to every section",
+    )
     rules_parser.add_argument("--json", action="store_true")
     _add_project(rules_parser)
 
@@ -285,6 +298,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     checks_parser.add_argument("--text", help="Check sentence from the edit (add only)")
     checks_parser.add_argument("--section", help="Limit a confirmed check to this section")
+    checks_parser.add_argument(
+        "--global",
+        dest="make_global",
+        action="store_true",
+        help="Return a confirmed check to every section",
+    )
     checks_parser.add_argument("--json", action="store_true")
     _add_project(checks_parser)
 
@@ -329,9 +348,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
     if args.command not in {"update", "bridge"}:
-        _maybe_check_for_update(
-            Path(args.project) if getattr(args, "project", None) else None
-        )
+        _maybe_check_for_update(Path(args.project) if getattr(args, "project", None) else None)
     try:
         return _dispatch(args)
     except ProjectError as exc:
@@ -546,8 +563,10 @@ def _cmd_learn(args: argparse.Namespace) -> int:
     print(f"gold/{result['slug']}")
     print(f"  origin {meta.get('origin')}  section {meta.get('section') or 'unsectioned'}")
     if result.get("model") or result.get("tool"):
-        print(f"  model/tool {result.get('model') or 'unnamed model'}"
-              f"{' via ' + str(result.get('tool')) if result.get('tool') else ''}")
+        print(
+            f"  model/tool {result.get('model') or 'unnamed model'}"
+            f"{' via ' + str(result.get('tool')) if result.get('tool') else ''}"
+        )
     print(
         f"  words {meta.get('wordsBefore')} → {meta.get('wordsAfter')} "
         f"(removed {meta.get('wordsRemoved')}, added {meta.get('wordsAdded')})"
@@ -558,14 +577,8 @@ def _cmd_learn(args: argparse.Namespace) -> int:
         f"{meta.get('movedTokens')} moved tokens, "
         f"{meta.get('structuralChangeCount')} structural changes"
     )
-    print(
-        f"  sentence length {meta.get('medianSentenceLengthBefore')} → "
-        f"{meta.get('medianSentenceLengthAfter')}"
-    )
-    print(
-        f"  contractions per 1k {meta.get('contractionsPer1kBefore')} → "
-        f"{meta.get('contractionsPer1kAfter')}"
-    )
+    print(f"  sentence length {meta.get('medianSentenceLengthBefore')} → {meta.get('medianSentenceLengthAfter')}")
+    print(f"  contractions per 1k {meta.get('contractionsPer1kBefore')} → {meta.get('contractionsPer1kAfter')}")
     print(f"  measured as {result.get('tier')} ({_placement_note(str(result.get('tier')))})")
     warning = result.get("warning")
     if isinstance(warning, str):
@@ -575,10 +588,7 @@ def _cmd_learn(args: argparse.Namespace) -> int:
     if result.get("tier") == "gold":
         print("  after.md is gold. Run ghostless build to fold it into the guide.")
     else:
-        print(
-            "  after.md is edited, not gold: it shapes paragraph length only and never the "
-            "ban list or rhythm."
-        )
+        print("  after.md is edited, not gold: it shapes paragraph length only and never the ban list or rhythm.")
         print(f"  To count it as gold later: ghostless promote {result.get('slug')}")
     return 0
 
@@ -596,10 +606,7 @@ def _cmd_promote(args: argparse.Namespace) -> int:
         print(f"  {result.get('previous')} → {tier}")
     else:
         print(f"  unchanged: already {tier}")
-    print(
-        f"  origin {result.get('origin') or 'unspecified'}, confirmation "
-        f"{result.get('confirmation')}"
-    )
+    print(f"  origin {result.get('origin') or 'unspecified'}, confirmation {result.get('confirmation')}")
     warning = result.get("warning")
     if isinstance(warning, str):
         print(f"  warning: {warning}")
@@ -610,10 +617,7 @@ def _cmd_promote(args: argparse.Namespace) -> int:
     if tier == "gold":
         print("  This final now counts at gold weight and toward goldVoiceMinimum.")
     else:
-        print(
-            "  This final is back in the edited tier. Its edit receipt and vocabulary "
-            "evidence stay in place."
-        )
+        print("  This final is back in the edited tier. Its edit receipt and vocabulary evidence stay in place.")
     print("Run ghostless build to fold the change into the guide.")
     return 0
 
@@ -643,7 +647,7 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     return code
 
 
-def _start_from_args(root: Path, args: argparse.Namespace) -> dict[str, object]:
+def _start_from_args(root: Path, args: argparse.Namespace) -> SessionStartResult:
     return start_session(
         root,
         Path(args.draft),
@@ -651,13 +655,6 @@ def _start_from_args(root: Path, args: argparse.Namespace) -> dict[str, object]:
         origin=args.origin,
         sources=args.source,
     )
-
-
-def _print_started(root: Path, result: Mapping[str, object]) -> None:
-    print(f"Started {result['id']}")
-    print(f"  original: {root / str(result['path']) / 'before.md'}")
-    print(f"  working:  {root / str(result['path']) / 'after.md'}")
-    print(f"Finish with: ghostless finish --session {result['id']}")
 
 
 def _cmd_finish(args: argparse.Namespace) -> int:
@@ -688,9 +685,7 @@ def _cmd_sessions(args: argparse.Namespace) -> int:
     if args.open:
         match = next((item for item in found if str(item.get("id")) == args.open), None)
         if match is None:
-            raise ProjectError(
-                f"No edit session {args.open}. Run `ghostless sessions` to list them."
-            )
+            raise ProjectError(f"No edit session {args.open}. Run `ghostless sessions` to list them.")
         if args.json:
             print(json.dumps(match, indent=2, ensure_ascii=False))
         else:
@@ -818,13 +813,19 @@ def _cmd_rules(args: argparse.Namespace) -> int:
             print(_format_rules(summary))
         return 0
     if not args.rule_id:
-        raise ProjectError(
-            f"`ghostless rules {action}` needs a rule id, for example cut:delve."
-        )
+        raise ProjectError(f"`ghostless rules {action}` needs a rule id, for example cut:delve.")
+    if action != "confirm" and args.make_global:
+        raise ProjectError("--global only applies to confirm.")
     if action in ("reject", "retire") and args.section:
         raise ProjectError("--section only applies to confirm.")
+    if action == "confirm" and args.section and args.make_global:
+        raise ProjectError("--global cannot be combined with --section.")
     if action == "confirm":
-        result = confirm_rule(root, args.rule_id, section=args.section)
+        result = confirm_rule(
+            root,
+            args.rule_id,
+            section=None if args.make_global else args.section,
+        )
     elif action == "reject":
         result = reject_rule(root, args.rule_id)
     else:
@@ -852,7 +853,7 @@ def _cmd_checks(args: argparse.Namespace) -> int:
     root = _project(args.project)
     action = args.action
     if action == "list":
-        if args.target or args.text or args.section:
+        if args.target or args.text or args.section or args.make_global:
             raise ProjectError("`ghostless checks` lists decisions. Pass confirm, reject, or add to change one.")
         summary = checks_summary(root)
         if args.json:
@@ -863,8 +864,8 @@ def _cmd_checks(args: argparse.Namespace) -> int:
     if action == "add":
         if not args.target or not args.text:
             raise ProjectError("`ghostless checks add <slug> --text` needs the learned pair and the sentence.")
-        if args.section:
-            raise ProjectError("--section applies to confirm. Add the check, then confirm it.")
+        if args.section or args.make_global:
+            raise ProjectError("--section and --global apply to confirm. Add the check, then confirm it.")
         prepared = write_pair_checks(root, args.target, [args.text])
         if args.json:
             print(json.dumps(prepared, indent=2, ensure_ascii=False))
@@ -873,12 +874,19 @@ def _cmd_checks(args: argparse.Namespace) -> int:
         return 0
     if not args.target:
         raise ProjectError(f"`ghostless checks {action}` needs a check id or the check sentence.")
-    if action == "reject" and args.section:
-        raise ProjectError("--section only applies to confirm.")
+    if action == "reject" and (args.section or args.make_global):
+        raise ProjectError("--section and --global only apply to confirm.")
     if args.text:
         raise ProjectError("--text is only for add.")
+    if action == "confirm" and args.section and args.make_global:
+        raise ProjectError("--global cannot be combined with --section.")
     if action == "confirm":
-        result = confirm_check(root, args.target, section=args.section)
+        result = confirm_check(
+            root,
+            args.target,
+            section=None if args.make_global else args.section,
+            clear_section=bool(args.make_global),
+        )
     else:
         result = reject_check(root, args.target)
     if args.json:
@@ -897,171 +905,13 @@ def _cmd_checks(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_saved_checks(checks: object) -> None:
-    if not isinstance(checks, list) or not checks:
-        return
-    for item in checks:
-        if not isinstance(item, dict):
-            continue
-        status = item.get("status") or "pending"
-        print(f"  check {item.get('id')}: {status}")
-        print(f"    {item.get('text')}")
-    print("  A check is inactive until you run `ghostless checks confirm <id>`.")
-
-
-def _format_checks(summary: Mapping[str, object]) -> str:
-    lines = [
-        "Edit checks (yes/no judgments the mechanical score cannot see)",
-        "",
-        "Confirmed (active)",
-    ]
-    confirmed = summary.get("confirmed")
-    confirmed = confirmed if isinstance(confirmed, list) else []
-    if not confirmed:
-        lines.append("  none yet")
-    for item in confirmed:
-        if isinstance(item, dict):
-            lines.append(_check_heading(item))
-    lines.append("")
-    lines.append("Pending (saved from an edit, not active)")
-    pending = summary.get("pending")
-    pending = pending if isinstance(pending, list) else []
-    if not pending:
-        lines.append("  none")
-    for item in pending:
-        if isinstance(item, dict):
-            lines.append(_check_heading(item))
-    lines.append("")
-    lines.append("Rejected (not brought back by a later edit)")
-    rejected = summary.get("rejected")
-    rejected = rejected if isinstance(rejected, list) else []
-    if not rejected:
-        lines.append("  none")
-    for item in rejected:
-        if isinstance(item, dict):
-            lines.append(_check_heading(item))
-    lines.append("")
-    lines.append("Decide one with: ghostless checks confirm|reject <id> [--section NAME]")
-    lines.append("")
-    return "\n".join(lines).rstrip()
-
-
-def _check_heading(item: dict[str, object]) -> str:
-    identifier = item.get("id") or "?"
-    text = item.get("text") or ""
-    section = item.get("section")
-    scope = f"section {section}" if isinstance(section, str) and section else "all sections"
-    pair = item.get("pair")
-    where = f"gold/{pair}" if isinstance(pair, str) and pair else "no pair"
-    return f"  {identifier}  ({scope}; {where})\n    {text}"
-
-
-def _format_rules(summary: Mapping[str, object]) -> str:
-    minimum = summary.get("minimumSupport")
-    lines = [
-        f"Voice rules from edit receipts (minimum support: {minimum} distinct pieces)",
-        "",
-    ]
-    confirmed = summary.get("confirmed")
-    confirmed = confirmed if isinstance(confirmed, list) else []
-    lines.append("Confirmed (active)")
-    if not confirmed:
-        lines.append("  none yet")
-    else:
-        for item in confirmed:
-            if not isinstance(item, dict):
-                continue
-            lines.append(_rule_heading(item, confirmed=True))
-            receipts = item.get("receipts")
-            if isinstance(receipts, list) and receipts:
-                lines.append("    receipts: " + ", ".join(str(receipt) for receipt in receipts))
-    lines.append("")
-
-    hypotheses = summary.get("hypotheses")
-    hypotheses = hypotheses if isinstance(hypotheses, list) else []
-    lines.append("Hypotheses (unconfirmed, not active)")
-    if not hypotheses:
-        lines.append("  none")
-    for item in hypotheses:
-        if not isinstance(item, dict):
-            continue
-        lines.append(_rule_heading(item, confirmed=False))
-        examples = item.get("examples")
-        if isinstance(examples, list):
-            for example in examples:
-                if not isinstance(example, dict):
-                    continue
-                before = str(example.get("before_snippet") or "").strip()
-                after = str(example.get("after_snippet") or "").strip()
-                lines.append(f"    {example.get('slug')}: \"{before}\" -> \"{after}\"")
-                if example.get("receipt"):
-                    lines.append(f"      receipt: {example.get('receipt')}")
-        counterexamples = item.get("counterexamples")
-        if isinstance(counterexamples, list) and counterexamples:
-            lines.append(f"    counterexamples: {len(counterexamples)}")
-            for example in counterexamples[:2]:
-                if isinstance(example, dict):
-                    lines.append(f"      {example.get('slug')}: \"{example.get('snippet')}\"")
-    lines.append("")
-
-    for key in ("rejected", "retired"):
-        items = summary.get(key)
-        items = items if isinstance(items, list) else []
-        label = "never active" if key == "rejected" else "no longer active"
-        lines.append(f"{key.capitalize()} ({label})")
-        if not items:
-            lines.append("  none")
-        for item in items:
-            if isinstance(item, dict):
-                lines.append(f"  {item.get('id')}  {item.get('at') or ''}".rstrip())
-        lines.append("")
-
-    if not confirmed and not hypotheses:
-        lines.append(
-            "No candidates yet. A word has to recur in enough distinct finished edits "
-            "before it appears here."
-        )
-        lines.append("")
-    else:
-        lines.append("Decide one with: ghostless rules confirm|reject <id> [--section NAME]")
-        lines.append("")
-    return "\n".join(lines).rstrip()
-
-
-def _rule_heading(item: dict[str, object], *, confirmed: bool) -> str:
-    kind = str(item.get("kind") or "cut")
-    word = str(item.get("word") or "?")
-    detail: list[str] = []
-    support = item.get("support")
-    if isinstance(support, int) and not isinstance(support, bool):
-        detail.append(f"{support} pieces")
-    sections = item.get("sections")
-    if isinstance(sections, list) and sections:
-        detail.append("sections: " + ", ".join(str(name) for name in sections))
-    if confirmed:
-        scope = item.get("scope")
-        detail.append(f"scope: {scope}" if isinstance(scope, str) and scope else "scope: all")
-        at = item.get("confirmedAt")
-        if isinstance(at, str) and at:
-            detail.append(f"confirmed {at[:10]}")
-    suffix = f"  ({'; '.join(detail)})" if detail else ""
-    if kind == "struct":
-        rule_id = str(item.get("id") or f"struct:{word}")
-        label = STRUCTURAL_RULE_LABELS.get(word, word)
-        return f"  {rule_id}  {label}{suffix}"
-    verb = "cut" if kind == "cut" else "add"
-    return f"  {verb} {word}{suffix}"
-
-
 def _cmd_which(args: argparse.Namespace) -> int:
     root = suite_root()
     print(f"suite={root if root is not None else 'none'}")
     print(f"data={data_home()}")
     print(f"version={version()}")
     try:
-        project, source = (
-            find_project_with_source(Path(args.project)) if args.project else find_project_with_source()
-        )
+        project, source = find_project_with_source(Path(args.project)) if args.project else find_project_with_source()
     except ProjectError:
         print("project=none")
         return 0
@@ -1100,38 +950,3 @@ def _project(explicit: str | None) -> Path:
 
 def _add_project(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project", help="Voice project directory (default: search from cwd)")
-
-
-def _format_build(root: Path, stats: CompiledStats) -> str:
-    counts = stats["counts"]
-    prose = counts["prose"]
-    spoken = counts["spoken"]
-    spoken_total = spoken["gold"] + spoken["silver"] + spoken["bronze"] + spoken["edited"]
-    weighted = stats["weighted"]["metrics"]
-    unweighted = stats["unweighted"]["metrics"]
-    ban_count = len(stats["weighted"]["banList"])
-    lines = [
-        f"voice guide: {root / 'voice-guide.md'}",
-        (
-            "pieces: "
-            f"gold {prose['gold']}, "
-            f"silver {prose['silver']}, "
-            f"bronze {prose['bronze']}, "
-            f"edited {prose['edited']}, "
-            f"spoken {spoken_total}"
-        ),
-        f"bronze format-only: {'yes' if stats['bronzeFormatOnly'] else 'no'}",
-        (
-            "gold prose pieces: "
-            f"{stats['goldPieces']} of {stats['goldVoiceMinimum']} to drop bronze from voice"
-        ),
-        (
-            "median sentence: "
-            f"{weighted['medianSentenceLength']} words "
-            f"(unweighted {unweighted['medianSentenceLength']})"
-        ),
-        f"ban list: {ban_count}",
-    ]
-    for warning in stats["warnings"]:
-        lines.append(f"note: {warning}")
-    return "\n".join(lines)

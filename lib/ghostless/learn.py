@@ -14,6 +14,7 @@ import re
 from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 from ghostless.checks import new_pair_checks, prepare_checks
 from ghostless.io import atomic_write_json, atomic_write_text, sha256_text, text_preview, utc_today
@@ -34,7 +35,9 @@ from ghostless.schema import (
     DiffSummary,
     EditLearnEntry,
     EditSummary,
+    LearnResult,
     MovedSpan,
+    StructuralChange,
     TokenAlignment,
     WordCount,
 )
@@ -90,23 +93,16 @@ def diff_texts(before: str, after: str) -> DiffSummary:
     added_words: list[WordCount] = []
     for token in set(before_counts) | set(after_counts):
         delta = before_counts[token] - after_counts[token]
-        if delta > 0:
-            if track_token(token):
-                removed_words.append({"word": token, "count": delta})
-        elif delta < 0:
-            if track_token(token):
-                added_words.append({"word": token, "count": -delta})
+        if delta > 0 and track_token(token):
+            removed_words.append({"word": token, "count": delta})
+        elif delta < 0 and track_token(token):
+            added_words.append({"word": token, "count": -delta})
     removed_words.sort(key=lambda item: (-item["count"], item["word"]))
     added_words.sort(key=lambda item: (-item["count"], item["word"]))
 
     sequence = _align_tokens(before, after)
     structural_changes, paragraphs_before, paragraphs_after = _structural_changes(before, after)
-    token_edits = (
-        sequence["deletions"]
-        + sequence["insertions"]
-        + sequence["replacements"]
-        + sequence["movedTokens"]
-    )
+    token_edits = sequence["deletions"] + sequence["insertions"] + sequence["replacements"] + sequence["movedTokens"]
     unchanged_tokens = sequence["unchangedTokens"]
     edit_denominator = token_edits + unchanged_tokens
     edit_rate = round(token_edits / edit_denominator, 4) if edit_denominator else 0.0
@@ -308,14 +304,14 @@ def _match_moved_spans(
     return spans
 
 
-def _structural_changes(before: str, after: str) -> tuple[list[dict[str, object]], int, int]:
+def _structural_changes(before: str, after: str) -> tuple[list[StructuralChange], int, int]:
     before_text = normalize(before)
     after_text = normalize(after)
     before_sequence = PUNCTUATION_RE.findall(before_text)
     after_sequence = PUNCTUATION_RE.findall(after_text)
     before_marks = Counter(before_sequence)
     after_marks = Counter(after_sequence)
-    changes: list[dict[str, object]] = []
+    changes: list[StructuralChange] = []
     for mark in sorted(set(before_marks) | set(after_marks)):
         delta = after_marks[mark] - before_marks[mark]
         if delta:
@@ -355,7 +351,7 @@ def _structural_changes(before: str, after: str) -> tuple[list[dict[str, object]
     return changes, len(before_paragraphs), len(after_paragraphs)
 
 
-def _paragraph_moves(before_paragraphs: list[str], after_paragraphs: list[str]) -> list[dict[str, object]]:
+def _paragraph_moves(before_paragraphs: list[str], after_paragraphs: list[str]) -> list[StructuralChange]:
     """Report paragraphs that appear on both sides but in a new position."""
     before_keys = [" ".join(block.split()).casefold() for block in before_paragraphs]
     after_keys = [" ".join(block.split()).casefold() for block in after_paragraphs]
@@ -369,7 +365,7 @@ def _paragraph_moves(before_paragraphs: list[str], after_paragraphs: list[str]) 
     deleted = [(index, before_keys[index]) for index in range(len(before_keys)) if index not in matched_before]
     inserted = [(index, after_keys[index]) for index in range(len(after_keys)) if index not in matched_after]
     used: set[int] = set()
-    moves: list[dict[str, object]] = []
+    moves: list[StructuralChange] = []
     for from_index, key in deleted:
         for to_index, candidate in inserted:
             if to_index in used or candidate != key:
@@ -399,12 +395,13 @@ def find_existing_learn_pair(root: Path, before: str, after: str) -> Path | None
         pair_dir = existing.parent
         prior_before = pair_dir / "before.md"
         prior_after = pair_dir / "after.md"
-        if prior_before.is_file() and prior_after.is_file():
-            if (
-                prior_before.read_text(encoding="utf-8").rstrip("\n") == before_norm
-                and prior_after.read_text(encoding="utf-8").rstrip("\n") == after_norm
-            ):
-                return pair_dir
+        if (
+            prior_before.is_file()
+            and prior_after.is_file()
+            and prior_before.read_text(encoding="utf-8").rstrip("\n") == before_norm
+            and prior_after.read_text(encoding="utf-8").rstrip("\n") == after_norm
+        ):
+            return pair_dir
     return None
 
 
@@ -420,7 +417,7 @@ def learn_edit(
     tool: str | None = None,
     promote: bool = False,
     checks: list[str] | None = None,
-) -> dict[str, object]:
+) -> LearnResult:
     if not before.is_file():
         raise ProjectError(f"Before file not found: {before}")
     if not after.is_file():
@@ -488,13 +485,11 @@ def learn_edit(
         "model": model,
         "tool": tool,
         "checks": prepared,
-        "warning": _mostly_model_warning(
-            summary if placement == "gold" and checked_origin == "ai-first" else None
-        ),
+        "warning": _mostly_model_warning(summary if placement == "gold" and checked_origin == "ai-first" else None),
     }
 
 
-def promote_final(root: Path, slug: str, *, gold: bool = True) -> dict[str, object]:
+def promote_final(root: Path, slug: str, *, gold: bool = True) -> LearnResult:
     """Deliberately move a learned final into (or back out of) gold.
 
     Only provenance changes: `before.md`, `after.md`, and the edit receipt are
@@ -516,13 +511,9 @@ def promote_final(root: Path, slug: str, *, gold: bool = True) -> dict[str, obje
     previous = placement_for(provenance)
     if not gold and provenance.origin == "writer-first":
         raise ProjectError(
-            f"gold/{slug} is writer-first, so it is gold through its origin. "
-            "Demote only an AI-first final."
+            f"gold/{slug} is writer-first, so it is gold through its origin. Demote only an AI-first final."
         )
-    if gold:
-        confirmation = "promoted"
-    else:
-        confirmation = "none"
+    confirmation = "promoted" if gold else "none"
     checked = parse_confirmation(confirmation, path=str(meta_path))
     block = provenance_json(
         provenance.origin,
@@ -552,9 +543,7 @@ def promote_final(root: Path, slug: str, *, gold: bool = True) -> dict[str, obje
         "meta": meta,
         "edits": edits,
         "warning": _mostly_model_warning(
-            summary
-            if placement == "gold" and provenance.origin in (None, "ai-first")
-            else None
+            summary if placement == "gold" and provenance.origin in (None, "ai-first") else None
         ),
     }
 
@@ -646,14 +635,14 @@ def _cached_moved_spans(value: object) -> list[MovedSpan] | None:
     return spans
 
 
-def _cached_structural_changes(value: object) -> list[dict[str, object]] | None:
+def _cached_structural_changes(value: object) -> list[StructuralChange] | None:
     if not isinstance(value, list):
         return None
-    items: list[dict[str, object]] = []
+    items: list[StructuralChange] = []
     for entry in value:
         if not isinstance(entry, dict):
             return None
-        items.append({str(key): item for key, item in entry.items()})
+        items.append(cast(StructuralChange, {str(key): item for key, item in entry.items()}))
     return items
 
 
@@ -833,7 +822,7 @@ def refresh_edit_summary(root: Path) -> EditSummary:
     return payload
 
 
-def load_edit_summary(root: Path) -> dict[str, object]:
+def load_edit_summary(root: Path) -> EditSummary:
     path = root / "edits-summary.json"
     if not path.is_file():
         return {"learns": [], "repeatedRemovals": {}, "repeatedAdditions": {}}
@@ -843,7 +832,7 @@ def load_edit_summary(root: Path) -> dict[str, object]:
         return {"learns": [], "repeatedRemovals": {}, "repeatedAdditions": {}}
     if not isinstance(data, dict):
         return {"learns": [], "repeatedRemovals": {}, "repeatedAdditions": {}}
-    return data
+    return cast(EditSummary, data)
 
 
 def render_edits_markdown(payload: Mapping[str, object]) -> str:
@@ -888,8 +877,7 @@ def render_edits_markdown(payload: Mapping[str, object]) -> str:
             f"{item.get('medianSentenceLengthAfter')}"
         )
         lines.append(
-            f"- Contractions per 1k: {item.get('contractionsPer1kBefore')} → "
-            f"{item.get('contractionsPer1kAfter')}"
+            f"- Contractions per 1k: {item.get('contractionsPer1kBefore')} → {item.get('contractionsPer1kAfter')}"
         )
         lines.append(f"- Words removed: {_format_words(item.get('removedWords'))}")
         lines.append(f"- Words added: {_format_words(item.get('addedWords'))}")
@@ -980,7 +968,7 @@ def _format_moves(value: object) -> str:
         for item in spans
         if isinstance(item.get("tokens"), int) and not isinstance(item.get("tokens"), bool)
     )
-    previews = [f"\"{item.get('text')}\"" for item in spans[:3] if item.get("text")]
+    previews = [f'"{item.get("text")}"' for item in spans[:3] if item.get("text")]
     detail = f": {', '.join(previews)}" if previews else ""
     return f"{tokens} tokens in {len(spans)} span(s){detail}"
 
@@ -1001,9 +989,7 @@ def _format_structure(value: object) -> str:
         elif kind == "paragraphs":
             parts.append(f"paragraphs {item.get('before')} → {item.get('after')}")
         elif kind == "paragraph" and item.get("change") == "moved":
-            parts.append(
-                f"paragraph {item.get('from')} → {item.get('to')}: \"{item.get('preview')}\""
-            )
+            parts.append(f'paragraph {item.get("from")} → {item.get("to")}: "{item.get("preview")}"')
     return "; ".join(parts) if parts else "none"
 
 

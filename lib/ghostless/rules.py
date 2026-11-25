@@ -16,14 +16,18 @@ import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 from ghostless.io import atomic_write_json, text_preview, utc_now_iso
 from ghostless.learn import load_edit_summary
 from ghostless.paths import ProjectError
 from ghostless.schema import (
     ConfirmedRule,
+    EditLearnEntry,
     RuleCandidate,
     RuleCounterexample,
+    RuleDecisionRecord,
+    RuleDecisionResult,
     RuleExample,
     RulesState,
     RuleStatus,
@@ -100,7 +104,7 @@ def mine_candidates(root: Path, edits_summary: Mapping[str, object]) -> list[Rul
         for slug, (before, after) in texts.items()
     }
 
-    supports: dict[str, dict[str, list[dict[str, object]]]] = {"cut": {}, "add": {}}
+    supports: dict[str, dict[str, list[EditLearnEntry]]] = {"cut": {}, "add": {}}
     for learn in learns:
         for word in _words(learn.get("removedWords")):
             supports["cut"].setdefault(word, []).append(learn)
@@ -115,10 +119,7 @@ def mine_candidates(root: Path, edits_summary: Mapping[str, object]) -> list[Rul
                 continue
             supporting = {str(item.get("slug")) for item in distinct}
             side = "before" if kind == "cut" else "after"
-            examples = [
-                _example(kind, word, item, receipts, texts)
-                for item in distinct[:EXAMPLE_LIMIT]
-            ]
+            examples = [_example(kind, word, item, receipts, texts) for item in distinct[:EXAMPLE_LIMIT]]
             counterexamples = [
                 _counterexample(kind, word, item, receipts, texts)
                 for item in learns
@@ -144,9 +145,7 @@ def mine_candidates(root: Path, edits_summary: Mapping[str, object]) -> list[Rul
     deltas_by_slug = {str(learn.get("slug")): _structural_deltas(learn) for learn in learns}
     for name, feature, sign, mark in _STRUCTURAL_RULES:
         matched_learns = [
-            learn
-            for learn in learns
-            if deltas_by_slug.get(str(learn.get("slug")), {}).get(feature, 0) * sign > 0
+            learn for learn in learns if deltas_by_slug.get(str(learn.get("slug")), {}).get(feature, 0) * sign > 0
         ]
         distinct = _distinct_by_slug(matched_learns)
         if len(distinct) < threshold:
@@ -160,13 +159,9 @@ def mine_candidates(root: Path, edits_summary: Mapping[str, object]) -> list[Rul
                 and deltas_by_slug.get(str(learn.get("slug")), {}).get(feature, 0) * sign < 0
             ]
         )
-        examples = [
-            _structural_example(sign, mark, item, receipts, texts)
-            for item in distinct[:EXAMPLE_LIMIT]
-        ]
+        examples = [_structural_example(sign, mark, item, receipts, texts) for item in distinct[:EXAMPLE_LIMIT]]
         counterexamples = [
-            _structural_counterexample(sign, mark, item, receipts, texts)
-            for item in opposite_learns[:EXAMPLE_LIMIT]
+            _structural_counterexample(sign, mark, item, receipts, texts) for item in opposite_learns[:EXAMPLE_LIMIT]
         ]
         candidates.append(
             {
@@ -198,11 +193,11 @@ def default_rules() -> RulesState:
     }
 
 
-def _decisions_map(raw: dict[object, object]) -> dict[str, dict[str, object]]:
-    return {
-        str(key): dict(value) if isinstance(value, dict) else {}
-        for key, value in raw.items()
-    }
+def _decisions_map(raw: dict[object, object]) -> dict[str, RuleDecisionRecord]:
+    mapped: dict[str, RuleDecisionRecord] = {}
+    for key, value in raw.items():
+        mapped[str(key)] = cast(RuleDecisionRecord, value) if isinstance(value, dict) else {}
+    return mapped
 
 
 def load_rules(root: Path) -> RulesState:
@@ -240,11 +235,7 @@ def load_rules(root: Path) -> RulesState:
     if scope is not None:
         if not isinstance(scope, dict):
             raise ProjectError(f"{path}: scope must be an object.")
-        state["scope"] = {
-            key: value
-            for key, value in scope.items()
-            if isinstance(key, str) and isinstance(value, str)
-        }
+        state["scope"] = {key: value for key, value in scope.items() if isinstance(key, str) and isinstance(value, str)}
     return state
 
 
@@ -298,14 +289,12 @@ def confirm_rule(
     rule_id: str,
     *,
     section: str | None = None,
-) -> dict[str, object]:
+) -> RuleDecisionResult:
     """Promote a candidate to an active rule, recording what it rests on."""
     state = load_rules(root)
     candidate = _find_candidate(root, rule_id)
     if candidate is None and not _decided(state, rule_id):
-        raise ProjectError(
-            f"No voice-rule candidate {rule_id}. Run `ghostless rules` to list candidates."
-        )
+        raise ProjectError(f"No voice-rule candidate {rule_id}. Run `ghostless rules` to list candidates.")
     checked_section = _checked_section(section)
     previous_raw = state["confirmed"].get(rule_id)
     previous = previous_raw if isinstance(previous_raw, dict) else {}
@@ -318,8 +307,12 @@ def confirm_rule(
     }
     state["rejected"].pop(rule_id, None)
     state["retired"].pop(rule_id, None)
+    # No section means every section. Re-confirming without one drops a
+    # previous scope instead of leaving it in place.
     if checked_section:
         state["scope"][rule_id] = checked_section
+    else:
+        state["scope"].pop(rule_id, None)
     save_rules(root, state)
     return {
         "id": rule_id,
@@ -330,13 +323,11 @@ def confirm_rule(
     }
 
 
-def reject_rule(root: Path, rule_id: str) -> dict[str, object]:
+def reject_rule(root: Path, rule_id: str) -> RuleDecisionResult:
     """Suppress a candidate permanently. Rebuilds must not resurrect it."""
     state = load_rules(root)
     if _find_candidate(root, rule_id) is None and not _decided(state, rule_id):
-        raise ProjectError(
-            f"No voice-rule candidate {rule_id}. Run `ghostless rules` to list candidates."
-        )
+        raise ProjectError(f"No voice-rule candidate {rule_id}. Run `ghostless rules` to list candidates.")
     at = utc_now_iso()
     state["rejected"][rule_id] = {"at": at}
     state["confirmed"].pop(rule_id, None)
@@ -346,7 +337,7 @@ def reject_rule(root: Path, rule_id: str) -> dict[str, object]:
     return {"id": rule_id, "status": "rejected", "at": at}
 
 
-def retire_rule(root: Path, rule_id: str) -> dict[str, object]:
+def retire_rule(root: Path, rule_id: str) -> RuleDecisionResult:
     """Retire an active rule without forgetting the decision."""
     state = load_rules(root)
     if rule_id not in state["confirmed"]:
@@ -360,7 +351,7 @@ def retire_rule(root: Path, rule_id: str) -> dict[str, object]:
     return {"id": rule_id, "status": "retired", "at": at}
 
 
-def scope_rule(root: Path, rule_id: str, section: str) -> dict[str, object]:
+def scope_rule(root: Path, rule_id: str, section: str) -> RuleDecisionResult:
     """Limit a confirmed rule to one section."""
     state = load_rules(root)
     if rule_id not in state["confirmed"]:
@@ -386,22 +377,25 @@ def rules_summary(root: Path, *, edits: Mapping[str, object] | None = None) -> R
     candidates = mine_candidates(root, edit_data)
     by_id = {candidate["id"]: candidate for candidate in candidates}
 
+    # A hand edit or merge can put one id in more than one bucket.
+    # Precedence matches derive_status: rejected, then retired, then confirmed.
+    rejected_ids = {rule_id for rule_id, _decision in _decision_items(state, "rejected")}
+    retired_ids = {rule_id for rule_id, _decision in _decision_items(state, "retired") if rule_id not in rejected_ids}
+    confirmed_ids = {
+        rule_id
+        for rule_id, _decision in _decision_items(state, "confirmed")
+        if rule_id not in rejected_ids and rule_id not in retired_ids
+    }
     confirmed: list[ConfirmedRule] = []
     for rule_id, decision in _decision_items(state, "confirmed"):
+        if rule_id not in confirmed_ids:
+            continue
         candidate = by_id.get(rule_id) or _candidate_from_id(rule_id, threshold)
         raw_receipts = decision.get("receipts")
         raw_pieces = decision.get("pieces")
         raw_at = decision.get("at")
-        receipts = (
-            [str(item) for item in raw_receipts]
-            if isinstance(raw_receipts, list)
-            else candidate["receipts"]
-        )
-        pieces = (
-            [str(item) for item in raw_pieces]
-            if isinstance(raw_pieces, list)
-            else candidate["pieces"]
-        )
+        receipts = [str(item) for item in raw_receipts] if isinstance(raw_receipts, list) else candidate["receipts"]
+        pieces = [str(item) for item in raw_pieces] if isinstance(raw_pieces, list) else candidate["pieces"]
         confirmed.append(
             {
                 "id": candidate["id"],
@@ -420,11 +414,7 @@ def rules_summary(root: Path, *, edits: Mapping[str, object] | None = None) -> R
             }
         )
 
-    hypotheses = [
-        candidate
-        for candidate in candidates
-        if derive_status(candidate, state) == "hypothesis"
-    ]
+    hypotheses = [candidate for candidate in candidates if derive_status(candidate, state) == "hypothesis"]
     rejected_list: list[SuppressedRule] = []
     retired_list: list[SuppressedRule] = []
     for rule_id, decision in _decision_items(state, "rejected"):
@@ -440,6 +430,8 @@ def rules_summary(root: Path, *, edits: Mapping[str, object] | None = None) -> R
             }
         )
     for rule_id, decision in _decision_items(state, "retired"):
+        if rule_id not in retired_ids:
+            continue
         candidate = by_id.get(rule_id) or _candidate_from_id(rule_id, threshold)
         raw_at = decision.get("at")
         retired_list.append(
@@ -460,11 +452,11 @@ def rules_summary(root: Path, *, edits: Mapping[str, object] | None = None) -> R
     }
 
 
-def _learns(edits_summary: Mapping[str, object]) -> list[dict[str, object]]:
+def _learns(edits_summary: Mapping[str, object]) -> list[EditLearnEntry]:
     raw = edits_summary.get("learns")
     if not isinstance(raw, list):
         return []
-    return [item for item in raw if isinstance(item, dict) and isinstance(item.get("slug"), str)]
+    return [cast(EditLearnEntry, item) for item in raw if isinstance(item, dict) and isinstance(item.get("slug"), str)]
 
 
 def _words(value: object) -> set[str]:
@@ -477,19 +469,19 @@ def _words(value: object) -> set[str]:
     return words
 
 
-def _distinct_by_slug(items: list[dict[str, object]]) -> list[dict[str, object]]:
-    seen: dict[str, dict[str, object]] = {}
+def _distinct_by_slug(items: list[EditLearnEntry]) -> list[EditLearnEntry]:
+    seen: dict[str, EditLearnEntry] = {}
     for item in items:
         seen.setdefault(str(item.get("slug")), item)
     return [seen[slug] for slug in sorted(seen)]
 
 
-def _distinct_values(items: list[dict[str, object]], key: str) -> list[str]:
-    values = {
-        str(item[key])
-        for item in items
-        if isinstance(item.get(key), str) and item[key]
-    }
+def _distinct_values(items: list[EditLearnEntry], key: str) -> list[str]:
+    values: set[str] = set()
+    for item in items:
+        raw = cast(Mapping[str, object], item).get(key)
+        if isinstance(raw, str) and raw:
+            values.add(raw)
     return sorted(values)
 
 
@@ -518,7 +510,7 @@ def _receipt_for(slug: str, receipts: dict[str, str]) -> str:
 
 def _pair_texts(
     root: Path,
-    learns: list[dict[str, object]],
+    learns: list[EditLearnEntry],
 ) -> dict[str, tuple[str, str]]:
     texts: dict[str, tuple[str, str]] = {}
     for learn in learns:
@@ -539,7 +531,7 @@ def _pair_texts(
 def _example(
     kind: str,
     word: str,
-    learn: dict[str, object],
+    learn: EditLearnEntry,
     receipts: dict[str, str],
     texts: dict[str, tuple[str, str]],
 ) -> RuleExample:
@@ -557,7 +549,7 @@ def _example(
 def _counterexample(
     kind: str,
     word: str,
-    learn: dict[str, object],
+    learn: EditLearnEntry,
     receipts: dict[str, str],
     texts: dict[str, tuple[str, str]],
 ) -> RuleCounterexample:
@@ -596,7 +588,7 @@ def _structural_deltas(learn: Mapping[str, object]) -> dict[str, int]:
 def _structural_example(
     sign: int,
     mark: str | None,
-    learn: dict[str, object],
+    learn: EditLearnEntry,
     receipts: dict[str, str],
     texts: dict[str, tuple[str, str]],
 ) -> RuleExample:
@@ -632,7 +624,7 @@ def _structural_example(
 def _structural_counterexample(
     sign: int,
     mark: str | None,
-    learn: dict[str, object],
+    learn: EditLearnEntry,
     receipts: dict[str, str],
     texts: dict[str, tuple[str, str]],
 ) -> RuleCounterexample:
@@ -704,14 +696,10 @@ def _find_candidate(root: Path, rule_id: str) -> RuleCandidate | None:
 
 
 def _decided(state: RulesState, rule_id: str) -> bool:
-    return (
-        rule_id in state["confirmed"]
-        or rule_id in state["rejected"]
-        or rule_id in state["retired"]
-    )
+    return rule_id in state["confirmed"] or rule_id in state["rejected"] or rule_id in state["retired"]
 
 
-def _decision_items(state: RulesState, key: str) -> list[tuple[str, dict[str, object]]]:
+def _decision_items(state: RulesState, key: str) -> list[tuple[str, RuleDecisionRecord]]:
     match key:
         case "confirmed":
             block = state["confirmed"]

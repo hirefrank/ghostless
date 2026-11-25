@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT / "lib"))
 from ghostless.cli import main  # noqa: E402
 from ghostless.paths import ProjectError  # noqa: E402
 from ghostless.project import init_project  # noqa: E402
+from ghostless.schema import SessionStartResult  # noqa: E402
 from ghostless.sessions import (  # noqa: E402
     finish_session,
     list_sessions,
@@ -35,7 +36,7 @@ class SessionTests(unittest.TestCase):
         self.draft = self.base / "draft.md"
         self.draft.write_text("A first thought.\n", encoding="utf-8")
 
-    def start(self) -> dict[str, object]:
+    def start(self) -> SessionStartResult:
         return start_session(
             self.project,
             self.draft,
@@ -46,8 +47,10 @@ class SessionTests(unittest.TestCase):
 
     def test_start_uses_the_learn_slug_and_preserves_the_original(self) -> None:
         session = self.start()
+        session_id = session["id"]
+        assert isinstance(session_id, str)
         folder = self.project / str(session["path"])
-        self.assertRegex(session["id"], r"^\d{4}-\d{2}-\d{2}-notes$")
+        self.assertRegex(session_id, r"^\d{4}-\d{2}-\d{2}-notes$")
         self.assertEqual((folder / "before.md").read_text(), "A first thought.\n")
         self.assertEqual((folder / "after.md").read_text(), "A first thought.\n")
         self.draft.write_text("Changed outside the session.\n")
@@ -81,9 +84,7 @@ class SessionTests(unittest.TestCase):
             start_session(self.project, self.draft, section=None, origin="ai-first", sources=[str(self.draft)])
         for absolute in ("/home/user/ref", r"C:\Users\me\ref", "C:/Users/me/ref"):
             with self.assertRaisesRegex(ProjectError, "portable reference"):
-                start_session(
-                    self.project, self.draft, section=None, origin="ai-first", sources=[absolute]
-                )
+                start_session(self.project, self.draft, section=None, origin="ai-first", sources=[absolute])
         session = self.start()
         folder = self.project / str(session["path"])
         with self.assertRaisesRegex(ProjectError, "identical"):
@@ -122,7 +123,9 @@ class SessionTests(unittest.TestCase):
         folder = self.project / str(session["path"])
         self.assertEqual((folder / "after.md").read_text(), "From another editor.\n")
         self.assertEqual((folder / "notes.md").read_text(), "Typed elsewhere.")
-        self.assertEqual(receipt["learnedPath"].split("/", 1)[0], "gold")
+        learned = receipt["learnedPath"]
+        assert isinstance(learned, str)
+        self.assertEqual(learned.split("/", 1)[0], "gold")
 
     def test_start_help_does_not_claim_to_open_the_editor(self) -> None:
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
@@ -200,6 +203,45 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(code, 0)
         recorded = log.read_text(encoding="utf-8").splitlines()
         self.assertEqual(recorded[2:], ["--session", str(session["id"])])
+
+    def test_invalid_check_leaves_session_files_unchanged(self) -> None:
+        session = self.start()
+        folder = self.project / str(session["path"])
+        snapshot_session(
+            self.project,
+            session=str(session["id"]),
+            after="A better thought.\n",
+            notes="Keep this note.",
+        )
+        after_text = (folder / "after.md").read_text(encoding="utf-8")
+        notes_text = (folder / "notes.md").read_text(encoding="utf-8")
+        with self.assertRaisesRegex(ProjectError, "sentence length"):
+            finish_session(
+                self.project,
+                None,
+                session=str(session["id"]),
+                note="Should not land.",
+                checks=["Keep the median sentence length near the target."],
+            )
+        self.assertEqual((folder / "after.md").read_text(encoding="utf-8"), after_text)
+        self.assertEqual((folder / "notes.md").read_text(encoding="utf-8"), notes_text)
+        self.assertFalse((folder / "receipt.json").exists())
+        metadata = json.loads((folder / "session.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["status"], "open")
+        self.assertEqual(list((self.project / "gold").glob("*/meta.json")), [])
+
+    def test_retry_repairs_open_status_when_receipt_exists(self) -> None:
+        session = self.start()
+        folder = self.project / str(session["path"])
+        (folder / "after.md").write_text("A better thought.\n", encoding="utf-8")
+        finish_session(self.project, None, session=str(session["id"]))
+        metadata = json.loads((folder / "session.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["status"], "final")
+        metadata["status"] = "open"
+        (folder / "session.json").write_text(json.dumps(metadata) + "\n", encoding="utf-8")
+        finish_session(self.project, None, session=str(session["id"]))
+        healed = json.loads((folder / "session.json").read_text(encoding="utf-8"))
+        self.assertEqual(healed["status"], "final")
 
 
 def _write_fake_editor(path: Path) -> Path:

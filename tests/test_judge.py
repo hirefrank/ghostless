@@ -49,14 +49,14 @@ class JudgeTests(unittest.TestCase):
         draft = "It's not a shortcut, it's a practice."
         # Give the draft its own metrics as targets so only the structural
         # tell can move the score; that keeps this test focused on review-only.
-        stats = {"weighted": {"metrics": draft_summary(draft)["metrics"], "banList": []}}
+        stats: dict[str, object] = {"weighted": {"metrics": draft_summary(draft)["metrics"], "banList": []}}
         report = judge_text(draft, stats)
         self.assertTrue(report["ok"])
         self.assertTrue(report["reviewRequired"])
         self.assertEqual(report["assessment"], "mechanical-only")
 
     def test_empty_project_cannot_pass(self) -> None:
-        stats = {"weighted": {"metrics": {}, "banList": []}}
+        stats: dict[str, object] = {"weighted": {"metrics": {}, "banList": []}}
         report = judge_text("An ordinary draft with a few sentences.", stats)
         self.assertFalse(report["ok"])
         self.assertEqual(report["score"], 0)
@@ -124,7 +124,11 @@ class JudgeTests(unittest.TestCase):
         self.assertEqual(check["status"], "high")
         self.assertGreater(check["penalty"], 0)
         # The override never rewrites the caller's stats.
-        self.assertNotEqual(stats["weighted"]["metrics"]["emDashesPer1k"], 0)
+        weighted = stats["weighted"]
+        assert isinstance(weighted, dict)
+        metrics = weighted["metrics"]
+        assert isinstance(metrics, dict)
+        self.assertNotEqual(metrics["emDashesPer1k"], 0)
         self.assertEqual(
             apply_overrides({"emDashesPer1k": 8.1}, {"emDashesPer1k": 0}),
             {"emDashesPer1k": 0},
@@ -168,8 +172,7 @@ class JudgeTests(unittest.TestCase):
             self.assertIn("measured", guide)
             draft = project / "draft.md"
             draft.write_text(
-                (project / "drafts" / "closer.md").read_text(encoding="utf-8")
-                + "\n\nOne more line — with a dash.\n",
+                (project / "drafts" / "closer.md").read_text(encoding="utf-8") + "\n\nOne more line — with a dash.\n",
                 encoding="utf-8",
             )
             out = io.StringIO()
@@ -188,7 +191,8 @@ class JudgeTests(unittest.TestCase):
                 (
                     "I write short lines — then I pause — and then I write again.\n"
                     "We keep the cadence clear — never ornate — and stop on time.\n"
-                ) * 3,
+                )
+                * 3,
                 encoding="utf-8",
             )
             manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
@@ -199,6 +203,8 @@ class JudgeTests(unittest.TestCase):
             on_disk = json.loads((project / "voice-stats.json").read_text(encoding="utf-8"))
             measured_em = stats["weighted"]["metrics"]["emDashesPer1k"]
             section_measured_em = stats["sections"]["notes"]["weighted"]["metrics"]["emDashesPer1k"]
+            assert isinstance(measured_em, int | float) and not isinstance(measured_em, bool)
+            assert isinstance(section_measured_em, int | float) and not isinstance(section_measured_em, bool)
             self.assertGreater(measured_em, 0)
             self.assertGreater(section_measured_em, 0)
             self.assertEqual(on_disk["weighted"]["metrics"]["emDashesPer1k"], measured_em)
@@ -215,10 +221,9 @@ class JudgeTests(unittest.TestCase):
             self.assertIn("- Em dashes per 1k: 0\n", notes_section)
 
             draft = project / "draft.md"
-            draft_text = (
-                (project / "drafts" / "closer.md").read_text(encoding="utf-8")
-                + "\n\nOne more line — with a dash.\n"
-            )
+            draft_text = (project / "drafts" / "closer.md").read_text(
+                encoding="utf-8"
+            ) + "\n\nOne more line — with a dash.\n"
             draft.write_text(draft_text, encoding="utf-8")
 
             direct = judge_text(draft_text, stats)
@@ -269,6 +274,7 @@ class JudgeTests(unittest.TestCase):
 
             stats = build_voice(project)
             measured_share = stats["weighted"]["metrics"]["openerShare"]
+            assert isinstance(measured_share, int | float) and not isinstance(measured_share, bool)
             measured_pct = f"{measured_share * 100:.0f}%"
             self.assertNotEqual(measured_pct, "20%")
 
@@ -285,7 +291,7 @@ class JudgeTests(unittest.TestCase):
         draft = "I write short lines. [FRANK: add the story here]"
         # Give the draft its own metrics as targets so only the placeholder
         # can move reviewRequired; that keeps this test focused.
-        stats = {"weighted": {"metrics": draft_summary(draft)["metrics"], "banList": []}}
+        stats: dict[str, object] = {"weighted": {"metrics": draft_summary(draft)["metrics"], "banList": []}}
         report = judge_text(draft, stats)
         self.assertTrue(report["reviewRequired"])
         self.assertEqual(report["placeholders"], ["[FRANK: add the story here]"])
@@ -296,14 +302,14 @@ class JudgeTests(unittest.TestCase):
         self.assertEqual(find_placeholders("[see page 3]"), [])
         self.assertEqual(find_placeholders("[2024: a year]"), [])
         draft = "I write short lines. [see page 3]"
-        stats = {"weighted": {"metrics": draft_summary(draft)["metrics"], "banList": []}}
+        stats: dict[str, object] = {"weighted": {"metrics": draft_summary(draft)["metrics"], "banList": []}}
         report = judge_text(draft, stats)
         self.assertFalse(report["reviewRequired"])
         self.assertEqual(report["placeholders"], [])
 
     def test_configured_placeholder_token_matches_case_insensitively(self) -> None:
         draft = "I write short lines. [frank: add the story here]"
-        stats = {"weighted": {"metrics": draft_summary(draft)["metrics"], "banList": []}}
+        stats: dict[str, object] = {"weighted": {"metrics": draft_summary(draft)["metrics"], "banList": []}}
         self.assertEqual(judge_text(draft, stats)["placeholders"], [])
         report = judge_text(draft, stats, placeholder="Frank")
         self.assertTrue(report["reviewRequired"])
@@ -322,8 +328,7 @@ class JudgeTests(unittest.TestCase):
             self.assertNotIn("[WRITER: your take]", guide)
             draft = project / "draft.md"
             draft.write_text(
-                (project / "drafts" / "closer.md").read_text(encoding="utf-8")
-                + "\n\n[frank: add the story here]\n",
+                (project / "drafts" / "closer.md").read_text(encoding="utf-8") + "\n\n[frank: add the story here]\n",
                 encoding="utf-8",
             )
             out = io.StringIO()
@@ -390,7 +395,9 @@ class JudgeTests(unittest.TestCase):
         self.assertTrue(any(hit.kind == "not-x-its-y" for hit in hits))
 
         stats = self._stats_from_draft("It's worth noting. It's not a note, it's a framework.")
-        stats["weighted"]["banList"] = ["it's worth noting"]
+        weighted = stats["weighted"]
+        assert isinstance(weighted, dict)
+        weighted["banList"] = ["it's worth noting"]
         report = judge_text(draft, stats)
         self.assertEqual(report["banned"], [{"tell": "it's worth noting", "count": 1}])
         self.assertTrue(any(item["kind"] == "not-x-its-y" for item in report["structure"]))
@@ -410,7 +417,9 @@ class JudgeTests(unittest.TestCase):
             "See [this guide](https://example.com/delve) <!-- delve [TODO: comment] -->.\n"
         )
         stats = self._stats_from_draft("I write short lines. I keep them plain.")
-        stats["weighted"]["banList"] = ["delve"]
+        weighted = stats["weighted"]
+        assert isinstance(weighted, dict)
+        weighted["banList"] = ["delve"]
         report = judge_text(draft, stats)
         self.assertEqual(report["banned"], [])
         self.assertEqual([item for item in report["structure"] if item["kind"] != "em-dash"], [])
