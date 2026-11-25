@@ -101,7 +101,7 @@ pub(crate) fn build(editor: &crate::state::Editor, kit: &rune_kit::Kit, overlays
     let body = if editor.reference.source.is_none() {
         col().grow(1.0).padding(24.0).child(text("Choose a file to use as a reference").font(kit.ty.ui).color(kit.c.text_muted))
     } else if editor.reference.rendered {
-        super::preview::build(content, &editor.store.ui, kit)
+        super::preview::build(content, &editor.store.ui, kit, None)
     } else {
         col().grow(1.0).w_full().min_h(0.0).scroll(rune::ScrollSpec { stick_bottom: false }).padding(24.0)
             .child(text(content.to_owned()).font(crate::theme::prose_text_style(&editor.store.ui)).color(kit.c.text_base).wrap())

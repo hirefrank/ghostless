@@ -21,8 +21,16 @@ pub(crate) fn build(editor: &Editor, cx: &Cx<Editor>, kit: &Kit, locked: bool) -
         });
     }
     let cached = cache.as_ref().expect("decoration cache initialized");
+    let mut spans = cached.spans.clone();
+    if editor.find.open {
+        spans.extend(editor.find.matches.iter().enumerate().map(|(index, range)| {
+            let color = if editor.find.current == Some(index) { kit.c.warning.fg } else { kit.c.warning.bg };
+            let span = rune::Span::new(range.start, range.end).bg(color, 1.0);
+            if editor.find.current == Some(index) { span.color(kit.c.warning.bg) } else { span }
+        }));
+    }
     let mut field = text_input(editor.active_working_edit(), theme::prose_text_style(&editor.store.ui))
-        .key("prose-input").label("Working draft").description(cached.description.clone()).decorations(cached.spans.clone()).w_full().min_h((height - 32.0).max(80.0))
+        .key("prose-input").label("Working draft").description(cached.description.clone()).decorations(spans).w_full().min_h((height - 32.0).max(80.0))
         .color(kit.c.text_base).caret(kit.c.text_base, kit.selection())
         .placeholder("Start writing…", kit.c.text_faint).spellcheck(editor.store.ui.spellcheck)
         .disabled(locked);

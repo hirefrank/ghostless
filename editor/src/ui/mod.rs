@@ -6,6 +6,7 @@ use rune_kit::{
 use crate::state::{DialogKind, Editor, ViewMode};
 
 mod canvas;
+mod find_bar;
 mod preview;
 pub(crate) mod reference;
 mod sidebar;
@@ -41,6 +42,10 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
             .child(col().grow(1.0).w(0.0).min_h(0.0).child(reference::build(editor, &kit, &mut overlays)))
             .child(col().w(1.0).h_full().fill(kit.c.border_muted))
             .child(col().grow(1.0).w(0.0).min_h(0.0).child(stage))
+    } else { stage };
+    let stage = if editor.find.open {
+        col().grow(1.0).w_full().min_h(0.0).child(stage)
+            .child(find_bar::build(editor, &kit).pin(None, Some(8.0), Some(8.0), None))
     } else { stage };
     let mut main = col()
         .key("stage")
@@ -94,7 +99,7 @@ fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
     };
 
     match editor.view_mode {
-        ViewMode::Preview => preview::build(&doc.edit.text, &editor.store.ui, kit),
+        ViewMode::Preview => preview::build(&doc.edit.text, &editor.store.ui, kit, Some(&editor.find)),
         ViewMode::Compare if editor.active_has_baseline() => col()
             .key("compare-body")
             .grow(1.0)
@@ -104,7 +109,7 @@ fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
                 DiffView::new(|e: &Editor| &e.diff, |e: &mut Editor| &mut e.diff)
                     .build(editor, kit),
             ),
-        ViewMode::Compare | ViewMode::Write if doc.read_only && doc.path.file_name().is_some_and(|name| name == "voice-guide.md") => preview::build(&doc.edit.text, &editor.store.ui, kit),
+        ViewMode::Compare | ViewMode::Write if doc.read_only && doc.path.file_name().is_some_and(|name| name == "voice-guide.md") => preview::build(&doc.edit.text, &editor.store.ui, kit, Some(&editor.find)),
         ViewMode::Compare | ViewMode::Write => {
             let locked = editor.active_is_locked();
             let body = canvas::build(editor, cx, kit, locked);

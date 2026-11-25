@@ -80,6 +80,7 @@ pub(crate) struct Editor {
     pub(crate) inspector_pane: PaneState,
     pub(crate) view_mode: ViewMode,
     pub(crate) reference: crate::ui::reference::ReferencePane,
+    pub(crate) find: crate::search::FindState,
     pub(crate) focus_mode: bool,
     pub(crate) view_settings_open: bool,
     fonts_initialized: bool,
@@ -188,6 +189,7 @@ impl Editor {
             inspector_pane,
             view_mode: ViewMode::Write,
             reference: Default::default(),
+            find: Default::default(),
             focus_mode: false,
             view_settings_open: false,
             fonts_initialized: false,
@@ -244,6 +246,7 @@ impl Editor {
             inspector_pane: insp,
             view_mode: ViewMode::Write,
             reference: Default::default(),
+            find: Default::default(),
             focus_mode: false,
             view_settings_open: false,
             fonts_initialized: false,
@@ -375,6 +378,7 @@ impl Editor {
         self.workspace = Some(folder.clone());
         self.documents.clear();
         self.reference = Default::default();
+        self.find = Default::default();
         self.active_doc = None;
         self.selected_tree_id = None;
         self.view_mode = ViewMode::Write;
@@ -488,6 +492,7 @@ impl Editor {
             self.documents.push(buf);
             self.active_doc = Some(self.documents.len() - 1);
         }
+        self.refresh_find();
         self.dispatch_next();
         if self.view_mode == ViewMode::Compare {
             self.view_mode = ViewMode::Write;
@@ -538,6 +543,7 @@ impl Editor {
             return;
         }
         self.close_dialog();
+        self.refresh_find();
     }
 
     pub(crate) fn open_session_entry(&mut self, project: PathBuf, session_id: String) {
@@ -577,6 +583,7 @@ impl Editor {
         self.flush_leaving_doc();
         self.documents.push(buf);
         self.active_doc = Some(self.documents.len() - 1);
+        self.refresh_find();
         self.refresh_diff();
         self.dispatch_next();
         self.status = if unknown_link {
@@ -688,6 +695,7 @@ impl Editor {
         if self.active_doc != Some(pos) {
             self.flush_leaving_doc();
             self.active_doc = Some(pos);
+            self.refresh_find();
             self.dispatch_next();
         }
         if !self.active_has_baseline() && self.view_mode == ViewMode::Compare {
@@ -771,6 +779,7 @@ impl Editor {
             };
             self.active_doc = Some(next);
         }
+        self.refresh_find();
         if !self.active_has_baseline() && self.view_mode == ViewMode::Compare {
             self.view_mode = ViewMode::Write;
         } else if self.view_mode == ViewMode::Compare {
@@ -1202,6 +1211,50 @@ impl Editor {
             tx.wake_after(FILE_AUTOSAVE_DELAY);
         }
         self.status = "Unsaved changes".into();
+        self.refresh_find();
+    }
+
+    pub(crate) fn open_find(&mut self, replace: bool, tx: &mut Tx) {
+        let (selected, text) = self.active_doc_ref().map(|doc| (doc.edit.selected().to_owned(), doc.edit.text.clone())).unwrap_or_default();
+        let query = if !selected.is_empty() && !selected.contains('\n') { selected } else { self.find.query.text.clone() };
+        crate::search::open_find_with_query(&mut self.find, &query, &text, tx);
+        self.find.show_replace = replace;
+        self.select_find_match();
+    }
+
+    pub(crate) fn close_find(&mut self, tx: &mut Tx) {
+        self.find.open = false;
+        tx.focus("prose-input", false);
+    }
+
+    pub(crate) fn refresh_find(&mut self) {
+        if !self.find.open { return; }
+        let text = self.active_doc_ref().map(|doc| doc.edit.text.clone()).unwrap_or_default();
+        self.find.matches = crate::search::find_matches(&text, &self.find.query.text, self.find.case_sensitive, self.find.whole_word);
+        self.find.current = (!self.find.matches.is_empty()).then_some(0);
+    }
+
+    pub(crate) fn select_find_match(&mut self) {
+        let range = self.find.current.and_then(|i| self.find.matches.get(i)).cloned();
+        if let (Some(range), Some(doc)) = (range, self.active_doc_mut()) { doc.edit.set_selection(range.start, range.end); }
+    }
+
+    pub(crate) fn step_find(&mut self, forward: bool) {
+        let cursor = self.find.current.and_then(|i| self.find.matches.get(i)).map(|r| r.start).unwrap_or(0);
+        self.find.current = crate::search::next_match(&self.find.matches, cursor, forward);
+        self.select_find_match();
+    }
+
+    pub(crate) fn replace_find(&mut self, all: bool, tx: &mut Tx) {
+        if self.active_is_locked() { return; }
+        let ranges = self.find.matches.clone();
+        let current = self.find.current.and_then(|i| ranges.get(i)).cloned();
+        let replacement = self.find.replacement.text.clone();
+        let changed = if let Some(doc) = self.active_doc_mut() {
+            if all { crate::search::replace_all(&mut doc.edit, &ranges, &replacement) > 0 }
+            else { current.is_some_and(|r| crate::search::replace_one(&mut doc.edit, r, &replacement)) }
+        } else { false };
+        if changed { self.changed_active(tx); self.select_find_match(); }
     }
 
     pub(crate) fn refresh_diff(&mut self) {
@@ -1893,7 +1946,8 @@ pub(crate) fn on_key(editor: &mut Editor, key: &KeyEvent, tx: &mut Tx) -> bool {
     if editor.is_landing_view() {
         return false;
     }
-    if key.key == Key::Function(11) || (key.key == Key::Enter && key.mods.shift && (key.mods.cmd || key.mods.ctrl)) || (key.key == Key::Escape && editor.focus_mode && !editor.view_settings_open) {
+    if editor.find.open && key.key == Key::Escape { editor.close_find(tx); return true; }
+    if key.key == Key::Function(11) || (key.key == Key::Enter && key.mods.shift && (key.mods.cmd || key.mods.ctrl)) || (key.key == Key::Escape && editor.focus_mode && !editor.view_settings_open && !editor.find.open) {
         editor.focus_mode = !editor.focus_mode;
         return true;
     }
@@ -1906,6 +1960,8 @@ pub(crate) fn on_key(editor: &mut Editor, key: &KeyEvent, tx: &mut Tx) -> bool {
         }
         if key.is_command('0') { editor.store.ui.font_size = 16.5; let _ = prefs::save_store(&editor.store); return true; }
     }
+    if key.is_command('f') && !key.mods.shift && !key.mods.alt { editor.open_find(false, tx); return true; }
+    if key.is_command('h') && !key.mods.shift && !key.mods.alt { editor.open_find(true, tx); return true; }
     if key.is_command('v') && key.mods.shift && !key.mods.alt {
         editor.view_mode = if editor.view_mode == ViewMode::Preview { ViewMode::Write } else { ViewMode::Preview };
         return true;

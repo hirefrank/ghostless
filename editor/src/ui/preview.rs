@@ -2,7 +2,7 @@ use rune::{col, row, El, ScrollSpec};
 use rune_kit::{Badge, Kit, Markdown};
 use crate::{markdown_decor, prefs::UiPrefs, state::Editor, theme};
 
-pub(crate) fn build(source: &str, prefs: &UiPrefs, kit: &Kit) -> El {
+pub(crate) fn build(source: &str, prefs: &UiPrefs, kit: &Kit, find: Option<&crate::search::FindState>) -> El {
     let (body, fields) = preview_parts(source);
     let mut column = col().w_full().gap(16.0);
     if !fields.is_empty() {
@@ -10,7 +10,11 @@ pub(crate) fn build(source: &str, prefs: &UiPrefs, kit: &Kit) -> El {
         for (key, value) in fields { pills = pills.child(Badge::new(format!("{key}: {value}")).build(kit)); }
         column = column.child(pills);
     }
-    column = column.child(Markdown::new(body).selectable(true)
+    let end = source.len() - body.len();
+    let highlights: Vec<_> = find.filter(|f| f.open).into_iter().flat_map(|f| f.matches.iter().enumerate().filter(move |(_, range)| range.start >= end).map(move |(index, range)| {
+        (range.start - end..range.end - end, rune_kit::markdown::Highlight::new().current_match(f.current == Some(index)))
+    })).collect();
+    column = column.child(Markdown::new(body).highlights(highlights).selectable(true)
         .on_link_tx(|_: &mut Editor, url, tx| { let _ = tx.open_url(url); }).build(kit));
     if let Some(width) = theme::measure_max_width(prefs.measure) { column = column.max_w(width); }
     col().key("preview-body").grow(1.0).w_full().min_h(0.0).items_center()
