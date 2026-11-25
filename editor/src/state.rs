@@ -134,7 +134,10 @@ impl Editor {
                 &session.project,
                 &session.id,
             ))
-            .and_then(|link| link.workspace_file.is_absolute().then(|| link.workspace_file.clone()));
+            .and_then(|link| {
+                (link.workspace_file.is_absolute() && !link.last_synced_sha256.is_empty())
+                    .then(|| link.workspace_file.clone())
+            });
         let mut diff = DiffState::new(vec![FileDiff::from_texts(
             &session.source_name,
             &session.original,
@@ -143,9 +146,12 @@ impl Editor {
         diff.set_mode(DiffMode::Split);
         let worker = Worker::spawn_with_handlers(runner, writer, wake);
         let voice = Some(session.project.clone());
-        let unresolved_link = store.session_links.get(&prefs::EditorStateStore::session_link_key(&session.project, &session.id))
-            .is_some_and(|link| !link.workspace_file.is_absolute());
-        let status = if unresolved_link {
+        let session_link = store.session_links.get(&prefs::EditorStateStore::session_link_key(&session.project, &session.id));
+        let unknown_link = session_link.is_some_and(|link| link.last_synced_sha256.is_empty());
+        let unresolved_link = session_link.is_some_and(|link| !link.workspace_file.is_absolute());
+        let status = if unknown_link {
+            "Linked draft has no known sync state; session saves locally".into()
+        } else if unresolved_link {
             "Linked file unavailable without a workspace; session saves locally".into()
         } else if session.finished {
             "Finished".into()
@@ -531,12 +537,12 @@ impl Editor {
                 &session_id,
             ))
             .and_then(|link| {
-                (self.workspace.is_some() || link.workspace_file.is_absolute())
+                (!link.last_synced_sha256.is_empty() && (self.workspace.is_some() || link.workspace_file.is_absolute()))
                     .then(|| resolve_mirror_path(&link.workspace_file, self.workspace.as_deref()))
             });
-        let unresolved_link = self.workspace.is_none() && self.store.session_links
-            .get(&prefs::EditorStateStore::session_link_key(&project, &session_id))
-            .is_some_and(|link| !link.workspace_file.is_absolute());
+        let session_link = self.store.session_links.get(&prefs::EditorStateStore::session_link_key(&project, &session_id));
+        let unknown_link = session_link.is_some_and(|link| link.last_synced_sha256.is_empty());
+        let unresolved_link = self.workspace.is_none() && session_link.is_some_and(|link| !link.workspace_file.is_absolute());
         let finished = loaded.finished;
         let mut buf = DocumentBuffer::from_session(loaded, true, mirror_path);
         if buf.mirror_path.is_some()
@@ -549,7 +555,9 @@ impl Editor {
         self.active_doc = Some(self.documents.len() - 1);
         self.refresh_diff();
         self.dispatch_next();
-        self.status = if unresolved_link {
+        self.status = if unknown_link {
+            "Linked draft has no known sync state; session saves locally".into()
+        } else if unresolved_link {
             "Linked file unavailable without a workspace; session saves locally".into()
         } else if finished {
             "Finished".into()
@@ -1335,10 +1343,14 @@ impl Editor {
                                 doc.pending_save = true;
                             } else {
                                 doc.last_saved_label = Some(DocumentBuffer::format_saved_utc());
-                                let missing_mirror = doc.mirror_path.is_none() && doc.voice_project.as_ref().zip(doc.session_id.as_ref()).is_some_and(|(project, id)| {
-                                    self.store.session_links.get(&prefs::EditorStateStore::session_link_key(project, id)).is_some_and(|link| !link.workspace_file.is_absolute())
+                                let link = doc.voice_project.as_ref().zip(doc.session_id.as_ref()).and_then(|(project, id)| {
+                                    self.store.session_links.get(&prefs::EditorStateStore::session_link_key(project, id))
                                 });
-                                self.status = if missing_mirror { "Saved locally; linked file unavailable without a workspace" } else { "Saved locally" }.into();
+                                self.status = if doc.mirror_path.is_none() && link.is_some_and(|link| link.last_synced_sha256.is_empty()) {
+                                    "Saved locally; linked draft has no known sync state"
+                                } else if doc.mirror_path.is_none() && link.is_some_and(|link| !link.workspace_file.is_absolute()) {
+                                    "Saved locally; linked file unavailable without a workspace"
+                                } else { "Saved locally" }.into();
                                 if self.pending_close.as_ref() == Some(&doc_id) {
                                     should_close = true;
                                 }
@@ -1996,6 +2008,50 @@ mod tests {
     }
 
     #[test]
+    fn blank_link_hash_saves_session_locally_without_touching_draft() {
+        let base = std::env::temp_dir().join(format!("ghostless-unknown-link-{}", std::process::id()));
+        let project = base.join("voice"); let session_id = "2026-04-02-notes";
+        let folder = project.join("sessions").join(session_id);
+        fs::create_dir_all(&folder).unwrap();
+        let before = "Original text.\n";
+        fs::write(folder.join("before.md"), before).unwrap();
+        fs::write(folder.join("after.md"), before).unwrap();
+        fs::write(folder.join("session.json"), serde_json::json!({"kind":"ghostless-edit-session", "beforeSha256":fs_io::sha256_text(before)}).to_string()).unwrap();
+        let draft = base.join("draft.md"); fs::write(&draft, "External draft\n").unwrap();
+        let mut store = prefs::EditorStateStore::default();
+        let key = prefs::EditorStateStore::session_link_key(&project, session_id);
+        store.session_links.insert(key.clone(), prefs::SessionLink { workspace_file: draft.clone(), last_synced_sha256: String::new() });
+        for (sidebar, relative_link) in [(false, false), (true, false), (true, true)] {
+            let mut current_store = store.clone();
+            if relative_link { current_store.session_links.get_mut(&key).unwrap().workspace_file = "draft.md".into(); }
+            let mut editor = if sidebar {
+                let mut app = Editor::empty_with_handlers(current_store, ok_runner(), Box::new(execute_write_op), noop_wake());
+                if relative_link { app.workspace = Some(base.clone()); }
+                app.open_session_entry(project.clone(), session_id.into());
+                app
+            } else {
+                let session = load_session(project.clone(), session_id.into()).unwrap();
+                Editor::with_handlers(session, current_store, ok_runner(), Box::new(execute_write_op), noop_wake())
+            };
+            assert!(editor.status.contains("no known sync state"));
+            assert!(editor.active_doc_ref().unwrap().mirror_path.is_none());
+            editor.active_working_edit_mut().text = "Locally saved session\n".into();
+            editor.active_notes_edit_mut().text = "Notes saved".into();
+            editor.changed_active(&mut Tx::default());
+            editor.save_clicked(); drain_until_idle(&mut editor);
+            assert!(!editor.active_doc_ref().unwrap().is_dirty());
+            assert!(editor.status.contains("no known sync state"));
+            assert_eq!(fs::read_to_string(folder.join("after.md")).unwrap(), "Locally saved session\n");
+            assert_eq!(fs::read_to_string(folder.join("notes.md")).unwrap(), "Notes saved");
+            assert_eq!(fs::read_to_string(&draft).unwrap(), "External draft\n");
+            assert!(editor.store.session_links[&key].last_synced_sha256.is_empty());
+            editor.workspace = None;
+            editor.flush_on_exit();
+        }
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn sidebar_session_with_relative_link_saves_locally_without_workspace() {
         let base = std::env::temp_dir().join(format!("ghostless-sidebar-relative-{}", std::process::id()));
         let project = base.join("voice");
@@ -2033,7 +2089,7 @@ mod tests {
     fn standalone_session_saves_when_link_has_no_workspace() {
         let session = test_session();
         let mut store = prefs::EditorStateStore::default();
-        store.session_links.insert(prefs::EditorStateStore::session_link_key(&session.project, &session.id), prefs::SessionLink { workspace_file: "draft.md".into(), last_synced_sha256: String::new() });
+        store.session_links.insert(prefs::EditorStateStore::session_link_key(&session.project, &session.id), prefs::SessionLink { workspace_file: "draft.md".into(), last_synced_sha256: "known".into() });
         let writes: Arc<Mutex<Vec<WriteOp>>> = Arc::new(Mutex::new(Vec::new()));
         let captured = writes.clone();
         let writer: WriteRunner = Box::new(move |op| { captured.lock().unwrap().push(op.clone()); Ok(()) });
