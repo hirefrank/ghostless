@@ -1,0 +1,7 @@
+SCHEMA.md @hirefrank
+lib/ghostless/schema.py @hirefrank
+lib/ghostless/bridge.py @hirefrank
+.github/workflows/ @hirefrank
+package.json @hirefrank
+pyproject.toml @hirefrank
+editor/Cargo.toml @hirefrank

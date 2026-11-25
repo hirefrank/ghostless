@@ -80,6 +80,17 @@ def install_packed_npm_cli(base: Path) -> tuple[str, Path]:
     return str(executable), prefix
 
 
+def keep_artifacts(source: Path, destination: str | None) -> None:
+    """Copy rendered screenshots and accessibility trees out of the temp project."""
+    if not destination:
+        return
+    dest = Path(destination)
+    dest.mkdir(parents=True, exist_ok=True)
+    for path in source.iterdir():
+        if path.is_file() and (path.suffix == ".png" or path.name.endswith("-tree.json")):
+            shutil.copy2(path, dest / path.name)
+
+
 def main() -> None:  # noqa: C901  # linear GUI smoke scenario, not a library function
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -87,12 +98,17 @@ def main() -> None:  # noqa: C901  # linear GUI smoke scenario, not a library fu
         action="store_true",
         help="Pack and install the npm CLI and verify the editor invokes it.",
     )
+    parser.add_argument(
+        "--artifacts-dir",
+        help="Copy rendered PNGs and tree JSON here before the temp project is removed",
+    )
     args = parser.parse_args()
 
     if not EDITOR.is_file():
         raise RuntimeError(f"Build the editor first: {EDITOR}")
-    with tempfile.TemporaryDirectory() as temporary:
-        base = Path(temporary)
+    temporary = tempfile.TemporaryDirectory()
+    base = Path(temporary.name)
+    try:
         env = os.environ.copy()
         env.update(
             {
@@ -369,7 +385,10 @@ def main() -> None:  # noqa: C901  # linear GUI smoke scenario, not a library fu
         opened = {path.name for path in (project / "sessions").iterdir()} - before
         if len(opened) != 1:
             raise RuntimeError("Editor did not open a session from the project directory without --project")
-    print(f"Rune editor + installed CLI smoke passed on {sys.platform}")
+        print(f"Rune editor + installed CLI smoke passed on {sys.platform}")
+    finally:
+        keep_artifacts(base, args.artifacts_dir)
+        temporary.cleanup()
 
 
 if __name__ == "__main__":
