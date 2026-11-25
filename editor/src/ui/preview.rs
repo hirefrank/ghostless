@@ -1,37 +1,147 @@
-use rune::{col, row, El, ScrollSpec};
-use rune_kit::{Badge, Kit, Markdown};
-use crate::{markdown_decor, prefs::UiPrefs, state::Editor, theme};
+use std::ops::Range;
 
-pub(crate) fn build(source: &str, prefs: &UiPrefs, kit: &Kit, find: Option<&crate::search::FindState>) -> El {
-    let (body, fields) = preview_parts(source);
-    let mut column = col().w_full().gap(16.0);
-    if !fields.is_empty() {
-        let mut pills = row().w_full().gap(6.0);
-        for (key, value) in fields { pills = pills.child(Badge::new(format!("{key}: {value}")).build(kit)); }
-        column = column.child(pills);
-    }
-    let end = source.len() - body.len();
-    let highlights: Vec<_> = find.filter(|f| f.open).into_iter().flat_map(|f| f.matches.iter().enumerate().filter(move |(_, range)| range.start >= end).map(move |(index, range)| {
-        (range.start - end..range.end - end, rune_kit::markdown::Highlight::new().current_match(f.current == Some(index)).key(Markdown::highlight_key(index)))
-    })).collect();
-    column = column.child(Markdown::new(body).highlights(highlights).selectable(true)
-        .on_link_tx(|_: &mut Editor, url, tx| { let _ = tx.open_url(url); }).build(kit));
-    if let Some(width) = theme::measure_max_width(prefs.measure) { column = column.max_w(width); }
-    col().key("preview-body").grow(1.0).w_full().min_h(0.0).items_center()
-        .scroll(ScrollSpec { stick_bottom: false }).px(32.0).py(16.0).child(column)
-}
+use rune::{El, ScrollSpec, TextHighlight, col, row, text};
+use rune_kit::{Badge, Kit, Markdown, markdown::Highlight};
 
-fn preview_parts(source: &str) -> (&str, Vec<(String, String)>) {
+use crate::{markdown_decor, prefs::UiPrefs, search::FindState, state::Editor, theme};
+
+pub(crate) fn build(source: &str, prefs: &UiPrefs, kit: &Kit, find: Option<&FindState>) -> El {
     let end = markdown_decor::frontmatter_end(source).unwrap_or(0);
-    (&source[end..], markdown_decor::parse_frontmatter_fields(source))
+    let (frontmatter, body) = source.split_at(end);
+    let find = find.filter(|find| find.open);
+    let mut column = col().w_full().gap(16.0);
+    if let Some(find) = find.filter(|find| find.matches.first().is_some_and(|hit| hit.start < end))
+    {
+        // Pills summarize YAML and omit parts such as delimiters and comments.
+        // Reveal the exact source while it has find hits so each hit can be shown.
+        let highlights = find.matches.iter().enumerate().filter_map(|(index, hit)| {
+            let range = section_range(hit, 0..end)?;
+            let active = find.current == Some(index);
+            let bg = if active {
+                kit.c.warning.fg
+            } else {
+                kit.c.warning.bg
+            };
+            let mark = TextHighlight::new(range, bg).key(Markdown::highlight_key(index));
+            Some(if active {
+                mark.color(kit.c.warning.bg)
+            } else {
+                mark
+            })
+        });
+        column = column.child(
+            col()
+                .key("preview-frontmatter")
+                .w_full()
+                .min_w(0.0)
+                .padding(12.0)
+                .gap(6.0)
+                .radius(6.0)
+                .fill(kit.c.layer_01)
+                .child(
+                    text("Frontmatter")
+                        .font(kit.ty.small_medium)
+                        .color(kit.c.text_muted),
+                )
+                .child(
+                    text(frontmatter)
+                        .font(kit.ty.ui.mono())
+                        .color(kit.c.text_base)
+                        .w_full()
+                        .wrap_anywhere()
+                        .selectable(true)
+                        .text_highlights(highlights),
+                ),
+        );
+    } else {
+        let fields = markdown_decor::parse_frontmatter_fields(source);
+        if !fields.is_empty() {
+            let pills = fields
+                .into_iter()
+                .fold(row().w_full().gap(6.0), |pills, (key, value)| {
+                    pills.child(Badge::new(format!("{key}: {value}")).build(kit))
+                });
+            column = column.child(pills);
+        }
+    }
+
+    let highlights = find.into_iter().flat_map(|find| {
+        find.matches
+            .iter()
+            .enumerate()
+            .filter_map(move |(index, hit)| {
+                let range = section_range(hit, end..source.len())?;
+                let key = Markdown::highlight_key(index);
+                // The fragment where the match starts owns the scroll target.
+                let key = if hit.start < end {
+                    format!("{key}-body")
+                } else {
+                    key
+                };
+                Some((
+                    range,
+                    Highlight::new()
+                        .current_match(find.current == Some(index))
+                        .key(key),
+                ))
+            })
+    });
+    column = column.child(
+        Markdown::new(body)
+            .highlights(highlights)
+            .selectable(true)
+            .on_link_tx(|_: &mut Editor, url, tx| {
+                let _ = tx.open_url(url);
+            })
+            .build(kit),
+    );
+    if let Some(width) = theme::measure_max_width(prefs.measure) {
+        column = column.max_w(width);
+    }
+    col()
+        .key("preview-body")
+        .grow(1.0)
+        .w_full()
+        .min_h(0.0)
+        .items_center()
+        .scroll(ScrollSpec {
+            stick_bottom: false,
+        })
+        .px(32.0)
+        .py(16.0)
+        .child(column)
 }
+
+fn section_range(hit: &Range<usize>, section: Range<usize>) -> Option<Range<usize>> {
+    let start = hit.start.max(section.start);
+    let end = hit.end.min(section.end);
+    (start < end).then(|| start - section.start..end - section.start)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test] fn strips_frontmatter_and_keeps_body() {
-        let (body, fields) = preview_parts("---\nstage: seeded\n---\n# Title\n");
-        assert_eq!(body, "# Title\n");
-        assert_eq!(fields, [("stage".into(), "seeded".into())]);
-        assert_eq!(preview_parts("# Title").0, "# Title");
+    use crate::search::find_matches;
+
+    #[test]
+    fn preview_maps_matches_on_both_sides_of_frontmatter() {
+        let source = "---\r\nstage: Café\r\n# Café note\r\n---\r\n# Café title\r\n";
+        let end = markdown_decor::frontmatter_end(source).unwrap();
+        let (frontmatter, body) = source.split_at(end);
+        let hits = find_matches(source, "café", false, false);
+        assert_eq!(hits.len(), 3);
+        for hit in &hits[..2] {
+            assert_eq!(&frontmatter[section_range(hit, 0..end).unwrap()], "Café");
+            assert_eq!(section_range(hit, end..source.len()), None);
+        }
+        assert_eq!(
+            &body[section_range(&hits[2], end..source.len()).unwrap()],
+            "Café"
+        );
+        assert_eq!(section_range(&hits[2], 0..end), None);
+
+        let across = end - 1..end + 1;
+        assert_eq!(section_range(&across, 0..end), Some(end - 1..end));
+        assert_eq!(section_range(&across, end..source.len()), Some(0..1));
     }
 }

@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs,
-    io::Read,
+    io::{self, Read},
     ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
@@ -105,19 +105,43 @@ impl FolderMatch {
 
 pub(crate) const MAX_SEARCH_FILE_BYTES: usize = 2 * 1024 * 1024;
 
-fn read_search_file(path: &Path) -> Option<String> {
+const SEARCH_READ_CHUNK_BYTES: usize = 32 * 1024;
+
+fn read_search_file(path: &Path, cancelled: &impl Fn() -> bool) -> Option<String> {
     if !fs::metadata(path)
         .is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_SEARCH_FILE_BYTES as u64)
+        || cancelled()
     {
         return None;
     }
+    read_search_text(fs::File::open(path).ok()?, cancelled)
+}
+
+fn read_search_text(reader: impl Read, cancelled: &impl Fn() -> bool) -> Option<String> {
+    let mut reader = reader.take(MAX_SEARCH_FILE_BYTES as u64 + 1);
+    let mut chunk = [0; SEARCH_READ_CHUNK_BYTES];
     let mut bytes = Vec::new();
-    fs::File::open(path)
-        .ok()?
-        .take(MAX_SEARCH_FILE_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    String::from_utf8(bytes).ok()
+    while !cancelled() {
+        match reader.read(&mut chunk) {
+            Ok(0) => {
+                // A cancellation can arrive during the final blocking read.
+                return if cancelled() {
+                    None
+                } else {
+                    String::from_utf8(bytes).ok()
+                };
+            }
+            Ok(len) => {
+                if bytes.len() + len > MAX_SEARCH_FILE_BYTES || chunk[..len].contains(&0) {
+                    return None;
+                }
+                bytes.extend_from_slice(&chunk[..len]);
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        }
+    }
+    None
 }
 
 /// Search the visible files, using open buffers in place of their disk copies.
@@ -142,7 +166,7 @@ pub(crate) fn search_workspace_files(
             Some(Some(text)) => text,
             Some(None) => continue,
             None => {
-                let Some(text) = read_search_file(&file.abs_path) else {
+                let Some(text) = read_search_file(&file.abs_path, &cancelled) else {
                     continue;
                 };
                 disk_text = text;
@@ -186,6 +210,36 @@ pub(crate) fn search_workspace_files(
 mod tests {
     use super::*;
     use crate::workspace_tree::FileKind;
+
+    #[test]
+    fn cancelled_file_read_stops_before_the_next_chunk() {
+        use std::cell::Cell;
+
+        let reads = Cell::new(0);
+        let mut file = io::repeat(b'x').take((SEARCH_READ_CHUNK_BYTES * 3) as u64);
+        let reader = ReaderFn(|buffer: &mut [u8]| {
+            reads.set(reads.get() + 1);
+            file.read(buffer)
+        });
+        assert!(read_search_text(reader, &|| reads.get() > 0).is_none());
+        assert_eq!(reads.get(), 1);
+        assert_eq!(file.limit(), (SEARCH_READ_CHUNK_BYTES * 2) as u64);
+    }
+
+    struct ReaderFn<F>(F);
+
+    impl<F: FnMut(&mut [u8]) -> io::Result<usize>> Read for ReaderFn<F> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            (self.0)(buffer)
+        }
+    }
+
+    #[test]
+    fn file_read_keeps_utf8_across_chunks_and_rejects_excess_bytes() {
+        let source = format!("{}✨", "x".repeat(SEARCH_READ_CHUNK_BYTES - 1));
+        assert_eq!(read_search_text(source.as_bytes(), &|| false), Some(source));
+        assert!(read_search_text(io::repeat(b'x'), &|| false).is_none());
+    }
 
     #[test]
     fn fuzzy_favors_basename_and_requires_subsequence() {
