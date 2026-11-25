@@ -104,7 +104,11 @@ def _list_sessions(root: Path) -> list[BridgeSessionItem]:
     items = [cast(BridgeSessionItem, dict(item)) for item in sessions.list_sessions(root)]
     for item in items:
         folder = root / str(item["path"])
-        metadata = _read_object(folder / "session.json")
+        try:
+            metadata = _read_object(folder / "session.json")
+        except (OSError, ProjectError):
+            # A damaged session file should not hide the other sessions.
+            continue
         section = metadata.get("section")
         origin = metadata.get("origin")
         item["section"] = section if isinstance(section, str) else None

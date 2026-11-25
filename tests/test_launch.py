@@ -43,7 +43,7 @@ class LaunchTests(unittest.TestCase):
                     launch.install_stable_launcher(enabled=True, transient=True),
                     "launcher skipped (one-off package)",
                 )
-                foreign = directory / "ghostless"
+                foreign = launch.stable_launcher_path()
                 foreign.write_text("echo other\n", encoding="utf-8")
                 self.assertEqual(
                     launch.install_stable_launcher(enabled=True, transient=False),
