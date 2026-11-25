@@ -30,7 +30,7 @@ pub(crate) fn build(editor: &Editor, cx: &Cx<Editor>, kit: &Kit, locked: bool) -
         }));
     }
     if editor.store.ui.voice_lens
-        && let Some(report) = editor.latest_judge.as_ref()
+        && let Some(report) = editor.active_judge_report()
     {
         spans.extend(crate::voice_lens::spans(&doc.edit.text, report, kit));
     }

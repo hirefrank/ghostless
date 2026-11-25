@@ -67,7 +67,7 @@ fn voice_tab(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
             .build(kit)
             .key("next-placeholder"),
     );
-    match editor.latest_judge.as_ref() {
+    match editor.active_judge_report() {
         Some(report) if report.needs_build => {
             column = column.child(quiet("No voice guide yet.", kit));
             column = column.child(build_button(kit));
@@ -85,7 +85,7 @@ fn voice_tab(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
 
 fn section_select(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
     let mut options = vec!["all".to_owned()];
-    if let Some(report) = editor.latest_judge.as_ref() {
+    if let Some(report) = editor.active_judge_report() {
         for section in &report.available_sections {
             if !options.iter().any(|option| option == section) {
                 options.push(section.clone());

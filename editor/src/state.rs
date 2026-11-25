@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -13,7 +13,7 @@ use rune_kit::{
 };
 use crate::{
     cli::run_cli,
-    documents::{DocId, DocumentBuffer},
+    documents::{CachedJudge, DocId, DocumentBuffer},
     fs_io,
     prefs,
     session::{LaunchTarget, Session, load_session},
@@ -124,8 +124,6 @@ pub(crate) struct Editor {
     pub(crate) judge_due: Option<f64>,
     judge_armed: bool,
     judge_inflight: Option<JudgeInFlight>,
-    pub(crate) latest_judge: Option<crate::bridge::JudgeReport>,
-    judge_cache: HashMap<String, crate::bridge::JudgeReport>,
     pub(crate) inspector_tab: usize,
     pub(crate) section_menu_open: bool,
     pub(crate) rule_draft: TextEdit,
@@ -272,8 +270,6 @@ impl Editor {
             judge_due: None,
             judge_armed: true,
             judge_inflight: None,
-            latest_judge: None,
-            judge_cache: HashMap::new(),
             inspector_tab: 0,
             section_menu_open: false,
             rule_draft: TextEdit::new(""),
@@ -349,8 +345,6 @@ impl Editor {
             judge_due: None,
             judge_armed: false,
             judge_inflight: None,
-            latest_judge: None,
-            judge_cache: HashMap::new(),
             inspector_tab: 0,
             section_menu_open: false,
             rule_draft: TextEdit::new(""),
@@ -521,6 +515,12 @@ impl Editor {
             }
         }
 
+        self.judge_due = None;
+        self.judge_inflight = None;
+        self.conflict_compare = false;
+        self.pending_track = None;
+        self.session_start_inflight = None;
+        self.judge_armed = self.active_doc.is_some();
         if let Err(error) = prefs::save_store(&self.store) {
             self.status = error;
         } else {
@@ -620,7 +620,6 @@ impl Editor {
         self.prompt_recovery_if_needed();
         self.judge_due = None;
         self.judge_armed = true;
-        self.restore_cached_judge();
     }
 
     fn prompt_recovery_if_needed(&mut self) {
@@ -649,7 +648,10 @@ impl Editor {
                     doc.generation += 1;
                     doc.pinned = true;
                     doc.last_saved_label = Some("Unsaved".into());
+                    doc.cached_judge = None;
+                    doc.latest_judge_request = None;
                     self.refresh_diff();
+                    self.judge_armed = true;
                     self.status = "Recovered unsaved changes; save when ready".into();
                 }
                 Err(error) => { self.dialog_error = Some(error); return; }
@@ -721,7 +723,6 @@ impl Editor {
         self.reconcile_active_linked_doc();
         self.judge_due = None;
         self.judge_armed = true;
-        self.restore_cached_judge();
         self.prompt_recovery_if_needed();
     }
 
@@ -967,7 +968,6 @@ impl Editor {
         }
         self.judge_due = None;
         self.judge_armed = true;
-        self.restore_cached_judge();
     }
 
     pub(crate) fn activate_tab(&mut self, tab_key: &str, tx: &mut Tx) {
@@ -1032,6 +1032,7 @@ impl Editor {
     }
 
     fn remove_doc_at(&mut self, pos: usize) {
+        let previous = self.active_doc.and_then(|index| self.documents.get(index).map(|doc| doc.id.clone()));
         self.documents.remove(pos);
         if self.documents.is_empty() {
             self.active_doc = None;
@@ -1049,6 +1050,12 @@ impl Editor {
             self.view_mode = ViewMode::Write;
         } else if self.view_mode == ViewMode::Compare {
             self.refresh_diff();
+        }
+        let current = self.active_doc.and_then(|index| self.documents.get(index).map(|doc| doc.id.clone()));
+        if previous != current {
+            self.conflict_compare = false;
+            self.judge_due = None;
+            self.judge_armed = self.active_doc.is_some();
         }
         self.save_open_tabs_pref();
     }
@@ -1430,10 +1437,23 @@ impl Editor {
                         let active_id = self.active_doc_ref().map(|doc| doc.id.clone());
                         self.documents
                             .retain(|d| d.is_session() || !d.path.starts_with(&target_canon));
+                        for doc in &mut self.documents {
+                            if doc.session_id.is_some()
+                                && doc.mirror_path.as_ref().is_some_and(|path| path.starts_with(&target_canon))
+                            {
+                                doc.mirror_path = None;
+                            }
+                        }
                         self.active_doc = active_id.as_ref()
                             .and_then(|id| self.documents.iter().position(|doc| &doc.id == id))
                             .or_else(|| self.active_doc.zip(self.documents.len().checked_sub(1))
                                 .map(|(index, last)| index.min(last)));
+                        let current = self.active_doc.and_then(|index| self.documents.get(index).map(|doc| doc.id.clone()));
+                        if current != active_id {
+                            self.conflict_compare = false;
+                            self.judge_due = None;
+                            self.judge_armed = self.active_doc.is_some();
+                        }
                         self.selected_tree_id = None;
                         self.refresh_find();
                         self.close_dialog();
@@ -1492,6 +1512,10 @@ impl Editor {
         self.status = "Unsaved changes".into();
         if self.find.open {
             self.find.document_changed(&doc.edit.text, doc.edit.range().0);
+        }
+        let section_now = section_for_document(doc);
+        if doc.cached_judge.as_ref().is_some_and(|cached| cached.section != section_now) {
+            doc.cached_judge = None;
         }
         self.request_judge(tx.clock());
         tx.wake_after(JUDGE_DELAY);
@@ -1728,6 +1752,22 @@ impl Editor {
         self.focus_document(tx);
     }
 
+    pub(crate) fn active_judge_report(&self) -> Option<&crate::bridge::JudgeReport> {
+        let voice = self.voice_project.as_ref()?;
+        let doc = self.active_doc_ref()?;
+        if !judge_target(doc) {
+            return None;
+        }
+        let cached = doc.cached_judge.as_ref()?;
+        if &cached.voice_project != voice
+            || cached.judge_epoch != doc.judge_epoch
+            || cached.section != section_for_document(doc)
+        {
+            return None;
+        }
+        Some(&cached.report)
+    }
+
     pub(crate) fn voice_pill_label(&self) -> Option<String> {
         let project = self.voice_project.as_ref()?;
         let name = project.file_name().and_then(|name| name.to_str()).unwrap_or("voice");
@@ -1737,7 +1777,7 @@ impl Editor {
         if !judge_target(doc) {
             return Some(format!("Voice: {name}"));
         }
-        let Some(report) = &self.latest_judge else {
+        let Some(report) = self.active_judge_report() else {
             return Some(format!("Voice: {name}"));
         };
         if report.needs_build {
@@ -1761,12 +1801,10 @@ impl Editor {
             return;
         }
         let doc_id = self.documents[index].id.clone();
-        let tab = self.documents[index].id.tab_key();
         self.documents[index].section_override = Some(section);
         self.documents[index].judge_epoch += 1;
         self.documents[index].latest_judge_request = None;
-        self.judge_cache.remove(&tab);
-        self.latest_judge = None;
+        self.documents[index].cached_judge = None;
         if self.judge_inflight.as_ref().is_some_and(|inflight| inflight.doc_id == doc_id) {
             self.judge_inflight = None;
         }
@@ -2325,11 +2363,6 @@ impl Editor {
         self.judge_due = Some(clock + JUDGE_DELAY.as_secs_f64());
     }
 
-    fn restore_cached_judge(&mut self) {
-        let key = self.active_doc_ref().map(|doc| doc.id.tab_key());
-        self.latest_judge = key.and_then(|key| self.judge_cache.get(&key).cloned());
-    }
-
     fn dispatch_judge(&mut self) {
         let Some(project) = self.voice_project.clone() else { return };
         let Some(index) = self.active_doc else { return };
@@ -2377,7 +2410,8 @@ impl Editor {
                 if self.judge_inflight.as_ref().is_some_and(|inflight| inflight.request_id == request_id) {
                     self.judge_inflight = None;
                 }
-                let Some(doc) = self.documents.iter().find(|doc| doc.id == doc_id) else {
+                let voice_project = self.voice_project.clone();
+                let Some(doc) = self.documents.iter_mut().find(|doc| doc.id == doc_id) else {
                     return;
                 };
                 if doc.generation != generation
@@ -2386,21 +2420,21 @@ impl Editor {
                 {
                     return;
                 }
-                let key = doc.id.tab_key();
-                let active = self.active_doc_ref().is_some_and(|doc| doc.id == doc_id);
-                self.judge_cache.insert(key, result.clone());
-                if active {
-                    self.latest_judge = Some(result);
-                }
+                let Some(voice_project) = voice_project else { return };
+                doc.cached_judge = Some(CachedJudge {
+                    voice_project,
+                    judge_epoch: doc.judge_epoch,
+                    section,
+                    report: result,
+                });
             }
             BridgeReply::Build { result, .. } => match result {
                 Ok(_) => {
                     for doc in &mut self.documents {
                         doc.judge_epoch += 1;
                         doc.latest_judge_request = None;
+                        doc.cached_judge = None;
                     }
-                    self.judge_cache.clear();
-                    self.latest_judge = None;
                     self.judge_inflight = None;
                     self.judge_armed = true;
                 }
@@ -4816,13 +4850,13 @@ mod tests {
         assert_eq!(editor.bridge.submitted.load(std::sync::atomic::Ordering::Relaxed), 1);
 
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while editor.latest_judge.is_none() {
+        while editor.active_judge_report().is_none() {
             assert!(std::time::Instant::now() < deadline, "judge reply did not arrive");
             poll(&mut editor, 1.2, &mut tx);
             thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(calls.lock().unwrap().as_slice(), ["---\nsection: notes\n---\nThree.\n"]);
-        assert_eq!(editor.latest_judge.as_ref().unwrap().score, 86);
+        assert_eq!(editor.active_judge_report().unwrap().score, 86);
         assert_eq!(editor.voice_pill_label().as_deref(), Some("Voice: 86 · 1 gap"));
         let doc_id = editor.documents[0].id.clone();
         editor.apply_bridge_reply(BridgeReply::Judge {
@@ -4832,7 +4866,7 @@ mod tests {
             section: "notes".into(),
             result: Box::new(JudgeReport { score: 1, ..JudgeReport::default() }),
         });
-        assert_eq!(editor.latest_judge.as_ref().unwrap().score, 86);
+        assert_eq!(editor.active_judge_report().unwrap().score, 86);
 
         editor.active_working_edit_mut().text = "---\nsection: notes\n---\nFour.\n".into();
         editor.changed_active(&mut tx);
@@ -4844,7 +4878,7 @@ mod tests {
             section: "notes".into(),
             result: Box::new(JudgeReport { score: 2, ..JudgeReport::default() }),
         });
-        assert_eq!(editor.latest_judge.as_ref().unwrap().score, 86);
+        assert_eq!(editor.active_judge_report().unwrap().score, 86);
     }
 
     #[test]
@@ -4902,7 +4936,7 @@ mod tests {
             poll(&mut editor, 1.0, &mut tx);
             thread::sleep(Duration::from_millis(10));
         }
-        assert!(editor.latest_judge.is_none());
+        assert!(editor.active_judge_report().is_none());
         assert!(editor.judge_due.is_some());
     }
 
@@ -4938,7 +4972,7 @@ mod tests {
     fn wait_for_judge_score(editor: &mut Editor, score: i32) {
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         let mut tx = Tx::default();
-        while editor.latest_judge.as_ref().map(|report| report.score) != Some(score) {
+        while editor.active_judge_report().map(|report| report.score) != Some(score) {
             assert!(std::time::Instant::now() < deadline, "judge score {score} did not land");
             poll(editor, 10.0, &mut tx);
             thread::sleep(Duration::from_millis(10));
@@ -4971,17 +5005,16 @@ mod tests {
         assert_eq!(started_rx.recv_timeout(Duration::from_secs(2)).unwrap(), 0);
         editor.set_judge_section("essays".into(), JUDGE_DELAY.as_secs_f64());
         assert!(!editor.documents[0].is_dirty());
-        assert!(editor.latest_judge.is_none());
+        assert!(editor.active_judge_report().is_none());
         poll(&mut editor, (JUDGE_DELAY + JUDGE_DELAY).as_secs_f64(), &mut tx);
         assert_eq!(editor.bridge.submitted.load(Ordering::Relaxed), 2);
         assert_eq!(editor.judge_inflight.as_ref().map(|inflight| inflight.section.as_str()), Some("essays"));
         release_holds(&release, 2);
         wait_for_judge_score(&mut editor, 91);
-        let key = editor.documents[0].id.tab_key();
-        assert_eq!(editor.judge_cache.get(&key).map(|report| report.score), Some(91));
+        assert_eq!(editor.documents[0].cached_judge.as_ref().map(|cached| cached.report.score), Some(91));
         assert_eq!(editor.voice_pill_label().as_deref(), Some("Voice: 91"));
         assert!(!editor.documents[0].is_dirty());
-        assert!(editor.latest_judge.as_ref().is_some_and(|report| report.score != 11));
+        assert!(editor.active_judge_report().is_some_and(|report| report.score != 11));
     }
 
     #[test]
@@ -5019,7 +5052,7 @@ mod tests {
         assert!(!editor.documents[0].is_dirty());
         release_holds(&release, 3);
         wait_for_judge_score(&mut editor, 33);
-        assert_eq!(editor.latest_judge.as_ref().map(|report| report.score), Some(33));
+        assert_eq!(editor.active_judge_report().map(|report| report.score), Some(33));
         assert!(!editor.documents[0].is_dirty());
 
         let calls = Arc::new(AtomicUsize::new(0));
@@ -5054,7 +5087,7 @@ mod tests {
         });
         assert_eq!(editor.documents[0].judge_epoch, 1);
         assert!(editor.documents[0].latest_judge_request.is_none());
-        assert!(editor.latest_judge.is_none());
+        assert!(editor.active_judge_report().is_none());
         assert!(editor.judge_inflight.is_none());
         assert!(!editor.documents[0].is_dirty());
         poll(&mut editor, delay, &mut tx);
@@ -5063,6 +5096,163 @@ mod tests {
         release_holds(&release, 2);
         wait_for_judge_score(&mut editor, 44);
         assert!(!editor.documents[0].is_dirty());
+    }
+
+    fn plant_judge(editor: &mut Editor, section: &str, score: i32) {
+        let voice = editor.voice_project.clone().expect("voice project");
+        let doc = editor.active_doc_mut().unwrap();
+        let epoch = doc.judge_epoch;
+        doc.cached_judge = Some(CachedJudge {
+            voice_project: voice,
+            judge_epoch: epoch,
+            section: section.into(),
+            report: crate::bridge::JudgeReport {
+                ok: true,
+                score,
+                section: section.into(),
+                banned: vec![crate::bridge::BannedHit { tell: "delve".into(), count: 1 }],
+                ..crate::bridge::JudgeReport::default()
+            },
+        });
+    }
+
+    fn element_mentions(elements: &[rune::ElementInfo], needle: &str) -> bool {
+        elements.iter().filter(|element| !element.exiting).any(|element| {
+            element.text.as_deref().is_some_and(|text| text.contains(needle))
+                || element.label.as_deref().is_some_and(|text| text.contains(needle))
+        })
+    }
+
+    #[test]
+    fn yaml_section_edit_drops_the_cached_judge_across_tab_switches() {
+        let essays = "---\nsection: essays\n---\nPlease delve here.\n";
+        let mut session = test_session();
+        session.after = essays.into();
+        session.original = essays.into();
+        let mut editor = Editor::with_handlers(session, prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake());
+        editor.store.ui.voice_lens = true;
+        if !editor.inspector_pane.is_open() {
+            editor.inspector_pane.toggle();
+        }
+        plant_judge(&mut editor, "essays", 77);
+        assert_eq!(editor.active_judge_report().map(|report| report.score), Some(77));
+        let mut rt = rune::Runtime::new(editor, crate::ui::view, (1280.0, 800.0), rune::Env::new(false, 1.0));
+        rt.on_key = Some(on_key);
+        rt.frame(0.0);
+        assert!(element_mentions(&rt.elements(), "Score 77"));
+        assert!(element_mentions(&rt.elements(), "Voice: 77"));
+        rt.update(|editor, tx| {
+            editor.active_working_edit_mut().text = "---\nsection: notes\n---\nPlease delve here.\n".into();
+            editor.changed_active(tx);
+        });
+        assert!(rt.state.active_judge_report().is_none());
+        assert!(rt.state.documents[0].cached_judge.is_none());
+        rt.frame(1.0 / 60.0);
+        assert!(!element_mentions(&rt.elements(), "Score 77"));
+        assert!(!element_mentions(&rt.elements(), "Voice: 77"));
+        let draft_key = rt.state.documents[0].id.tab_key();
+        rt.update(|editor, tx| {
+            let other = DocumentBuffer::from_workspace_file(
+                PathBuf::from("/tmp/other-judge.md"),
+                "other-judge.md".into(),
+                "Other note.\n".into(),
+                false,
+                false,
+                true,
+                editor.voice_project.clone(),
+            );
+            let other_key = other.id.tab_key();
+            editor.documents.push(other);
+            editor.activate_tab(&other_key, tx);
+        });
+        assert!(rt.state.active_judge_report().is_none());
+        rt.update(|editor, tx| editor.activate_tab(&draft_key, tx));
+        assert!(rt.state.active_judge_report().is_none());
+        assert!(rt.state.documents.iter().find(|doc| doc.id.tab_key() == draft_key).unwrap().cached_judge.is_none());
+        rt.frame(0.0);
+        assert!(!element_mentions(&rt.elements(), "Score 77"));
+        assert!(!element_mentions(&rt.elements(), "Voice: 77"));
+    }
+
+    #[test]
+    fn judge_report_does_not_leak_across_close_delete_workspace_or_recovery() {
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let home = std::env::temp_dir().join(format!("ghostless-judge-life-home-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("ghostless-judge-life-{}", std::process::id()));
+        let other = std::env::temp_dir().join(format!("ghostless-judge-life-other-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&other);
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        let previous = std::env::var_os("GHOSTLESS_HOME");
+        unsafe { std::env::set_var("GHOSTLESS_HOME", &home); }
+        let mut tx = Tx::default();
+
+        let essays = "---\nsection: essays\n---\nPlease delve here.\n";
+        let mut session = test_session();
+        session.after = essays.into();
+        session.original = essays.into();
+        let mut editor = Editor::with_handlers(session, prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake());
+        plant_judge(&mut editor, "essays", 77);
+        let key = editor.documents[0].id.tab_key();
+        assert!(editor.close_tab_by_id(&key, &mut tx));
+        assert!(editor.documents.is_empty());
+        assert!(editor.active_judge_report().is_none());
+
+        let draft = root.join("draft.md");
+        let keep = root.join("keep.md");
+        fs_io::atomic_write_text(&draft, essays).unwrap();
+        fs_io::atomic_write_text(&keep, "Keep this.\n").unwrap();
+        let mut editor = Editor::empty_with_handlers(prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake());
+        editor.open_workspace_with_voice(root.clone(), Some(draft.clone()), Some(root.clone()));
+        plant_judge(&mut editor, "essays", 77);
+        let mut linked = DocumentBuffer::from_session(test_session(), true, Some(draft.clone()));
+        linked.mirror_path = Some(draft.canonicalize().unwrap_or(draft.clone()));
+        editor.documents.push(linked);
+        editor.active_dialog = Some(DialogKind::Delete {
+            rel_path: "draft.md".into(),
+            display_name: "draft.md".into(),
+            is_dir: false,
+        });
+        editor.submit_dialog(&mut tx);
+        assert!(editor.active_judge_report().is_none());
+        assert!(editor.documents.iter().all(|doc| doc.cached_judge.is_none()));
+        let linked = editor.documents.iter().find(|doc| doc.is_session()).unwrap();
+        assert!(linked.mirror_path.is_none());
+
+        editor.open_workspace_file(keep.clone(), true);
+        plant_judge(&mut editor, "all", 77);
+        assert_eq!(editor.active_judge_report().map(|report| report.score), Some(77));
+        editor.open_workspace_with_voice(other.clone(), None, Some(other.clone()));
+        assert!(editor.active_judge_report().is_none());
+        assert!(editor.judge_inflight.is_none());
+        assert!(editor.judge_due.is_none());
+        assert!(!editor.conflict_compare);
+        assert!(editor.documents.iter().all(|doc| doc.cached_judge.is_none()));
+
+        let recover = root.join("recover.md");
+        fs_io::atomic_write_text(&recover, essays).unwrap();
+        editor.open_workspace_with_voice(root.clone(), Some(recover.clone()), Some(root.clone()));
+        plant_judge(&mut editor, "essays", 77);
+        let recovery = editor.active_doc_ref().unwrap().recovery_path();
+        fs_io::atomic_write_text(&recovery, "---\nsection: essays\n---\nRecovered body.\n").unwrap();
+        let doc_id = editor.active_doc_ref().unwrap().id.clone();
+        let title = editor.active_doc_ref().unwrap().title.clone();
+        editor.active_dialog = Some(DialogKind::Recover { doc_id, title });
+        editor.resolve_recovery(true);
+        assert!(editor.active_doc_ref().unwrap().cached_judge.is_none());
+        assert!(editor.active_judge_report().is_none());
+        assert_eq!(editor.active_working_edit().text, "---\nsection: essays\n---\nRecovered body.\n");
+
+        unsafe {
+            if let Some(value) = previous { std::env::set_var("GHOSTLESS_HOME", value); }
+            else { std::env::remove_var("GHOSTLESS_HOME"); }
+        }
+        let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&other);
     }
 
     #[test]

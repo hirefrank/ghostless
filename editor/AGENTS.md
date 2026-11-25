@@ -20,6 +20,12 @@
   click) through one shared helper restoring focus to the active mounted
   document pane (`prose-input`, `working-body`, `compare-body`, or
   `preview-body`).
+- Store per-document caches (`decoration_cache`, `cached_judge`) on
+  `DocumentBuffer`, tagged with their validity key
+  (`(voice_project, judge_epoch, section)` / `(generation, theme_key)`), and
+  expose them through one validated accessor (`active_judge_report()`). Do not
+  mirror them into separate `Editor` fields or `tab_key`-only maps that
+  lifecycle transitions can forget to invalidate.
 
 ## Single file-protection and path-containment policy
 - Drive every mutability and containment decision solely from

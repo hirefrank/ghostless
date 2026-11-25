@@ -35,6 +35,14 @@ pub(crate) struct DecorationCache {
     pub description: String,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct CachedJudge {
+    pub voice_project: PathBuf,
+    pub judge_epoch: u64,
+    pub section: String,
+    pub report: crate::bridge::JudgeReport,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SessionConflict {
     pub disk_text: String,
@@ -73,6 +81,7 @@ pub(crate) struct DocumentBuffer {
     pub judge_epoch: u64,
     /// Request id of the judge call that may still update this tab.
     pub latest_judge_request: Option<u64>,
+    pub cached_judge: Option<CachedJudge>,
     pub conflict: Option<SessionConflict>,
     pub force_mirror: bool,
     cached_words: Cell<(u64, usize)>,
@@ -119,6 +128,7 @@ impl DocumentBuffer {
             section_override: None,
             judge_epoch: 0,
             latest_judge_request: None,
+            cached_judge: None,
             conflict: None,
             force_mirror: false,
             cached_words: Cell::new((u64::MAX, 0)),
@@ -169,6 +179,7 @@ impl DocumentBuffer {
             section_override: None,
             judge_epoch: 0,
             latest_judge_request: None,
+            cached_judge: None,
             conflict: None,
             force_mirror: false,
             cached_words: Cell::new((u64::MAX, 0)),
