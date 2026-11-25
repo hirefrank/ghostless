@@ -18,6 +18,7 @@ pub(crate) fn build(editor: &Editor, kit: &Kit) -> El {
         Some(doc) if doc.save_error.is_some() => {
             format!("Save failed: {}", doc.save_error.as_deref().unwrap_or("error"))
         }
+        Some(doc) if doc.conflict.is_some() => "Disk conflict — resolve above".to_owned(),
         Some(doc) if doc.last_saved_label.is_some() => {
             doc.last_saved_label.clone().unwrap_or_default()
         }

@@ -2137,13 +2137,19 @@ impl Editor {
             self.focus_document(tx);
             return;
         }
-        let Some(doc) = self.active_doc_mut() else { return };
-        if doc.conflict.is_none() {
+        let ready = self.active_doc_mut().is_some_and(|doc| {
+            if doc.conflict.is_none() {
+                return false;
+            }
+            doc.conflict = None;
+            doc.force_mirror = true;
+            doc.pending_save = true;
+            true
+        });
+        if !ready {
             return;
         }
-        doc.conflict = None;
-        doc.force_mirror = true;
-        doc.pending_save = true;
+        self.dispatch_next();
         self.conflict_compare = false;
         self.status = "Keeping the session copy".into();
         self.focus_document(tx);
@@ -2230,9 +2236,11 @@ impl Editor {
             doc.mirror_path = Some(path);
             if same {
                 doc.conflict = None;
+            } else if buffer == disk {
+                doc.edit = TextEdit::new(after.clone());
+                doc.conflict = Some(crate::documents::SessionConflict { disk_text: disk, session_text: after });
             } else {
-                let session_text = if buffer == disk { after } else { buffer };
-                doc.conflict = Some(crate::documents::SessionConflict { disk_text: disk, session_text });
+                doc.conflict = Some(crate::documents::SessionConflict { disk_text: disk, session_text: buffer });
             }
         }
         if !same {
@@ -2420,6 +2428,10 @@ impl Editor {
             return;
         }
         if !doc.is_dirty() && !doc.recovery_path().is_file() {
+            if doc.conflict.is_some() {
+                self.status = "Resolve the disk conflict (Load Disk or Keep Session) before syncing to disk.".into();
+                return;
+            }
             let label = DocumentBuffer::format_saved_utc();
             doc.last_saved_label = Some(label);
             self.status = "Saved locally".into();
@@ -5023,6 +5035,83 @@ mod tests {
         assert_eq!(fs_io::read_utf8(&draft).unwrap(), "Disk edit.\n");
         assert_eq!(fs_io::read_utf8(&folder.join("after.md")).unwrap(), before);
         assert_eq!(fs_io::read_utf8(&folder.join("before.md")).unwrap(), before);
+
+        unsafe {
+            if let Some(value) = previous { std::env::set_var("GHOSTLESS_HOME", value); }
+            else { std::env::remove_var("GHOSTLESS_HOME"); }
+        }
+        let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn diverged_linked_open_stays_clean_until_keep_session_mirrors() {
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let home = std::env::temp_dir().join(format!("ghostless-conflict-save-home-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("ghostless-conflict-save-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&home).unwrap();
+        let previous = std::env::var_os("GHOSTLESS_HOME");
+        unsafe { std::env::set_var("GHOSTLESS_HOME", &home); }
+        let session_id = "2026-04-02-notes";
+        let folder = root.join("sessions").join(session_id);
+        fs::create_dir_all(&folder).unwrap();
+        let session_copy = "Session copy.\n";
+        let disk_text = "Disk edit.\n";
+        let before_sha = fs_io::sha256_text(session_copy);
+        fs_io::atomic_write_text(&folder.join("before.md"), session_copy).unwrap();
+        fs_io::atomic_write_text(&folder.join("after.md"), session_copy).unwrap();
+        fs_io::atomic_write_text(&folder.join("session.json"), &format!(r#"{{"kind":"ghostless-edit-session","beforeSha256":"{before_sha}"}}"#)).unwrap();
+        let draft = root.join("draft.md");
+        fs_io::atomic_write_text(&draft, disk_text).unwrap();
+        let mut store = prefs::EditorStateStore::default();
+        store.session_links.insert(prefs::EditorStateStore::session_link_key(&root, session_id), prefs::SessionLink {
+            workspace_file: draft.clone(),
+            last_synced_sha256: before_sha,
+        });
+        let mut editor = Editor::empty_with_handlers(store, ok_runner(), Box::new(crate::worker::execute_write_op), noop_wake());
+        editor.workspace = Some(root.clone());
+        editor.voice_project = Some(root.clone());
+        editor.open_workspace_file(draft.clone(), true);
+        {
+            let doc = editor.active_doc_ref().unwrap();
+            assert!(!doc.is_dirty());
+            assert_eq!(doc.edit.text, session_copy);
+            assert_eq!(doc.conflict.as_ref().unwrap().disk_text, disk_text);
+        }
+        assert_eq!(fs_io::read_utf8(&draft).unwrap(), disk_text);
+
+        let mut rt = rune::Runtime::new(editor, crate::ui::view, (1120.0, 800.0), rune::Env::new(false, 1.0));
+        rt.on_key = Some(on_key);
+        rt.frame(0.0);
+        let elements = rt.elements();
+        assert!(elements.iter().any(|element| element.text.as_deref() == Some("Disk conflict — resolve above")));
+        assert!(elements.iter().any(|element| element.key.as_deref() == Some("keep-session")));
+        rt.key(KeyEvent { key: Key::Command('s'), mods: rune::Mods::default() });
+        rt.frame(0.0);
+        rt.update(|editor, _| editor.save_clicked());
+        assert_eq!(
+            rt.state.status,
+            "Resolve the disk conflict (Load Disk or Keep Session) before syncing to disk.",
+        );
+        assert!(!rt.state.status.contains("Saved locally"));
+        assert!(!rt.state.active_doc_ref().unwrap().is_dirty());
+        assert!(rt.state.worker_busy.is_none());
+        assert_eq!(fs_io::read_utf8(&draft).unwrap(), disk_text);
+        assert_eq!(fs_io::read_utf8(&folder.join("before.md")).unwrap(), session_copy);
+
+        let [x, y, w, h] = rt.elements().iter().find(|element| element.key.as_deref() == Some("keep-session")).unwrap().rect;
+        rt.pointer_down(x + w / 2.0, y + h / 2.0);
+        rt.pointer_up(x + w / 2.0, y + h / 2.0);
+        rt.frame(0.0);
+        assert!(rt.state.active_doc_ref().unwrap().conflict.is_none());
+        assert_eq!(rt.state.worker_busy.as_ref().map(|(_, kind)| *kind), Some(InFlight::Save));
+        assert!(!rt.state.active_doc_ref().unwrap().is_dirty());
+        rt.update(|editor, _| drain_until_idle(editor));
+        assert_eq!(fs_io::read_utf8(&draft).unwrap(), session_copy);
+        assert_eq!(fs_io::read_utf8(&folder.join("after.md")).unwrap(), session_copy);
+        assert_eq!(fs_io::read_utf8(&folder.join("before.md")).unwrap(), session_copy);
 
         unsafe {
             if let Some(value) = previous { std::env::set_var("GHOSTLESS_HOME", value); }
