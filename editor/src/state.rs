@@ -23,6 +23,13 @@ use crate::{
     workspace_tree::{self, SessionSummary, WorkspaceEntry},
 };
 
+fn load_placeholder(project: Option<&Path>) -> Option<String> {
+    let raw = fs::read_to_string(project?.join("manifest.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let token = value.get("placeholder")?.as_str()?.trim();
+    if token.is_empty() || token.contains(['[', ']', ':']) { None } else { Some(token.to_owned()) }
+}
+
 pub(crate) const SESSION_AUTOSAVE_DELAY: Duration = Duration::from_millis(800);
 pub(crate) const FILE_AUTOSAVE_DELAY: Duration = Duration::from_millis(1500);
 
@@ -67,6 +74,7 @@ pub(crate) struct Editor {
     pub(crate) fallback_edit: TextEdit,
     pub(crate) workspace: Option<PathBuf>,
     pub(crate) voice_project: Option<PathBuf>,
+    pub(crate) placeholder_token: Option<String>,
     pub(crate) store: prefs::EditorStateStore,
     pub(crate) sidebar_pane: PaneState,
     pub(crate) inspector_pane: PaneState,
@@ -120,6 +128,7 @@ impl Editor {
             }
             LaunchTarget::Welcome { voice_project } => {
                 let mut editor = Self::empty_with_handlers(store, runner, writer, wake);
+                editor.placeholder_token = load_placeholder(voice_project.as_deref());
                 editor.voice_project = voice_project;
                 editor
             }
@@ -171,6 +180,7 @@ impl Editor {
             active_doc: Some(0),
             fallback_edit: TextEdit::new(""),
             workspace: None,
+            placeholder_token: load_placeholder(voice.as_deref()),
             voice_project: voice,
             store,
             sidebar_pane,
@@ -226,6 +236,7 @@ impl Editor {
             fallback_edit: TextEdit::new(""),
             workspace: None,
             voice_project: None,
+            placeholder_token: None,
             store,
             sidebar_pane: sb,
             inspector_pane: insp,
@@ -356,6 +367,7 @@ impl Editor {
         }
         let folder = folder.canonicalize().unwrap_or(folder);
         self.voice_project = voice_project.or_else(|| crate::cli::discover_voice_project(&folder, None));
+        self.placeholder_token = load_placeholder(self.voice_project.as_deref());
         self.store.record_workspace(&folder);
         self.workspace = Some(folder.clone());
         self.documents.clear();

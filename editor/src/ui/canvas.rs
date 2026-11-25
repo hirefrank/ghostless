@@ -4,8 +4,25 @@ use crate::{state::Editor, theme};
 
 pub(crate) fn build(editor: &Editor, cx: &Cx<Editor>, kit: &Kit, locked: bool) -> El {
     let height = cx.layout_size("working-body").map(|s| s[1]).unwrap_or(80.0).max(80.0);
+    let doc = editor.active_doc_ref().expect("canvas requires an active document");
+    let key = format!("{:?}:{}:{}:{:?}", editor.store.ui.theme, cx.system_dark(), editor.store.ui.font_size.to_bits(), editor.placeholder_token);
+    let mut cache = doc.decoration_cache.borrow_mut();
+    if cache.as_ref().is_none_or(|c| c.generation != doc.generation || c.key != key) {
+        let mut headings = crate::markdown_decor::extract_headings(&doc.edit.text);
+        headings.sort_by_key(|heading| heading.byte_offset);
+        let fields = crate::markdown_decor::parse_frontmatter_fields(&doc.edit.text);
+        let outline = headings.iter().map(|heading| format!("level {} {}", heading.level, heading.title)).collect::<Vec<_>>().join(", ");
+        let metadata = fields.iter().map(|(key, value)| format!("{key}: {value}")).collect::<Vec<_>>().join(", ");
+        let description = format!("Headings: {outline}. Frontmatter: {metadata}");
+        *cache = Some(crate::documents::DecorationCache {
+            generation: doc.generation, key,
+            spans: crate::markdown_decor::compute_markdown_spans(&doc.edit.text, editor.store.ui.font_size.clamp(13.0, 24.0), editor.placeholder_token.as_deref(), kit),
+            description,
+        });
+    }
+    let cached = cache.as_ref().expect("decoration cache initialized");
     let mut field = text_input(editor.active_working_edit(), theme::prose_text_style(&editor.store.ui))
-        .key("prose-input").label("Working draft").w_full().min_h((height - 32.0).max(80.0))
+        .key("prose-input").label("Working draft").description(cached.description.clone()).decorations(cached.spans.clone()).w_full().min_h((height - 32.0).max(80.0))
         .color(kit.c.text_base).caret(kit.c.text_base, kit.selection())
         .placeholder("Start writing…", kit.c.text_faint).spellcheck(editor.store.ui.spellcheck)
         .disabled(locked);

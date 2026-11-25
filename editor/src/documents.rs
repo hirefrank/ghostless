@@ -1,5 +1,5 @@
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -26,6 +26,13 @@ impl DocId {
 pub(crate) struct SessionRecovery {
     pub text: String,
     pub notes: String,
+}
+
+pub(crate) struct DecorationCache {
+    pub generation: u64,
+    pub key: String,
+    pub spans: Vec<rune::Span>,
+    pub description: String,
 }
 
 pub(crate) struct DocumentBuffer {
@@ -55,6 +62,7 @@ pub(crate) struct DocumentBuffer {
     pub save_error: Option<String>,
     pub last_disk_sha256: String,
     cached_words: Cell<(u64, usize)>,
+    pub(crate) decoration_cache: RefCell<Option<DecorationCache>>,
 }
 
 impl DocumentBuffer {
@@ -95,6 +103,7 @@ impl DocumentBuffer {
             save_error: None,
             last_disk_sha256: sha,
             cached_words: Cell::new((u64::MAX, 0)),
+            decoration_cache: RefCell::new(None),
         }
     }
 
@@ -139,6 +148,7 @@ impl DocumentBuffer {
             save_error: None,
             last_disk_sha256: sha,
             cached_words: Cell::new((u64::MAX, 0)),
+            decoration_cache: RefCell::new(None),
         }
     }
 

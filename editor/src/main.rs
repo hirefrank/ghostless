@@ -4,6 +4,7 @@ mod cli;
 mod documents;
 mod fs_io;
 mod markdown_edit;
+mod markdown_decor;
 mod prefs;
 mod session;
 mod state;
