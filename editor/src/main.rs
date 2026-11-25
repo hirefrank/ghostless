@@ -1,5 +1,6 @@
 //! Local Rune editor over ghostless edit sessions.
 use rune::{App, AppSpec};
+mod bridge;
 mod cli;
 mod documents;
 mod fs_io;

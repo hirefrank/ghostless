@@ -1,7 +1,8 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 use rune::{Key, KeyEvent, TextEdit, Tx};
@@ -46,6 +47,7 @@ fn tree_files(tree: &TreeModel<FileNode<WorkspaceEntry>>) -> Vec<WorkspaceEntry>
 
 pub(crate) const SESSION_AUTOSAVE_DELAY: Duration = Duration::from_millis(800);
 pub(crate) const FILE_AUTOSAVE_DELAY: Duration = Duration::from_millis(1500);
+pub(crate) const JUDGE_DELAY: Duration = Duration::from_millis(1200);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ViewMode {
@@ -117,6 +119,12 @@ pub(crate) struct Editor {
     quit_recovery_needed: bool,
     pub(crate) reopen_window: Option<Box<dyn Fn()>>,
     pub(crate) status: String,
+    pub(crate) judge_due: Option<f64>,
+    judge_armed: bool,
+    judge_inflight: Option<(DocId, u64)>,
+    pub(crate) latest_judge: Option<crate::bridge::JudgeReport>,
+    judge_cache: HashMap<String, crate::bridge::JudgeReport>,
+    pub(crate) bridge: crate::bridge::BridgeClient,
     pub(crate) worker: Worker,
 }
 
@@ -160,6 +168,17 @@ impl Editor {
         writer: WriteRunner,
         wake: WakeFn,
     ) -> Self {
+        Self::with_handlers_backend(session, store, runner, writer, wake, None)
+    }
+
+    pub(crate) fn with_handlers_backend(
+        session: Session,
+        store: prefs::EditorStateStore,
+        runner: CliRunner,
+        writer: WriteRunner,
+        wake: WakeFn,
+        backend: Option<Box<dyn crate::bridge::BridgeBackend>>,
+    ) -> Self {
         let mirror_path = store
             .session_links
             .get(&prefs::EditorStateStore::session_link_key(
@@ -176,7 +195,7 @@ impl Editor {
             &session.after,
         )]);
         diff.set_mode(DiffMode::Split);
-        let worker = Worker::spawn_with_handlers(runner, writer, wake);
+        let (worker, bridge) = boot_io(runner, writer, wake, backend);
         let voice = Some(session.project.clone());
         let session_link = store.session_links.get(&prefs::EditorStateStore::session_link_key(&session.project, &session.id));
         let unknown_link = session_link.is_some_and(|link| link.last_synced_sha256.is_empty());
@@ -228,6 +247,12 @@ impl Editor {
             quit_recovery_needed: false,
             reopen_window: None,
             status,
+            judge_due: None,
+            judge_armed: true,
+            judge_inflight: None,
+            latest_judge: None,
+            judge_cache: HashMap::new(),
+            bridge,
             worker,
         }
     }
@@ -238,7 +263,7 @@ impl Editor {
         writer: WriteRunner,
         wake: WakeFn,
     ) -> Self {
-        let worker = Worker::spawn_with_handlers(runner, writer, wake);
+        let (worker, bridge) = boot_io(runner, writer, wake, None);
         let diff = DiffState::new(Vec::new());
         let mut sb = PaneState::new(250.0)
             .range(180.0, 420.0)
@@ -287,6 +312,12 @@ impl Editor {
             quit_recovery_needed: false,
             reopen_window: None,
             status: "Ready".into(),
+            judge_due: None,
+            judge_armed: false,
+            judge_inflight: None,
+            latest_judge: None,
+            judge_cache: HashMap::new(),
+            bridge,
             worker,
         }
     }
@@ -540,6 +571,9 @@ impl Editor {
         }
         self.save_open_tabs_pref();
         self.prompt_recovery_if_needed();
+        self.judge_due = None;
+        self.judge_armed = true;
+        self.restore_cached_judge();
     }
 
     fn prompt_recovery_if_needed(&mut self) {
@@ -632,6 +666,9 @@ impl Editor {
         } else {
             "Ready".into()
         };
+        self.judge_due = None;
+        self.judge_armed = true;
+        self.restore_cached_judge();
         self.prompt_recovery_if_needed();
     }
 
@@ -871,6 +908,9 @@ impl Editor {
         } else if self.view_mode == ViewMode::Compare {
             self.refresh_diff();
         }
+        self.judge_due = None;
+        self.judge_armed = true;
+        self.restore_cached_judge();
     }
 
     pub(crate) fn activate_tab(&mut self, tab_key: &str, tx: &mut Tx) {
@@ -1382,6 +1422,8 @@ impl Editor {
         if self.find.open {
             self.find.document_changed(&doc.edit.text, doc.edit.range().0);
         }
+        self.request_judge(tx.clock());
+        tx.wake_after(JUDGE_DELAY);
     }
 
     pub(crate) fn set_view_mode(&mut self, mode: ViewMode, tx: &mut Tx) {
@@ -1539,6 +1581,151 @@ impl Editor {
         )]);
         diff.set_mode(DiffMode::Split);
         self.diff = diff;
+    }
+
+    pub(crate) fn voice_pill_label(&self) -> Option<String> {
+        let project = self.voice_project.as_ref()?;
+        let name = project.file_name().and_then(|name| name.to_str()).unwrap_or("voice");
+        let Some(doc) = self.active_doc_ref() else {
+            return Some(format!("Voice: {name}"));
+        };
+        if !judge_target(doc) {
+            return Some(format!("Voice: {name}"));
+        }
+        let Some(report) = &self.latest_judge else {
+            return Some(format!("Voice: {name}"));
+        };
+        if report.needs_build {
+            return Some("Build voice".into());
+        }
+        if report.error.is_some() && report.checks.is_empty() {
+            let name = project.file_name().and_then(|name| name.to_str()).unwrap_or("voice");
+            return Some(format!("Voice: {name}"));
+        }
+        let gaps = report.gap_count();
+        Some(match gaps {
+            0 => format!("Voice: {}", report.score),
+            1 => format!("Voice: {} · 1 gap", report.score),
+            count => format!("Voice: {} · {count} gaps", report.score),
+        })
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_judge_section(&mut self, section: String, clock: f64) {
+        let Some(doc) = self.active_doc_mut() else { return };
+        doc.section_override = Some(section);
+        self.request_judge(clock);
+    }
+
+    fn request_judge(&mut self, clock: f64) {
+        let ready = self.voice_project.is_some()
+            && self.active_doc_ref().is_some_and(judge_target);
+        if !ready {
+            self.judge_due = None;
+            return;
+        }
+        self.judge_due = Some(clock + JUDGE_DELAY.as_secs_f64());
+    }
+
+    fn restore_cached_judge(&mut self) {
+        let key = self.active_doc_ref().map(|doc| doc.id.tab_key());
+        self.latest_judge = key.and_then(|key| self.judge_cache.get(&key).cloned());
+    }
+
+    fn dispatch_judge(&mut self) {
+        let Some(project) = self.voice_project.clone() else { return };
+        let Some(doc) = self.active_doc_ref() else { return };
+        if !judge_target(doc) {
+            return;
+        }
+        let doc_id = doc.id.clone();
+        let generation = doc.generation;
+        if self.judge_inflight.as_ref().is_some_and(|(id, sent)| id == &doc_id && *sent == generation) {
+            return;
+        }
+        let section = section_for_document(doc);
+        let text = doc.edit.text.clone();
+        let section_param = (section != "all").then_some(section);
+        if self.bridge.request(
+            Some(doc_id.clone()),
+            generation,
+            crate::bridge::BridgeOp::JudgeText { project, text, section: section_param },
+        ).is_ok() {
+            self.judge_inflight = Some((doc_id, generation));
+        }
+    }
+
+    pub(crate) fn apply_bridge_reply(&mut self, reply: crate::bridge::BridgeReply) {
+        use crate::bridge::BridgeReply;
+        match reply {
+            BridgeReply::Judge { doc_id, generation, section, result } => {
+                let mut result = *result;
+                if result.section.is_empty() {
+                    result.section = section;
+                }
+                if self.judge_inflight.as_ref().is_some_and(|(id, sent)| id == &doc_id && *sent == generation) {
+                    self.judge_inflight = None;
+                }
+                let Some(doc) = self.documents.iter().find(|doc| doc.id == doc_id) else {
+                    return;
+                };
+                if doc.generation != generation {
+                    return;
+                }
+                let key = doc.id.tab_key();
+                let active = self.active_doc_ref().is_some_and(|doc| doc.id == doc_id);
+                self.judge_cache.insert(key, result.clone());
+                if active {
+                    self.latest_judge = Some(result);
+                }
+            }
+            BridgeReply::Build { doc_id, result } => match result {
+                Ok(_) => {
+                    let current = doc_id.is_none()
+                        || self.active_doc_ref().is_some_and(|doc| Some(&doc.id) == doc_id.as_ref());
+                    if current {
+                        self.judge_armed = true;
+                    }
+                }
+                Err(error) => self.status = format!("Build failed: {error}"),
+            },
+            BridgeReply::SaveNote { result, .. } => {
+                self.status = match result {
+                    Ok(saved) => format!("Saved note to {}", saved.path),
+                    Err(error) => format!("Could not save note: {error}"),
+                };
+            }
+            BridgeReply::SessionStart { doc_id, result } => {
+                if let Err(error) = result {
+                    self.status = format!("Could not start session: {error}");
+                } else if doc_id.is_some() {
+                    self.status = "Edit session started".into();
+                }
+            }
+            BridgeReply::SessionFinish { doc_id, result } => {
+                if let Err(error) = result {
+                    self.status = if doc_id.is_some() {
+                        format!("Could not finish session: {error}")
+                    } else {
+                        error
+                    };
+                }
+            }
+            BridgeReply::RulesList { result }
+            | BridgeReply::RulesDecide { result }
+            | BridgeReply::ChecksList { result }
+            | BridgeReply::ChecksDecide { result }
+            | BridgeReply::Promote { result } => {
+                if let Err(error) = result {
+                    self.status = error;
+                }
+            }
+            BridgeReply::SessionsList { result } => {
+                if let Err(error) = result {
+                    self.status = error;
+                }
+            }
+        }
     }
 
     pub(crate) fn save_clicked(&mut self) {
@@ -2059,8 +2246,38 @@ impl Editor {
             self.save_ui_prefs_if_workspace();
         }
         self.worker.shutdown();
+        self.bridge.shutdown();
         true
     }
+}
+
+fn boot_io(
+    runner: CliRunner,
+    writer: WriteRunner,
+    wake: WakeFn,
+    backend: Option<Box<dyn crate::bridge::BridgeBackend>>,
+) -> (Worker, crate::bridge::BridgeClient) {
+    let wake = Arc::new(wake);
+    let bridge = crate::bridge::BridgeClient::spawn(Arc::clone(&wake), backend);
+    let worker = Worker::spawn_with_shared_wake(runner, writer, wake);
+    (worker, bridge)
+}
+
+fn judge_target(doc: &DocumentBuffer) -> bool {
+    let name = doc.path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+    !matches!(name, "manifest.json" | "receipt.json")
+}
+
+pub(crate) fn section_for_document(doc: &DocumentBuffer) -> String {
+    if let Some(section) = doc.section_override.as_deref() {
+        return if section.is_empty() { "all".into() } else { section.to_owned() };
+    }
+    crate::markdown_decor::parse_frontmatter_fields(&doc.edit.text)
+        .into_iter()
+        .find(|(key, _)| key == "section")
+        .map(|(_, value)| value)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "all".into())
 }
 
 pub(crate) fn on_window_close(editor: &mut Editor, tx: &mut Tx) {
@@ -2080,6 +2297,7 @@ impl Drop for Editor {
             }
             self.worker.shutdown();
         }
+        self.bridge.shutdown();
     }
 }
 
@@ -2136,6 +2354,24 @@ pub(crate) fn poll(editor: &mut Editor, clock: f64, tx: &mut Tx) -> bool {
 
     while let Ok(reply) = editor.worker.search.try_recv() {
         changed |= editor.accept_folder_search(reply);
+    }
+    while let Ok(reply) = editor.bridge.try_recv() {
+        editor.apply_bridge_reply(reply);
+        changed = true;
+    }
+    if editor.judge_armed {
+        editor.judge_armed = false;
+        if editor.judge_due.is_none() {
+            editor.request_judge(clock);
+        }
+    }
+    if let Some(due) = editor.judge_due {
+        if clock >= due {
+            editor.judge_due = None;
+            editor.dispatch_judge();
+        } else {
+            tx.wake_after(Duration::from_secs_f64((due - clock).max(0.0)));
+        }
     }
     if let Some(due) = editor.folder_search.due {
         if clock >= due {
@@ -3745,5 +3981,164 @@ mod tests {
             }
         }
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn section_inference_uses_frontmatter_until_overridden() {
+        let doc = DocumentBuffer::from_workspace_file(
+            PathBuf::from("/tmp/draft.md"),
+            "draft.md".into(),
+            "---\nsection: notes\n---\nHello.\n".into(),
+            false,
+            false,
+            true,
+            None,
+        );
+        assert_eq!(section_for_document(&doc), "notes");
+        let mut picked = doc;
+        picked.section_override = Some("all".into());
+        assert_eq!(section_for_document(&picked), "all");
+        let manifest = DocumentBuffer::from_workspace_file(
+            PathBuf::from("/tmp/manifest.json"),
+            "manifest.json".into(),
+            "{}".into(),
+            true,
+            false,
+            true,
+            None,
+        );
+        assert!(!judge_target(&manifest));
+    }
+
+    #[test]
+    fn rapid_edits_coalesce_into_one_judge_and_stale_replies_are_dropped() {
+        use crate::bridge::{BridgeBackend, BridgeReply, JudgeReport};
+        use serde_json::{Value, json};
+
+        struct RecordBackend {
+            calls: Arc<Mutex<Vec<String>>>,
+        }
+        impl BridgeBackend for RecordBackend {
+            fn call(&mut self, method: &str, params: &Value) -> Result<Value, String> {
+                self.calls.lock().unwrap().push(params["text"].as_str().unwrap_or(method).to_owned());
+                Ok(json!({
+                    "ok": true, "score": 86, "failUnder": 70, "section": "notes",
+                    "checks": [{"metric": "medianSentenceLength", "label": "Median sentence", "target": 10.0, "actual": 8.0, "low": 6.0, "high": 14.0, "status": "low", "penalty": 4}, {"metric": "emDashesPer1k", "label": "Em dashes / 1k", "target": 1.0, "actual": 1.0, "low": 0.0, "high": 2.0, "status": "ok", "penalty": 0}],
+                    "needsBuild": false
+                }))
+            }
+        }
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut session = test_session();
+        session.after = "---\nsection: notes\n---\nFirst.\n".into();
+        let mut editor = Editor::with_handlers_backend(
+            session,
+            prefs::EditorStateStore::default(),
+            ok_runner(),
+            ok_writer(),
+            noop_wake(),
+            Some(Box::new(RecordBackend { calls: Arc::clone(&calls) })),
+        );
+        let mut tx = Tx::default();
+        editor.set_judge_section("archive".into(), 0.0);
+        assert_eq!(editor.documents[0].section_override.as_deref(), Some("archive"));
+        for text in ["---\nsection: notes\n---\nOne.\n", "---\nsection: notes\n---\nTwo.\n", "---\nsection: notes\n---\nThree.\n"] {
+            editor.active_working_edit_mut().text = text.into();
+            editor.changed_active(&mut tx);
+        }
+        assert_eq!(editor.bridge.submitted.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert!(!poll(&mut editor, 1.0, &mut tx) || editor.worker_busy.is_some());
+        assert_eq!(editor.bridge.submitted.load(std::sync::atomic::Ordering::Relaxed), 0);
+        poll(&mut editor, 1.2, &mut tx);
+        assert_eq!(editor.bridge.submitted.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while editor.latest_judge.is_none() {
+            assert!(std::time::Instant::now() < deadline, "judge reply did not arrive");
+            poll(&mut editor, 1.2, &mut tx);
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(calls.lock().unwrap().as_slice(), ["---\nsection: notes\n---\nThree.\n"]);
+        assert_eq!(editor.latest_judge.as_ref().unwrap().score, 86);
+        assert_eq!(editor.voice_pill_label().as_deref(), Some("Voice: 86 · 1 gap"));
+        let doc_id = editor.documents[0].id.clone();
+        editor.apply_bridge_reply(BridgeReply::Judge {
+            doc_id: doc_id.clone(),
+            generation: 1,
+            section: "notes".into(),
+            result: Box::new(JudgeReport { score: 1, ..JudgeReport::default() }),
+        });
+        assert_eq!(editor.latest_judge.as_ref().unwrap().score, 86);
+
+        editor.active_working_edit_mut().text = "---\nsection: notes\n---\nFour.\n".into();
+        editor.changed_active(&mut tx);
+        let superseded = editor.documents[0].generation - 1;
+        editor.apply_bridge_reply(BridgeReply::Judge {
+            doc_id,
+            generation: superseded,
+            section: "notes".into(),
+            result: Box::new(JudgeReport { score: 2, ..JudgeReport::default() }),
+        });
+        assert_eq!(editor.latest_judge.as_ref().unwrap().score, 86);
+    }
+
+    #[test]
+    fn edit_during_judge_drops_the_superseded_reply() {
+        use crate::bridge::BridgeBackend;
+        use serde_json::{Value, json};
+        use std::sync::Condvar;
+
+        struct HoldBackend {
+            calls: Arc<std::sync::atomic::AtomicUsize>,
+            started: mpsc::Sender<()>,
+            release: Arc<(Mutex<bool>, Condvar)>,
+        }
+        impl BridgeBackend for HoldBackend {
+            fn call(&mut self, _method: &str, _params: &Value) -> Result<Value, String> {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = self.started.send(());
+                let (lock, cv) = &*self.release;
+                let _guard = cv.wait_timeout_while(
+                    lock.lock().unwrap(),
+                    Duration::from_secs(2),
+                    |ready| !*ready,
+                ).unwrap();
+                Ok(json!({"ok": true, "score": 40, "failUnder": 70, "needsBuild": false}))
+            }
+        }
+
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (started_tx, started_rx) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let mut editor = Editor::with_handlers_backend(
+            test_session(),
+            prefs::EditorStateStore::default(),
+            ok_runner(),
+            ok_writer(),
+            noop_wake(),
+            Some(Box::new(HoldBackend { calls: Arc::clone(&calls), started: started_tx, release: Arc::clone(&release) })),
+        );
+        editor.judge_armed = false;
+        let mut tx = Tx::default();
+        editor.active_working_edit_mut().text = "Before the reply.\n".into();
+        editor.changed_active(&mut tx);
+        poll(&mut editor, 1.2, &mut tx);
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        editor.active_working_edit_mut().text = "Edited while judging.\n".into();
+        editor.changed_active(&mut tx);
+        {
+            let (lock, cv) = &*release;
+            *lock.lock().unwrap() = true;
+            cv.notify_all();
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while editor.judge_inflight.is_some() {
+            assert!(std::time::Instant::now() < deadline, "judge did not settle");
+            poll(&mut editor, 1.0, &mut tx);
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(editor.latest_judge.is_none());
+        assert!(editor.judge_due.is_some());
     }
 }

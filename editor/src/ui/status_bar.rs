@@ -78,13 +78,9 @@ pub(crate) fn build(editor: &Editor, kit: &Kit) -> El {
             );
     }
 
-    if let Some(voice) = &editor.voice_project {
-        let name = voice
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("voice");
+    if let Some(label) = editor.voice_pill_label() {
         bar = bar.child(
-            Button::new(format!("Voice: {name}"))
+            Button::new(label)
                 .control_size(ControlSize::Small)
                 .variant(ButtonVariant::GhostMuted)
                 .help("Toggle inspector")

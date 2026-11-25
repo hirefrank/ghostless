@@ -61,6 +61,8 @@ pub(crate) struct DocumentBuffer {
     pub last_saved_label: Option<String>,
     pub save_error: Option<String>,
     pub last_disk_sha256: String,
+    /// Section chosen in the inspector. `None` follows frontmatter `section:`.
+    pub section_override: Option<String>,
     cached_words: Cell<(u64, usize)>,
     pub(crate) decoration_cache: RefCell<Option<DecorationCache>>,
 }
@@ -102,6 +104,7 @@ impl DocumentBuffer {
             last_saved_label: if read_only { Some("Read-only".into()) } else { None },
             save_error: None,
             last_disk_sha256: sha,
+            section_override: None,
             cached_words: Cell::new((u64::MAX, 0)),
             decoration_cache: RefCell::new(None),
         }
@@ -147,6 +150,7 @@ impl DocumentBuffer {
             last_saved_label: session.finished.then(|| "Finished".into()),
             save_error: None,
             last_disk_sha256: sha,
+            section_override: None,
             cached_words: Cell::new((u64::MAX, 0)),
             decoration_cache: RefCell::new(None),
         }

@@ -233,12 +233,20 @@ pub(crate) struct Worker {
 }
 
 impl Worker {
+    #[cfg(test)]
     pub(crate) fn spawn_with_handlers(
         runner: CliRunner,
         writer: WriteRunner,
         wake: WakeFn,
     ) -> Self {
-        let wake = Arc::new(wake);
+        Self::spawn_with_shared_wake(runner, writer, Arc::new(wake))
+    }
+
+    pub(crate) fn spawn_with_shared_wake(
+        runner: CliRunner,
+        writer: WriteRunner,
+        wake: Arc<WakeFn>,
+    ) -> Self {
         let search = SearchWorker::spawn(Arc::clone(&wake));
         let (req_tx, req_rx) = mpsc::channel::<WorkerRequest>();
         let (rep_tx, rep_rx) = mpsc::channel::<WorkerReply>();
