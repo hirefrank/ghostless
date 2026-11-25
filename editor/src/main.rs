@@ -4,6 +4,7 @@ mod bridge;
 mod cli;
 mod documents;
 mod fs_io;
+mod hunks;
 mod markdown_edit;
 mod markdown_decor;
 mod prefs;

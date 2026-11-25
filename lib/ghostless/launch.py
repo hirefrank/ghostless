@@ -235,7 +235,13 @@ def _which(name: str) -> Path | None:
     return Path(found) if found else None
 
 
-def launch_editor(project: Path, *, draft: Path | None = None, session: str | None = None) -> int:
+def launch_editor(
+    project: Path,
+    *,
+    draft: Path | None = None,
+    session: str | None = None,
+    link_draft: Path | None = None,
+) -> int:
     """Open the desktop editor on a project. Returns the editor's exit code."""
     root = suite_root()
     binary = find_editor_binary(root)
@@ -245,8 +251,12 @@ def launch_editor(project: Path, *, draft: Path | None = None, session: str | No
     command = [str(binary), "--project", str(project)]
     if session is not None:
         command.extend(["--session", session])
+        if link_draft is not None:
+            command.extend(["--link-draft", str(link_draft)])
     elif draft is not None:
         command.extend(["--draft", str(draft)])
+        if link_draft is not None:
+            command.extend(["--link-draft", str(link_draft)])
     else:
         raise ProjectError("Open the editor with a draft or a session id.")
     completed = subprocess.run(_spawn_command(binary, command), check=False)

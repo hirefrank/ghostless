@@ -49,6 +49,7 @@ pub(crate) enum WriteOp {
         notes: String,
         mirror_path: Option<PathBuf>,
         mirror_expected_sha256: Option<String>,
+        mirror_force: bool,
     },
 }
 
@@ -75,6 +76,7 @@ pub(crate) enum WorkerRequest {
         notes: String,
         mirror_path: Option<PathBuf>,
         mirror_expected_sha256: Option<String>,
+        mirror_force: bool,
     },
     Finish {
         doc_id: DocId,
@@ -294,6 +296,7 @@ impl Worker {
                         notes,
                         mirror_path,
                         mirror_expected_sha256,
+                        mirror_force,
                     } => {
                         let sha256 = fs_io::sha256_text(&after);
                         let result = writer(&WriteOp::Session {
@@ -304,6 +307,7 @@ impl Worker {
                             notes,
                             mirror_path,
                             mirror_expected_sha256,
+                            mirror_force,
                         });
                         WorkerReply::Saved {
                             doc_id,
@@ -333,6 +337,7 @@ impl Worker {
                                 notes,
                                 mirror_path,
                                 mirror_expected_sha256,
+                                mirror_force: false,
                             }) {
                                 Ok(outcome) => {
                                     saved_snapshot = Some((sha, outcome));
@@ -413,6 +418,7 @@ pub(crate) fn execute_write_op(op: &WriteOp) -> Result<WriteOutcome, String> {
             notes,
             mirror_path,
             mirror_expected_sha256,
+            mirror_force,
         } => write_session_direct(
             project,
             session_id,
@@ -421,10 +427,12 @@ pub(crate) fn execute_write_op(op: &WriteOp) -> Result<WriteOutcome, String> {
             notes,
             mirror_path.as_deref(),
             mirror_expected_sha256.as_deref(),
+            *mirror_force,
         ),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn write_session_direct(
     project: &Path,
     session_id: &str,
@@ -433,6 +441,7 @@ pub(crate) fn write_session_direct(
     notes: &str,
     mirror_path: Option<&Path>,
     mirror_expected_sha256: Option<&str>,
+    mirror_force: bool,
 ) -> Result<WriteOutcome, String> {
     if !valid_session_id(session_id) {
         return Err("Invalid session ID".into());
@@ -469,7 +478,7 @@ pub(crate) fn write_session_direct(
     let Some(mirror) = mirror_path else {
         return Ok(WriteOutcome::Local);
     };
-    match write_mirror(mirror, mirror_expected_sha256, after) {
+    match write_mirror(mirror, mirror_expected_sha256, after, mirror_force) {
         Ok(()) => Ok(WriteOutcome::Mirrored),
         Err(error) => Ok(WriteOutcome::MirrorSkipped(error)),
     }
@@ -483,15 +492,19 @@ pub(crate) fn clear_recovery_copy(path: &Path) -> Result<(), String> {
     }
 }
 
-fn write_mirror(path: &Path, expected_sha256: Option<&str>, after: &str) -> Result<(), String> {
-    if !path.is_absolute() {
+fn write_mirror(path: &Path, expected_sha256: Option<&str>, after: &str, force: bool) -> Result<(), String> {
+    if !path.is_absolute() || path.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
         return Err("Linked path is outside the workspace".into());
     }
-    let expected = expected_sha256.filter(|hash| !hash.is_empty())
-        .ok_or("Linked draft has no known sync state")?;
-    let current = fs_io::read_utf8(path)?;
-    if fs_io::sha256_text(&current) != expected {
-        return Err("Linked draft changed outside the editor".into());
+    if !force {
+        let expected = expected_sha256.filter(|hash| !hash.is_empty())
+            .ok_or("Linked draft has no known sync state")?;
+        let current = fs_io::read_utf8(path)?;
+        if fs_io::sha256_text(&current) != expected {
+            return Err("Linked draft changed outside the editor".into());
+        }
+    } else if path.exists() && workspace_tree::is_protected_voice_path(path) {
+        return Err(format!("Protected voice data is read-only: {}", path.display()));
     }
     write_workspace_file(path, after)
 }
@@ -617,6 +630,7 @@ mod tests {
             "Tightened lead.",
             Some(&mirror),
             Some(&before_sha),
+            false,
         )
         .unwrap();
         assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Revised prose.\n");
@@ -627,17 +641,26 @@ mod tests {
         let outcome = write_session_direct(
             &base, session_id, Some(&before_sha), "Local edits", "Local notes",
             Some(&mirror), Some(&fs_io::sha256_text("Revised prose.\n")),
+            false,
         ).unwrap();
         assert!(matches!(outcome, WriteOutcome::MirrorSkipped(error) if error.contains("changed outside")));
         assert_eq!(fs_io::read_utf8(&mirror).unwrap(), "external edit");
-        assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Local edits");
-        assert_eq!(fs_io::read_utf8(&session_dir.join("notes.md")).unwrap(), "Local notes");
+        assert_eq!(fs_io::read_utf8(&session_dir.join("before.md")).unwrap(), before);
+        let forced = write_session_direct(
+            &base, session_id, Some(&before_sha), "Kept session.\n", "Kept notes",
+            Some(&mirror), Some(&before_sha), true,
+        ).unwrap();
+        assert!(matches!(forced, WriteOutcome::Mirrored));
+        assert_eq!(fs_io::read_utf8(&mirror).unwrap(), "Kept session.\n");
+        assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Kept session.\n");
+        assert_eq!(fs_io::read_utf8(&session_dir.join("before.md")).unwrap(), before);
 
         let missing = base.join("missing.md");
         for invalid_mirror in [missing.as_path(), Path::new("../outside.md")] {
             let outcome = write_session_direct(
                 &base, session_id, Some(&before_sha), "Local edits", "Local notes",
                 Some(invalid_mirror), Some(&before_sha),
+                false,
             ).unwrap();
             assert!(matches!(outcome, WriteOutcome::MirrorSkipped(_)));
             assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Local edits");
@@ -659,23 +682,29 @@ mod tests {
             let outcome = write_session_direct(
                 &base, session_id, Some(&before_sha), "Local edits", "Local notes",
                 Some(&protected), Some(&before_sha),
+                false,
             ).unwrap();
             assert!(matches!(outcome, WriteOutcome::MirrorSkipped(error) if error.contains("Protected voice data")));
-            assert_eq!(fs_io::read_utf8(&protected).unwrap(), before);
             assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Local edits");
+            let forced = write_session_direct(
+                &base, session_id, Some(&before_sha), "Forced protected", "notes",
+                Some(&protected), Some(&before_sha), true,
+            ).unwrap();
+            assert!(matches!(forced, WriteOutcome::MirrorSkipped(error) if error.contains("Protected voice data")));
+            assert_eq!(fs_io::read_utf8(&protected).unwrap(), before);
         }
 
         // Tampered before.md must be refused without overwriting after.md.
         fs_io::atomic_write_text(&session_dir.join("before.md"), "Tampered!\n").unwrap();
-        let err = write_session_direct(&base, session_id, Some(&before_sha), "Bad write", "", None, None)
+        let err = write_session_direct(&base, session_id, Some(&before_sha), "Bad write", "", None, None, false)
             .unwrap_err();
         assert!(err.contains("immutable baseline has changed"), "{err}");
-        assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Local edits");
+        assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Forced protected");
 
         // Restore before.md, add receipt.json -> finished session must be refused.
         fs_io::atomic_write_text(&session_dir.join("before.md"), before).unwrap();
         fs_io::atomic_write_text(&session_dir.join("receipt.json"), "{}\n").unwrap();
-        let err = write_session_direct(&base, session_id, Some(&before_sha), "After finish", "", None, None)
+        let err = write_session_direct(&base, session_id, Some(&before_sha), "After finish", "", None, None, false)
             .unwrap_err();
         assert!(err.contains("already finished"), "{err}");
 

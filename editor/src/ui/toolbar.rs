@@ -49,6 +49,15 @@ pub(crate) fn build(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> Toolb
         )
         .center(modes.build(kit));
 
+    if editor.can_track_session() {
+        tb = tb.trailing(
+            Button::new("Track Session")
+                .variant(ButtonVariant::Outline)
+                .on_press(|editor: &mut Editor| editor.open_track_session())
+                .build(kit)
+                .key("track-session"),
+        );
+    }
     if editor.active_is_session() {
         let locked = editor.active_is_locked();
         tb = tb

@@ -32,7 +32,7 @@ Build once with `cargo build --release --manifest-path editor/Cargo.toml` and ru
 
 For `--draft` and `--session`, `--project` is optional. The editor uses the same resolution as the CLI: `--project`, then `GHOSTLESS_PROJECT`, then a voice project in the current directory, then `defaultProject` from `ghostless use`. A missing project or draft path names that path. When the directory is not a voice project yet, the message points at `ghostless init`.
 
-This starts a new session (`ghostless start` under the hood). To opt into mirroring session edits back to the original draft, add `--link-draft`. The editor stores the link in its local state. If it cannot safely update the linked draft, it still saves the session and shows why it skipped the mirror. Without that flag, the original draft stays separate from the session.
+This starts a new session (`ghostless start` under the hood). `ghostless edit` records the link automatically, so later saves update that draft and the session together. A bare `--draft` stays unlinked unless you add `--link-draft`. The editor stores the link in its local state. If it cannot safely update the linked draft, it still saves the session and shows why it skipped the mirror.
 
 To open a workspace, launch with `--folder /path/to/writing` or use Open Folder. The editor searches the folder and its ancestors for a voice project or a nested `voice/` project. An unrelated folder opens without a voice project, even if `GHOSTLESS_PROJECT` or `defaultProject` is set; pass `--project /path/to/voice` to attach one explicitly. The welcome screen can show the global default before a folder is opened.
 

@@ -35,6 +35,12 @@ pub(crate) struct DecorationCache {
     pub description: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionConflict {
+    pub disk_text: String,
+    pub session_text: String,
+}
+
 pub(crate) struct DocumentBuffer {
     pub id: DocId,
     pub title: String,
@@ -63,6 +69,8 @@ pub(crate) struct DocumentBuffer {
     pub last_disk_sha256: String,
     /// Section chosen in the inspector. `None` follows frontmatter `section:`.
     pub section_override: Option<String>,
+    pub conflict: Option<SessionConflict>,
+    pub force_mirror: bool,
     cached_words: Cell<(u64, usize)>,
     pub(crate) decoration_cache: RefCell<Option<DecorationCache>>,
 }
@@ -105,6 +113,8 @@ impl DocumentBuffer {
             save_error: None,
             last_disk_sha256: sha,
             section_override: None,
+            conflict: None,
+            force_mirror: false,
             cached_words: Cell::new((u64::MAX, 0)),
             decoration_cache: RefCell::new(None),
         }
@@ -151,6 +161,8 @@ impl DocumentBuffer {
             save_error: None,
             last_disk_sha256: sha,
             section_override: None,
+            conflict: None,
+            force_mirror: false,
             cached_words: Cell::new((u64::MAX, 0)),
             decoration_cache: RefCell::new(None),
         }
