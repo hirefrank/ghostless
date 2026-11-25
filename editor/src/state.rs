@@ -71,6 +71,9 @@ pub(crate) struct Editor {
     pub(crate) sidebar_pane: PaneState,
     pub(crate) inspector_pane: PaneState,
     pub(crate) view_mode: ViewMode,
+    pub(crate) focus_mode: bool,
+    pub(crate) view_settings_open: bool,
+    fonts_initialized: bool,
     pub(crate) file_tree: TreeModel<FileNode<WorkspaceEntry>>,
     pub(crate) sessions: Vec<SessionSummary>,
     pub(crate) sessions_collapsed: bool,
@@ -173,6 +176,9 @@ impl Editor {
             sidebar_pane,
             inspector_pane,
             view_mode: ViewMode::Write,
+            focus_mode: false,
+            view_settings_open: false,
+            fonts_initialized: false,
             file_tree: TreeModel::new().key("workspace-files"),
             sessions: Vec::new(),
             sessions_collapsed: false,
@@ -224,6 +230,9 @@ impl Editor {
             sidebar_pane: sb,
             inspector_pane: insp,
             view_mode: ViewMode::Write,
+            focus_mode: false,
+            view_settings_open: false,
+            fonts_initialized: false,
             file_tree: TreeModel::new().key("workspace-files"),
             sessions: Vec::new(),
             sessions_collapsed: false,
@@ -1748,6 +1757,11 @@ fn rel_path_from_abs(root: &Path, abs: &Path) -> Option<String> {
 }
 
 pub(crate) fn poll(editor: &mut Editor, clock: f64, tx: &mut Tx) -> bool {
+    if !editor.fonts_initialized {
+        let sans = if editor.store.ui.font_family == prefs::FontChoice::Serif { "Georgia, serif" } else { "Inter, sans-serif" };
+        tx.set_font_families(sans, "IBM Plex Mono, monospace");
+        editor.fonts_initialized = true;
+    }
     let mut changed = false;
     while let Ok(reply) = editor.worker.try_recv() {
         editor.apply_reply(reply, Some(tx));
@@ -1831,6 +1845,19 @@ pub(crate) fn on_key(editor: &mut Editor, key: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if editor.is_landing_view() {
         return false;
+    }
+    if key.key == Key::Function(11) || (key.key == Key::Enter && key.mods.shift && (key.mods.cmd || key.mods.ctrl)) || (key.key == Key::Escape && editor.focus_mode && !editor.view_settings_open) {
+        editor.focus_mode = !editor.focus_mode;
+        return true;
+    }
+    if !key.mods.shift && !key.mods.alt {
+        let delta = if key.is_command('=') { Some(1.0) } else if key.is_command('-') { Some(-1.0) } else { None };
+        if let Some(delta) = delta {
+            editor.store.ui.font_size = (editor.store.ui.font_size + delta).clamp(13.0, 24.0);
+            let _ = prefs::save_store(&editor.store);
+            return true;
+        }
+        if key.is_command('0') { editor.store.ui.font_size = 16.5; let _ = prefs::save_store(&editor.store); return true; }
     }
     if is_sidebar_toggle(key) {
         editor.toggle_sidebar();

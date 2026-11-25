@@ -5,13 +5,16 @@ use rune_kit::{
 };
 use crate::state::{DialogKind, Editor, ViewMode};
 
+mod canvas;
 mod sidebar;
 mod status_bar;
 mod tabs;
 mod toolbar;
 
+#[cfg(test)]
 pub(crate) const TEXTAREA_LINE_HEIGHT: f32 = 17.5;
 
+#[cfg(test)]
 pub(crate) fn working_textarea_metrics(pane_height: Option<f32>) -> (f32, usize) {
     let height = pane_height.unwrap_or(80.0).floor().max(80.0);
     let rows = ((height / TEXTAREA_LINE_HEIGHT).ceil() as usize).max(4);
@@ -23,10 +26,10 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
         return crate::ui_welcome::view(editor, cx);
     }
 
-    let kit = Kit::neutral(cx.system_dark());
+    let kit = crate::theme::build_kit(editor.store.ui.theme, cx.system_dark());
     let mut overlays: Vec<El> = Vec::new();
 
-    let tb = toolbar::build(editor, &kit);
+    let tb = toolbar::build(editor, &kit, &mut overlays);
     let sb = sidebar::build(editor, &kit, &mut overlays);
     let insp = build_inspector(editor, cx, &kit);
 
@@ -37,15 +40,25 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
         .h_full()
         .min_h(0.0)
         .fill(kit.c.bg_base);
-    if !editor.documents.is_empty() {
+    if !editor.documents.is_empty() && !editor.focus_mode {
         main = main.child(tabs::build(editor, cx, &kit));
     }
-    main = main.child(stage).child(status_bar::build(editor, &kit));
+    main = main.child(stage);
+    if editor.focus_mode {
+        let count = editor.active_doc_ref().map(|doc| doc.word_counts().0).unwrap_or(0);
+        main = main.child(row().w_full().px(12.0).center_y()
+            .child(text(format!("{count} words")).font(kit.ty.small).color(kit.c.text_faint))
+            .child(row().grow(1.0))
+            .child(Button::new("Exit Focus (Esc / F11)").variant(ButtonVariant::GhostMuted)
+                .on_press(|e: &mut Editor| e.focus_mode = false).build(&kit)));
+    } else { main = main.child(status_bar::build(editor, &kit)); }
 
-    let shell = SplitView::new(main)
-        .sidebar(&editor.sidebar_pane, |e: &mut Editor| &mut e.sidebar_pane, sb)
-        .inspector(&editor.inspector_pane, |e: &mut Editor| &mut e.inspector_pane, insp)
-        .toolbar(tb)
+    let mut split = SplitView::new(main);
+    if !editor.focus_mode {
+        split = split.sidebar(&editor.sidebar_pane, |e: &mut Editor| &mut e.sidebar_pane, sb)
+            .inspector(&editor.inspector_pane, |e: &mut Editor| &mut e.inspector_pane, insp);
+    }
+    let shell = split.toolbar(tb)
         .titlebar_inset(cx.titlebar_inset())
         .reduced_motion(cx.is_reduced_motion())
         .build(&kit);
@@ -98,24 +111,7 @@ fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
             ),
         ViewMode::Compare | ViewMode::Write => {
             let locked = editor.active_is_locked();
-            let (working_height, working_rows) =
-                working_textarea_metrics(cx.layout_size("working-body").map(|size| size[1]));
-            let body = col()
-                .key("working-body")
-                .grow(1.0)
-                .w_full()
-                .min_h(0.0)
-                .child(
-                    TextArea::new(editor.active_working_edit())
-                        .label("Working draft")
-                        .width(None)
-                        .rows(working_rows)
-                        .max_height(working_height)
-                        .disabled(locked)
-                        .on_edit(|e: &mut Editor| e.active_working_edit_mut())
-                        .on_change(|e: &mut Editor, tx: &mut Tx| e.changed_active(tx))
-                        .build(kit),
-                );
+            let body = canvas::build(editor, cx, kit, locked);
             let mut pane = col()
                 .key("working-pane")
                 .grow(1.0)
