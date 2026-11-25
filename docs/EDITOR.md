@@ -30,9 +30,13 @@ cargo run --release --manifest-path editor/Cargo.toml -- --project /path/to/voic
 
 Build once with `cargo build --release --manifest-path editor/Cargo.toml` and run `editor/target/release/ghostless-editor` directly if you would rather not go through `cargo run`. From a checkout where that binary exists, `ghostless edit /path/to/draft.md` does the same start-and-open step. Pass exactly one of `--draft` or `--session`.
 
-`--project` is optional. The editor uses the same resolution as the CLI: `--project`, then `GHOSTLESS_PROJECT`, then a voice project in the current directory, then `defaultProject` from `ghostless use`. A missing project or draft path names that path. When the directory is not a voice project yet, the message points at `ghostless init`.
+For `--draft` and `--session`, `--project` is optional. The editor uses the same resolution as the CLI: `--project`, then `GHOSTLESS_PROJECT`, then a voice project in the current directory, then `defaultProject` from `ghostless use`. A missing project or draft path names that path. When the directory is not a voice project yet, the message points at `ghostless init`.
 
-This starts a new session (`ghostless start` under the hood).
+This starts a new session (`ghostless start` under the hood). To opt into mirroring session edits back to the original draft, add `--link-draft`. The editor stores the link in its local state. If it cannot safely update the linked draft, it still saves the session and shows why it skipped the mirror. Without that flag, the original draft stays separate from the session.
+
+To open a workspace, launch with `--folder /path/to/writing` or use Open Folder. The editor searches the folder and its ancestors for a voice project or a nested `voice/` project. An unrelated folder opens without a voice project, even if `GHOSTLESS_PROJECT` or `defaultProject` is set; pass `--project /path/to/voice` to attach one explicitly. The welcome screen can show the global default before a folder is opened.
+
+Files in the voice project's corpus, transcripts, holdouts, and learned examples open read-only. Use the Sessions sidebar to edit a session's working copy and notes.
 
 ## Resume a saved session
 
@@ -41,7 +45,7 @@ ghostless sessions --project /path/to/voice
 cargo run --release --manifest-path editor/Cargo.toml -- --project /path/to/voice --session <id>
 ```
 
-Edits and notes save after an 800 ms pause. Ctrl/Cmd+S saves immediately; Ctrl/Cmd+D switches between Edit and Diff. Finish writes an immutable final and receipt and adds the pair to gold once. The editor then becomes read-only. The original draft (`before.md`) is never overwritten. If the app closes before Finish, reopen the session by ID and continue from `after.md`.
+Edits and notes save after an 800 ms pause. Ctrl/Cmd+S saves immediately; Ctrl/Cmd+D switches between Edit and Diff. Finish writes an immutable final and receipt and adds the pair to gold once. The editor then becomes read-only. The original draft (`before.md`) is never overwritten. If the app closes before Finish, reopen the session by ID and continue from `after.md`. If system quit forces the editor to exit after a failed save, it attempts to preserve the draft and notes in its local recovery directory and offers to restore them when the session reopens.
 
 All text stays on the local filesystem. The editor invokes only the local CLI, with release checks disabled. Its session metadata uses UTF-8 and relative filenames, so copying a project between macOS, Windows, and Linux preserves the session. The exact file format is in [SCHEMA.md](../SCHEMA.md).
 

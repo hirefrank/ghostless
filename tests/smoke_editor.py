@@ -47,7 +47,9 @@ def _cli_cmd(executable: str, *args: str) -> list[str]:
 
 
 def run(args: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> str:
-    result = subprocess.run(args, cwd=cwd, env=env, text=True, capture_output=True, check=False)
+    result = subprocess.run(
+        args, cwd=cwd, env=env, text=True, encoding="utf-8", capture_output=True, check=False
+    )
     if result.returncode:
         raise RuntimeError(f"{args!r} exited {result.returncode}\n{result.stdout}\n{result.stderr}")
     return result.stdout
@@ -99,6 +101,7 @@ def main() -> None:
         env.update({
             "GHOSTLESS_NO_UPDATE": "1",
             "GHOSTLESS_HOME": str(base / "home"),
+            "PYTHONUTF8": "1",
         })
         if args.npm_pack:
             cli, prefix = install_packed_npm_cli(base)
@@ -145,7 +148,7 @@ def main() -> None:
         run(_cli_cmd(cli, "build", "--project", str(project)), cwd=base, env=env)
         judged = subprocess.run(_cli_cmd(cli, "judge", str(session / "after.md"),
                                          "--project", str(project)), cwd=base, env=env,
-                                text=True, capture_output=True, check=False)
+                                text=True, encoding="utf-8", capture_output=True, check=False)
         if judged.returncode not in (0, 1) or "ghostless mechanical check" not in judged.stdout:
             raise RuntimeError(f"Cannot judge the editor final: {judged.stdout}\n{judged.stderr}")
         again = json.loads(run(_cli_cmd(cli, "finish", "--session", session.name,
@@ -223,7 +226,7 @@ def main() -> None:
         missing_project = base / "missing-voice"
         missing = subprocess.run(
             [str(EDITOR), "--project", str(missing_project), "--draft", str(draft)],
-            cwd=base, env=env, text=True, capture_output=True, check=False,
+            cwd=base, env=env, text=True, encoding="utf-8", capture_output=True, check=False,
         )
         if missing.returncode == 0 or f"Project directory does not exist: {missing_project}" not in missing.stderr:
             raise RuntimeError(f"Missing project path was not named:\n{missing.stderr}")
@@ -232,7 +235,7 @@ def main() -> None:
         missing_draft = base / "missing-draft.md"
         missing_file = subprocess.run(
             [str(EDITOR), "--project", str(project), "--draft", str(missing_draft)],
-            cwd=base, env=env, text=True, capture_output=True, check=False,
+            cwd=base, env=env, text=True, encoding="utf-8", capture_output=True, check=False,
         )
         if f"Draft does not exist: {missing_draft}" not in missing_file.stderr:
             raise RuntimeError(f"Missing draft path was not named:\n{missing_file.stderr}")

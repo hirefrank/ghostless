@@ -9,6 +9,7 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+from ghostless import bridge
 from ghostless.build import build_voice as build_voice
 from ghostless.build import stale_inputs
 from ghostless.checks import checks_summary, confirm_check, reject_check, write_pair_checks
@@ -305,6 +306,7 @@ def main(argv: list[str] | None = None) -> int:
     eval_parser.add_argument("--json", action="store_true")
     _add_project(eval_parser)
 
+    sub.add_parser("bridge", help="Run a local NDJSON stdio worker for desktop editor integration")
     sub.add_parser("locate", help="Print the voice project directory")
     use_parser = sub.add_parser(
         "use",
@@ -326,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.command:
         parser.print_help()
         return 0
-    if args.command not in {"update"}:
+    if args.command not in {"update", "bridge"}:
         _maybe_check_for_update(
             Path(args.project) if getattr(args, "project", None) else None
         )
@@ -343,6 +345,8 @@ def main(argv: list[str] | None = None) -> int:
 def _dispatch(args: argparse.Namespace) -> int:
     command = args.command
     match command:
+        case "bridge":
+            return bridge.serve_stdio()
         case "init":
             return _cmd_init(args)
         case "migrate":

@@ -147,6 +147,7 @@ ghostless learn --before before.md --after after.md --section notes --promote
 ## Commands
 
 ```bash
+ghostless bridge
 ghostless init [dir] [--no-git] | ghostless init --here
 ghostless migrate [--project DIR] [--no-git]
 ghostless build [--project DIR] [--json]
