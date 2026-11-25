@@ -1,3 +1,4 @@
+use crate::error::EditorError;
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, OpenOptions},
@@ -8,16 +9,20 @@ use std::{
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-pub(crate) fn read_utf8(path: &Path) -> Result<String, String> {
-    fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
+pub(crate) fn read_utf8(path: &Path) -> Result<String, EditorError> {
+    fs::read_to_string(path).map_err(|e| EditorError::Io {
+        context: format!("{}: {e}", path.display()),
+    })
 }
 
-pub(crate) fn atomic_write_text(path: &Path, content: &str) -> Result<(), String> {
+pub(crate) fn atomic_write_text(path: &Path, content: &str) -> Result<(), EditorError> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    fs::create_dir_all(parent).map_err(|e| EditorError::Io {
+        context: e.to_string(),
+    })?;
     let (temp, mut file) = loop {
         let temp = parent.join(format!(
             ".ghostless-tmp-{}-{}",
@@ -27,7 +32,11 @@ pub(crate) fn atomic_write_text(path: &Path, content: &str) -> Result<(), String
         match OpenOptions::new().write(true).create_new(true).open(&temp) {
             Ok(file) => break (temp, file),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e.to_string()),
+            Err(e) => {
+                return Err(EditorError::Io {
+                    context: e.to_string(),
+                });
+            }
         }
     };
     let result = (|| {
@@ -39,7 +48,9 @@ pub(crate) fn atomic_write_text(path: &Path, content: &str) -> Result<(), String
     if result.is_err() {
         let _ = fs::remove_file(&temp);
     }
-    result.map_err(|e| format!("{}: {e}", path.display()))
+    result.map_err(|e| EditorError::Io {
+        context: format!("{}: {e}", path.display()),
+    })
 }
 
 #[cfg(not(windows))]
@@ -118,7 +129,7 @@ mod tests {
     use super::*;
     #[test]
     fn atomic_utf8_hash_and_containment() {
-        let base = std::env::temp_dir().join(format!("ghostless-io-{}", std::process::id()));
+        let base = crate::test_util::TestDir::new("io");
         let file = base.join("child/draft.md");
         atomic_write_text(&file, "雪 café 🖋️").unwrap();
         assert_eq!(read_utf8(&file).unwrap(), "雪 café 🖋️");
@@ -134,6 +145,5 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(".ghostless-tmp-")
         }));
-        fs::remove_dir_all(base).unwrap();
     }
 }

@@ -1,3 +1,4 @@
+use crate::error::EditorError;
 use crate::{
     documents::DocId,
     fs_io,
@@ -18,9 +19,9 @@ use std::{
     thread,
 };
 
-pub(crate) type CliFn = dyn Fn(&[&str], Option<&str>) -> Result<String, String> + Send;
+pub(crate) type CliFn = dyn Fn(&[&str], Option<&str>) -> Result<String, EditorError> + Send;
 pub(crate) type CliRunner = Box<CliFn>;
-pub(crate) type WriteFn = dyn Fn(&WriteOp) -> Result<WriteOutcome, String> + Send;
+pub(crate) type WriteFn = dyn Fn(&WriteOp) -> Result<WriteOutcome, EditorError> + Send;
 pub(crate) type WriteRunner = Box<WriteFn>;
 pub(crate) type WakeFn = Box<dyn Fn() + Send + Sync>;
 
@@ -95,7 +96,7 @@ pub(crate) enum WorkerRequest {
 pub(crate) enum WriteOutcome {
     Local,
     Mirrored,
-    MirrorSkipped(String),
+    MirrorSkipped(EditorError),
 }
 
 pub(crate) enum WorkerReply {
@@ -103,17 +104,17 @@ pub(crate) enum WorkerReply {
         doc_id: DocId,
         generation: u64,
         sha256: String,
-        result: Result<WriteOutcome, String>,
+        result: Result<WriteOutcome, EditorError>,
     },
     RecoveryWritten {
         doc_id: DocId,
-        result: Result<WriteOutcome, String>,
+        result: Result<WriteOutcome, EditorError>,
     },
     Finished {
         doc_id: DocId,
         generation: u64,
         snapshot: Option<(String, WriteOutcome)>,
-        result: Result<(), String>,
+        result: Result<(), EditorError>,
     },
 }
 
@@ -206,7 +207,7 @@ impl SearchWorker {
         files: Vec<WorkspaceEntry>,
         buffers: HashMap<PathBuf, Option<String>>,
         query: String,
-    ) -> Result<u64, String> {
+    ) -> Result<u64, EditorError> {
         let mut queue = self.mailbox.queue.lock().unwrap();
         if queue.closed {
             return Err("Workspace search is unavailable".into());
@@ -394,7 +395,7 @@ impl Worker {
         }
     }
 
-    pub(crate) fn send(&self, request: WorkerRequest) -> Result<(), String> {
+    pub(crate) fn send(&self, request: WorkerRequest) -> Result<(), EditorError> {
         let Some(tx) = &self.tx else {
             return Err("Background save worker stopped".into());
         };
@@ -419,7 +420,7 @@ impl Worker {
     }
 }
 
-pub(crate) fn execute_write_op(op: &WriteOp) -> Result<WriteOutcome, String> {
+pub(crate) fn execute_write_op(op: &WriteOp) -> Result<WriteOutcome, EditorError> {
     match op {
         WriteOp::File {
             path,
@@ -468,23 +469,26 @@ pub(crate) fn write_session_direct(
     mirror_path: Option<&Path>,
     mirror_expected_sha256: Option<&str>,
     mirror_force: bool,
-) -> Result<WriteOutcome, String> {
+) -> Result<WriteOutcome, EditorError> {
     if !valid_session_id(session_id) {
-        return Err("Invalid session ID".into());
+        return Err(EditorError::InvalidSessionId(session_id.to_owned()));
     }
     let folder = project.join("sessions").join(session_id);
     if !folder.join("session.json").is_file() {
-        return Err(format!(
+        return Err(EditorError::message(format!(
             "Session {session_id} not found in {}.",
             project.display()
-        ));
+        )));
     }
     if folder.join("receipt.json").exists() {
-        return Err("This session is already finished. Start a new session to edit again.".into());
+        return Err(EditorError::AlreadyFinished(
+            "This session is already finished. Start a new session to edit again.".into(),
+        ));
     }
     let meta_raw = fs_io::read_utf8(&folder.join("session.json"))?;
-    let meta: Value = serde_json::from_str(&meta_raw)
-        .map_err(|e| format!("Invalid session metadata in {}: {e}", folder.display()))?;
+    let meta: Value = serde_json::from_str(&meta_raw).map_err(|e| EditorError::Json {
+        context: format!("Invalid session metadata in {}: {e}", folder.display()),
+    })?;
     if meta.get("kind").and_then(Value::as_str) != Some("ghostless-edit-session") {
         return Err("Unsupported session format".into());
     }
@@ -498,17 +502,17 @@ pub(crate) fn write_session_direct(
             )
         })?;
     if cached_before_sha256.is_some_and(|cached| cached != expected_sha) {
-        return Err(format!(
+        return Err(EditorError::BaselineMismatch(format!(
             "The immutable baseline metadata changed in {}.",
             folder.display()
-        ));
+        )));
     }
     let before = fs_io::read_utf8(&folder.join("before.md"))?;
     if fs_io::sha256_text(&before) != expected_sha {
-        return Err(format!(
+        return Err(EditorError::BaselineMismatch(format!(
             "The immutable baseline has changed in {}.",
             folder.display()
-        ));
+        )));
     }
     let after_path = folder.join("after.md");
     fs_io::atomic_write_text(&after_path, after)?;
@@ -524,14 +528,13 @@ pub(crate) fn write_session_direct(
     }
 }
 
-pub(crate) fn clear_recovery_copy(path: &Path) -> Result<(), String> {
+pub(crate) fn clear_recovery_copy(path: &Path) -> Result<(), EditorError> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!(
-            "Cannot remove recovery copy {}: {error}",
-            path.display()
-        )),
+        Err(error) => Err(EditorError::Io {
+            context: format!("Cannot remove recovery copy {}: {error}", path.display()),
+        }),
     }
 }
 
@@ -540,13 +543,15 @@ fn write_mirror(
     expected_sha256: Option<&str>,
     after: &str,
     force: bool,
-) -> Result<(), String> {
+) -> Result<(), EditorError> {
     if !path.is_absolute()
         || path
             .components()
             .any(|part| matches!(part, std::path::Component::ParentDir))
     {
-        return Err("Linked path is outside the workspace".into());
+        return Err(EditorError::ProtectedPath(
+            "Linked path is outside the workspace".into(),
+        ));
     }
     if !force {
         let expected = expected_sha256
@@ -554,28 +559,32 @@ fn write_mirror(
             .ok_or("Linked draft has no known sync state")?;
         let current = fs_io::read_utf8(path)?;
         if fs_io::sha256_text(&current) != expected {
-            return Err("Linked draft changed outside the editor".into());
+            return Err(EditorError::MirrorConflict);
         }
     } else if path.exists() && workspace_tree::is_protected_voice_path(path) {
-        return Err(format!(
+        return Err(EditorError::ProtectedPath(format!(
             "Protected voice data is read-only: {}",
             path.display()
-        ));
+        )));
     }
     write_workspace_file(path, after)
 }
 
-fn write_workspace_file(path: &Path, content: &str) -> Result<(), String> {
+fn write_workspace_file(path: &Path, content: &str) -> Result<(), EditorError> {
     if workspace_tree::is_protected_voice_path(path) {
-        return Err(format!(
+        return Err(EditorError::ProtectedPath(format!(
             "Protected voice data is read-only: {}",
             path.display()
-        ));
+        )));
     }
     fs_io::atomic_write_text(path, content)
 }
 
-pub(crate) fn run_finish(project: &Path, session_id: &str, runner: &CliFn) -> Result<(), String> {
+pub(crate) fn run_finish(
+    project: &Path,
+    session_id: &str,
+    runner: &CliFn,
+) -> Result<(), EditorError> {
     let project = project.to_str().ok_or("Project path is not UTF-8")?;
     runner(
         &[
@@ -751,9 +760,10 @@ mod tests {
             false,
         )
         .unwrap();
-        assert!(
-            matches!(outcome, WriteOutcome::MirrorSkipped(error) if error.contains("changed outside"))
-        );
+        assert!(matches!(
+            outcome,
+            WriteOutcome::MirrorSkipped(EditorError::MirrorConflict)
+        ));
         assert_eq!(fs_io::read_utf8(&mirror).unwrap(), "external edit");
         assert_eq!(
             fs_io::read_utf8(&session_dir.join("before.md")).unwrap(),
@@ -817,7 +827,7 @@ mod tests {
                 clear_recovery: None,
             })
             .unwrap_err();
-            assert!(error.contains("Protected voice data"));
+            assert!(error.to_string().contains("Protected voice data"));
             let outcome = write_session_direct(
                 &base,
                 session_id,
@@ -829,9 +839,10 @@ mod tests {
                 false,
             )
             .unwrap();
-            assert!(
-                matches!(outcome, WriteOutcome::MirrorSkipped(error) if error.contains("Protected voice data"))
-            );
+            assert!(matches!(
+                outcome,
+                WriteOutcome::MirrorSkipped(EditorError::ProtectedPath(_))
+            ));
             assert_eq!(
                 fs_io::read_utf8(&session_dir.join("after.md")).unwrap(),
                 "Local edits"
@@ -847,9 +858,11 @@ mod tests {
                 true,
             )
             .unwrap();
-            assert!(
-                matches!(forced, WriteOutcome::MirrorSkipped(error) if error.contains("Protected voice data"))
-            );
+            assert!(matches!(
+                forced,
+                WriteOutcome::MirrorSkipped(EditorError::ProtectedPath(error))
+                    if error.contains("Protected voice data")
+            ));
             assert_eq!(fs_io::read_utf8(&protected).unwrap(), before);
         }
 
@@ -866,7 +879,10 @@ mod tests {
             false,
         )
         .unwrap_err();
-        assert!(err.contains("immutable baseline has changed"), "{err}");
+        assert!(
+            err.to_string().contains("immutable baseline has changed"),
+            "{err}"
+        );
         assert_eq!(
             fs_io::read_utf8(&session_dir.join("after.md")).unwrap(),
             "Forced protected"
@@ -886,7 +902,7 @@ mod tests {
             false,
         )
         .unwrap_err();
-        assert!(err.contains("already finished"), "{err}");
+        assert!(err.to_string().contains("already finished"), "{err}");
 
         let _ = fs::remove_dir_all(&base);
     }

@@ -76,11 +76,11 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
         .h_full()
         .min_h(0.0)
         .fill(kit.c.bg_base);
-    if !editor.documents.is_empty() && !editor.focus_mode {
+    if !editor.documents.is_empty() && !editor.chrome.focus_mode {
         main = main.child(tabs::build(editor, cx, &kit));
     }
     main = main.child(stage);
-    if editor.focus_mode {
+    if editor.chrome.focus_mode {
         let count = editor
             .active_doc_ref()
             .map(|doc| doc.word_counts().0)
@@ -99,7 +99,7 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
                 .child(
                     Button::new("Exit Focus (Esc / F11)")
                         .variant(ButtonVariant::GhostMuted)
-                        .on_press(|e: &mut Editor| e.focus_mode = false)
+                        .on_press(|e: &mut Editor| e.chrome.focus_mode = false)
                         .build(&kit),
                 ),
         );
@@ -108,7 +108,7 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
     }
 
     let mut split = SplitView::new(main);
-    if !editor.focus_mode {
+    if !editor.chrome.focus_mode {
         split = split
             .sidebar(
                 &editor.sidebar_pane,
@@ -304,7 +304,7 @@ fn build_inspector(editor: &Editor, cx: &Cx<Editor>, kit: &Kit, overlays: &mut V
 }
 
 fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
-    let Some(dialog) = &editor.active_dialog else {
+    let Some(dialog) = &editor.chrome.active_dialog else {
         return;
     };
     match dialog {
@@ -323,16 +323,16 @@ fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
             let mut body = col().w_full().px(16.0).pb(16.0).gap(12.0);
             body = body.child(text(location).font(kit.ty.small).color(kit.c.text_muted));
             body = body.child(
-                TextInput::new(&editor.dialog_input)
+                TextInput::new(&editor.chrome.dialog_input)
                     .label(title)
                     .placeholder(placeholder)
                     .width(None)
-                    .invalid(editor.dialog_error.is_some())
-                    .on_edit(|e: &mut Editor| &mut e.dialog_input)
+                    .invalid(editor.chrome.dialog_error.is_some())
+                    .on_edit(|e: &mut Editor| &mut e.chrome.dialog_input)
                     .on_submit(|e: &mut Editor, tx| e.submit_dialog(tx))
                     .build(kit),
             );
-            if let Some(err) = &editor.dialog_error {
+            if let Some(err) = &editor.chrome.dialog_error {
                 body = body.child(
                     text(err.clone())
                         .font(kit.ty.small)
@@ -374,16 +374,16 @@ fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
                     .color(kit.c.text_muted),
             );
             body = body.child(
-                TextInput::new(&editor.dialog_input)
+                TextInput::new(&editor.chrome.dialog_input)
                     .label("New name")
                     .placeholder("name.md")
                     .width(None)
-                    .invalid(editor.dialog_error.is_some())
-                    .on_edit(|e: &mut Editor| &mut e.dialog_input)
+                    .invalid(editor.chrome.dialog_error.is_some())
+                    .on_edit(|e: &mut Editor| &mut e.chrome.dialog_input)
                     .on_submit(|e: &mut Editor, tx| e.submit_dialog(tx))
                     .build(kit),
             );
-            if let Some(err) = &editor.dialog_error {
+            if let Some(err) = &editor.chrome.dialog_error {
                 body = body.child(
                     text(err.clone())
                         .font(kit.ty.small)
@@ -432,7 +432,7 @@ fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
                 .color(kit.c.text_base)
                 .wrap(),
             );
-            if let Some(err) = &editor.dialog_error {
+            if let Some(err) = &editor.chrome.dialog_error {
                 body = body.child(
                     text(err.clone())
                         .font(kit.ty.small)
@@ -470,7 +470,7 @@ fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
         DialogKind::Recover { title, .. } => {
             let mut body = col().w_full().px(16.0).pb(16.0).gap(12.0)
                 .child(text(format!("An unsaved recovery copy exists for \"{title}\". Restore it to the editor (auto-save may then write it to disk), or keep the disk file and discard the recovery copy.")).font(kit.ty.ui).color(kit.c.text_base).wrap());
-            if let Some(err) = &editor.dialog_error {
+            if let Some(err) = &editor.chrome.dialog_error {
                 body = body.child(
                     text(err.clone())
                         .font(kit.ty.small)
@@ -512,7 +512,7 @@ fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
                     .color(kit.c.text_base)
                     .wrap(),
             );
-            if let Some(error) = &editor.dialog_error {
+            if let Some(error) = &editor.chrome.dialog_error {
                 body = body.child(
                     text(error.clone())
                         .font(kit.ty.small)
@@ -592,7 +592,7 @@ fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
                     .on_edit(|editor: &mut Editor| &mut editor.session_sources)
                     .build(kit),
             );
-            if let Some(err) = &editor.dialog_error {
+            if let Some(err) = &editor.chrome.dialog_error {
                 body = body.child(
                     text(err.clone())
                         .font(kit.ty.small)

@@ -103,23 +103,23 @@ pub(crate) fn build(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
             .variant(IconButtonVariant::GhostMuted)
             .label("File actions")
             .help("File actions")
-            .expanded(editor.file_menu_open)
-            .on_press(|e: &mut Editor| e.file_menu_open = !e.file_menu_open)
+            .expanded(editor.chrome.file_menu_open)
+            .on_press(|e: &mut Editor| e.chrome.file_menu_open = !e.chrome.file_menu_open)
             .build(kit);
         let menu = Menu::new("file-actions")
             .trigger(more_btn)
-            .open(editor.file_menu_open)
-            .on_close(|e: &mut Editor| e.file_menu_open = false)
+            .open(editor.chrome.file_menu_open)
+            .on_close(|e: &mut Editor| e.chrome.file_menu_open = false)
             .item(
                 MenuItem::new("New File…")
                     .shortcut("cmd+n")
                     .on_select(|e: &mut Editor| {
-                        e.file_menu_open = false;
+                        e.chrome.file_menu_open = false;
                         e.open_new_file_dialog();
                     }),
             )
             .item(MenuItem::new("New Folder…").on_select(|e: &mut Editor| {
-                e.file_menu_open = false;
+                e.chrome.file_menu_open = false;
                 e.open_new_folder_dialog();
             }))
             .separator()
@@ -127,7 +127,7 @@ pub(crate) fn build(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
                 MenuItem::new("Pin to Reference Split")
                     .disabled(!is_file)
                     .on_select(|e: &mut Editor| {
-                        e.file_menu_open = false;
+                        e.chrome.file_menu_open = false;
                         e.pin_selected_reference();
                     }),
             )
@@ -135,7 +135,7 @@ pub(crate) fn build(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
                 MenuItem::new("Rename…")
                     .disabled(!can_mutate)
                     .on_select(|e: &mut Editor| {
-                        e.file_menu_open = false;
+                        e.chrome.file_menu_open = false;
                         e.open_rename_dialog();
                     }),
             )
@@ -143,7 +143,7 @@ pub(crate) fn build(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
                 MenuItem::new("Duplicate")
                     .disabled(!is_file || !can_mutate)
                     .on_select(|e: &mut Editor| {
-                        e.file_menu_open = false;
+                        e.chrome.file_menu_open = false;
                         e.duplicate_selected();
                     }),
             )
@@ -152,7 +152,7 @@ pub(crate) fn build(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
                     .danger(true)
                     .disabled(!can_mutate)
                     .on_select(|e: &mut Editor| {
-                        e.file_menu_open = false;
+                        e.chrome.file_menu_open = false;
                         e.open_delete_dialog();
                     }),
             )

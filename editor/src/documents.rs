@@ -1,3 +1,4 @@
+use crate::error::EditorError;
 use crate::{fs_io, prefs, session::Session};
 use rune::TextEdit;
 use serde::{Deserialize, Serialize};
@@ -279,22 +280,25 @@ impl DocumentBuffer {
         }
     }
 
-    pub(crate) fn recovery_contents(&self) -> Result<String, String> {
+    pub(crate) fn recovery_contents(&self) -> Result<String, EditorError> {
         match &self.notes {
             Some(notes) => serde_json::to_string(&SessionRecovery {
                 text: self.edit.text.clone(),
                 notes: notes.text.clone(),
             })
-            .map_err(|error| error.to_string()),
+            .map_err(|error| EditorError::Json {
+                context: error.to_string(),
+            }),
             None => Ok(self.edit.text.clone()),
         }
     }
 
-    pub(crate) fn read_recovery(&self) -> Result<SessionRecovery, String> {
+    pub(crate) fn read_recovery(&self) -> Result<SessionRecovery, EditorError> {
         let text = fs_io::read_utf8(&self.recovery_path())?;
         if self.is_session() {
-            serde_json::from_str(&text)
-                .map_err(|error| format!("Invalid session recovery copy: {error}"))
+            serde_json::from_str(&text).map_err(|error| EditorError::Json {
+                context: format!("Invalid session recovery copy: {error}"),
+            })
         } else {
             Ok(SessionRecovery {
                 text,

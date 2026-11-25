@@ -202,13 +202,15 @@ fn view_settings(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
         );
     Popover::new("view-settings")
         .label("View settings")
-        .open(editor.view_settings_open)
+        .open(editor.chrome.view_settings_open)
         .trigger(
             Button::new("Aa")
-                .on_press(|e: &mut Editor| e.view_settings_open = !e.view_settings_open)
+                .on_press(|e: &mut Editor| {
+                    e.chrome.view_settings_open = !e.chrome.view_settings_open
+                })
                 .build(kit),
         )
         .child(body)
-        .on_close(|e: &mut Editor| e.view_settings_open = false)
+        .on_close(|e: &mut Editor| e.chrome.view_settings_open = false)
         .build(kit, overlays)
 }

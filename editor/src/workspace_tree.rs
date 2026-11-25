@@ -15,7 +15,6 @@ use std::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum FileKind {
     Writing,
     EditorialNote,
@@ -39,12 +38,9 @@ pub(crate) enum SessionStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) struct SessionSummary {
     pub id: String,
     pub source_name: String,
-    pub section: Option<String>,
-    pub origin: String,
     pub created_at: String,
     pub status: SessionStatus,
     pub session_dir: PathBuf,
@@ -394,8 +390,6 @@ struct SessionMetadata {
     kind: String,
     id: String,
     source_draft_name: String,
-    section: Option<String>,
-    origin: String,
     created_at: String,
 }
 
@@ -442,8 +436,6 @@ pub(crate) fn scan_sessions(
             Some(SessionSummary {
                 id: metadata.id,
                 source_name: metadata.source_draft_name,
-                section: metadata.section,
-                origin: metadata.origin,
                 created_at: metadata.created_at,
                 status,
                 session_dir,
@@ -868,8 +860,6 @@ mod tests {
             vec![SessionSummary {
                 id: original_id.to_owned(),
                 source_name: "draft.md".into(),
-                section: Some("essays".into()),
-                origin: "writer-first".into(),
                 created_at: "2026-11-23T14:00:00Z".into(),
                 status: SessionStatus::Editing,
                 session_dir: voice.join("sessions/2026-11-23"),

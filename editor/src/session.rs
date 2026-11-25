@@ -1,3 +1,4 @@
+use crate::error::EditorError;
 use crate::{
     cli::{discover_voice_project, require_draft, require_project, resolve_project, run_cli},
     prefs,
@@ -18,23 +19,25 @@ pub(crate) struct Session {
 }
 
 pub(crate) fn valid_session_id(id: &str) -> bool {
-    // `YYYY-MM-DD[-section][-N]`: a date, then lowercase slug segments only.
-    // This also rejects `/`, `..`, and other path traversal.
-    let bytes = id.as_bytes();
-    if bytes.len() < 10 {
+    // Python `SESSION_ID_RE`: `[0-9]{4}-[0-9]{2}-[0-9]{2}(?:-[a-z0-9]+)*\Z`
+    // A date, then optional `-[a-z0-9]+` segments. Rejects a missing hyphen,
+    // a doubled `--`, and a trailing `-`.
+    let mut parts = id.split('-');
+    let (Some(year), Some(month), Some(day)) = (parts.next(), parts.next(), parts.next()) else {
         return false;
-    }
-    for (i, byte) in bytes.iter().enumerate() {
-        let ok = match i {
-            4 | 7 => *byte == b'-',
-            0..=9 => byte.is_ascii_digit(),
-            _ => byte.is_ascii_digit() || byte.is_ascii_lowercase() || *byte == b'-',
-        };
-        if !ok {
-            return false;
-        }
-    }
-    true
+    };
+    let date_ok = |part: &str, len: usize| {
+        part.len() == len && part.bytes().all(|byte| byte.is_ascii_digit())
+    };
+    date_ok(year, 4)
+        && date_ok(month, 2)
+        && date_ok(day, 2)
+        && parts.all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || byte.is_ascii_lowercase())
+        })
 }
 
 pub(crate) enum LaunchTarget {
@@ -49,11 +52,11 @@ pub(crate) enum LaunchTarget {
     },
 }
 
-pub(crate) fn prepare() -> Result<LaunchTarget, String> {
+pub(crate) fn prepare() -> Result<LaunchTarget, EditorError> {
     parse_launch(env::args().skip(1).collect())
 }
 
-pub(crate) fn parse_launch(args: Vec<String>) -> Result<LaunchTarget, String> {
+pub(crate) fn parse_launch(args: Vec<String>) -> Result<LaunchTarget, EditorError> {
     let mut project = None;
     let mut draft = None;
     let mut session = None;
@@ -98,7 +101,7 @@ pub(crate) fn parse_launch(args: Vec<String>) -> Result<LaunchTarget, String> {
             _ if !arg.starts_with('-') && positional.is_none() => {
                 positional = Some(PathBuf::from(arg))
             }
-            _ => return Err(format!("Unknown argument: {arg}")),
+            _ => return Err(EditorError::message(format!("Unknown argument: {arg}"))),
         }
     }
     if link_draft && draft.is_none() && link_path.is_none() {
@@ -202,13 +205,16 @@ pub(crate) fn parse_launch(args: Vec<String>) -> Result<LaunchTarget, String> {
     Ok(LaunchTarget::Session(loaded))
 }
 
-pub(crate) fn load_session(project: PathBuf, id: String) -> Result<Session, String> {
+pub(crate) fn load_session(project: PathBuf, id: String) -> Result<Session, EditorError> {
     if !valid_session_id(&id) {
-        return Err("Invalid session ID".into());
+        return Err(EditorError::InvalidSessionId(id));
     }
     let folder = project.join("sessions").join(&id);
     if !folder.join("session.json").is_file() {
-        return Err(format!("Session does not exist: {}", folder.display()));
+        return Err(EditorError::message(format!(
+            "Session does not exist: {}",
+            folder.display()
+        )));
     }
     let metadata: Value = serde_json::from_slice(
         &std::fs::read(folder.join("session.json")).map_err(|error| {
@@ -262,6 +268,30 @@ pub(crate) fn load_session(project: PathBuf, id: String) -> Result<Session, Stri
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn session_ids_match_pythons_session_id_re() {
+        for id in [
+            "2026-01-01",
+            "2026-01-01-notes",
+            "2026-01-01-notes-2",
+            "2026-01-01-a1",
+        ] {
+            assert!(valid_session_id(id), "{id}");
+        }
+        for id in [
+            "2026-01-01abc",
+            "2026-01-01--",
+            "2026-01-01-",
+            "2026-01-01-Notes",
+            "2026-1-01",
+            "2026-01-01/notes",
+            "../2026-01-01",
+        ] {
+            assert!(!valid_session_id(id), "{id}");
+        }
+    }
+
     #[test]
     fn opt_in_draft_link_is_persisted_with_baseline_hash() {
         let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

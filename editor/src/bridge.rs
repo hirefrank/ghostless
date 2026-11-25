@@ -3,6 +3,7 @@
 //! Analysis calls stay on this thread. Saves and finishes stay on
 //! [`crate::worker::Worker`] so a slow judge cannot block a write.
 
+use crate::error::EditorError;
 use std::{
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
@@ -240,42 +241,42 @@ pub(crate) enum BridgeReply {
     Build {
         #[allow(dead_code)]
         doc_id: Option<DocId>,
-        result: Result<BuildSummary, String>,
+        result: Result<BuildSummary, EditorError>,
     },
     SessionsList {
-        result: Result<Vec<Value>, String>,
+        result: Result<Vec<Value>, EditorError>,
     },
     SessionStart {
         doc_id: Option<DocId>,
         generation: u64,
-        result: Result<SessionStartResult, String>,
+        result: Result<SessionStartResult, EditorError>,
     },
     SessionFinish {
         doc_id: Option<DocId>,
-        result: Result<Value, String>,
+        result: Result<Value, EditorError>,
     },
     RulesList {
-        result: Result<Value, String>,
+        result: Result<Value, EditorError>,
     },
     RulesDecide {
-        result: Result<Value, String>,
+        result: Result<Value, EditorError>,
     },
     ChecksList {
-        result: Result<Value, String>,
+        result: Result<Value, EditorError>,
     },
     ChecksDecide {
-        result: Result<Value, String>,
+        result: Result<Value, EditorError>,
     },
     SaveNote {
-        result: Result<SaveNoteResult, String>,
+        result: Result<SaveNoteResult, EditorError>,
     },
     Promote {
-        result: Result<Value, String>,
+        result: Result<Value, EditorError>,
     },
 }
 
 pub(crate) trait BridgeBackend: Send {
-    fn call(&mut self, method: &str, params: &Value) -> Result<Value, String>;
+    fn call(&mut self, method: &str, params: &Value) -> Result<Value, EditorError>;
 }
 
 struct Job {
@@ -364,7 +365,7 @@ impl BridgeClient {
         doc_id: Option<DocId>,
         generation: u64,
         op: BridgeOp,
-    ) -> Result<u64, String> {
+    ) -> Result<u64, EditorError> {
         let Some(tx) = &self.tx else {
             return Err("Voice bridge stopped".into());
         };
@@ -390,10 +391,10 @@ impl BridgeClient {
     }
 
     #[cfg(test)]
-    pub(crate) fn recv_timeout(&self, timeout: Duration) -> Result<BridgeReply, String> {
+    pub(crate) fn recv_timeout(&self, timeout: Duration) -> Result<BridgeReply, EditorError> {
         self.rx
             .recv_timeout(timeout)
-            .map_err(|error| error.to_string())
+            .map_err(|error| EditorError::Bridge(error.to_string()))
     }
 
     pub(crate) fn shutdown(&mut self) {
@@ -447,7 +448,11 @@ fn execute(transport: &mut Transport, shared: &Shared, job: Job) -> BridgeReply 
 }
 
 /// One automatic retry after a crash or EOF. A second failure is returned.
-fn roundtrip(transport: &mut Transport, shared: &Shared, payload: &str) -> Result<String, String> {
+fn roundtrip(
+    transport: &mut Transport,
+    shared: &Shared,
+    payload: &str,
+) -> Result<String, EditorError> {
     match transport.exchange(shared, payload) {
         Ok(line) => Ok(line),
         Err(error) if transport.is_transport_failure() => {
@@ -456,7 +461,9 @@ fn roundtrip(transport: &mut Transport, shared: &Shared, payload: &str) -> Resul
             }
             match transport.exchange(shared, payload) {
                 Ok(line) => Ok(line),
-                Err(retry) => Err(format!("Voice bridge unavailable: {retry}")),
+                Err(retry) => Err(EditorError::Bridge(format!(
+                    "Voice bridge unavailable: {retry}"
+                ))),
             }
         }
         Err(error) => Err(error),
@@ -468,7 +475,7 @@ impl Transport {
         matches!(self, Transport::Process { .. })
     }
 
-    fn exchange(&mut self, shared: &Shared, payload: &str) -> Result<String, String> {
+    fn exchange(&mut self, shared: &Shared, payload: &str) -> Result<String, EditorError> {
         if shared.stop.load(Ordering::Relaxed) {
             return Err("Voice bridge stopped".into());
         }
@@ -497,8 +504,10 @@ impl Transport {
     }
 }
 
-fn mock_exchange(backend: &mut dyn BridgeBackend, payload: &str) -> Result<String, String> {
-    let value: Value = serde_json::from_str(payload).map_err(|error| error.to_string())?;
+fn mock_exchange(backend: &mut dyn BridgeBackend, payload: &str) -> Result<String, EditorError> {
+    let value: Value = serde_json::from_str(payload).map_err(|error| EditorError::Json {
+        context: error.to_string(),
+    })?;
     let id = value.get("id").cloned().unwrap_or(Value::Null);
     let method = value
         .get("method")
@@ -507,7 +516,7 @@ fn mock_exchange(backend: &mut dyn BridgeBackend, payload: &str) -> Result<Strin
     let params = value.get("params").cloned().unwrap_or_else(|| json!({}));
     let body = match backend.call(method, &params) {
         Ok(result) => json!({"id": id, "ok": true, "result": result}),
-        Err(error) => json!({"id": id, "ok": false, "error": error}),
+        Err(error) => json!({"id": id, "ok": false, "error": error.to_string()}),
     };
     Ok(body.to_string())
 }
@@ -524,7 +533,10 @@ fn default_command() -> Command {
     command
 }
 
-fn spawn_process(launcher: &dyn Fn() -> Command, shared: &Shared) -> Result<LiveProcess, String> {
+fn spawn_process(
+    launcher: &dyn Fn() -> Command,
+    shared: &Shared,
+) -> Result<LiveProcess, EditorError> {
     if shared.stop.load(Ordering::Relaxed) {
         return Err("Voice bridge stopped".into());
     }
@@ -547,7 +559,7 @@ fn spawn_process(launcher: &dyn Fn() -> Command, shared: &Shared) -> Result<Live
     })
 }
 
-fn write_and_read(live: &mut LiveProcess, payload: &str) -> Result<String, String> {
+fn write_and_read(live: &mut LiveProcess, payload: &str) -> Result<String, EditorError> {
     live.stdin
         .write_all(payload.as_bytes())
         .and_then(|_| live.stdin.write_all(b"\n"))
@@ -573,7 +585,7 @@ fn shutdown_live(live: Option<LiveProcess>, shared: &Shared) {
 }
 
 impl Job {
-    fn payload(&self) -> Result<String, String> {
+    fn payload(&self) -> Result<String, EditorError> {
         let (method, params) = self.op.params()?;
         Ok(json!({"id": self.id, "method": method, "params": params}).to_string())
     }
@@ -636,14 +648,15 @@ impl Job {
         }
     }
 
-    fn fail(self, error: String) -> BridgeReply {
+    fn fail(self, error: impl Into<EditorError>) -> BridgeReply {
+        let error = error.into();
         match self.op {
             BridgeOp::JudgeText { .. } => BridgeReply::Judge {
                 request_id: self.id,
                 doc_id: self.doc_id.unwrap_or(DocId::File(PathBuf::new())),
                 generation: self.generation,
                 section: self.section_label,
-                result: Box::new(JudgeReport::from_error(error)),
+                result: Box::new(JudgeReport::from_error(error.to_string())),
             },
             BridgeOp::Build { .. } => BridgeReply::Build {
                 doc_id: self.doc_id,
@@ -670,12 +683,11 @@ impl Job {
 }
 
 impl BridgeOp {
-    fn params(&self) -> Result<(&'static str, Value), String> {
-        let path = |value: &Path| -> Result<String, String> {
-            value
-                .to_str()
-                .map(str::to_owned)
-                .ok_or_else(|| format!("Path is not UTF-8: {}", value.display()))
+    fn params(&self) -> Result<(&'static str, Value), EditorError> {
+        let path = |value: &Path| -> Result<String, EditorError> {
+            value.to_str().map(str::to_owned).ok_or_else(|| {
+                EditorError::message(format!("Path is not UTF-8: {}", value.display()))
+            })
         };
         Ok(match self {
             BridgeOp::JudgeText {
@@ -787,8 +799,10 @@ struct Envelope {
     error: Option<String>,
 }
 
-fn parse_value<T: for<'de> Deserialize<'de>>(value: Value) -> Result<T, String> {
-    serde_json::from_value(value).map_err(|error| format!("Unexpected bridge payload: {error}"))
+fn parse_value<T: for<'de> Deserialize<'de>>(value: Value) -> Result<T, EditorError> {
+    serde_json::from_value(value).map_err(|error| EditorError::Json {
+        context: format!("Unexpected bridge payload: {error}"),
+    })
 }
 
 fn test_backend() -> Option<Box<dyn BridgeBackend>> {
@@ -807,7 +821,7 @@ struct NullBackend;
 
 #[cfg(test)]
 impl BridgeBackend for NullBackend {
-    fn call(&mut self, method: &str, _params: &Value) -> Result<Value, String> {
+    fn call(&mut self, method: &str, _params: &Value) -> Result<Value, EditorError> {
         Ok(match method {
             "judge_text" => json!({
                 "ok": false,
@@ -834,7 +848,7 @@ mod tests {
     }
 
     impl BridgeBackend for RecordingBackend {
-        fn call(&mut self, method: &str, params: &Value) -> Result<Value, String> {
+        fn call(&mut self, method: &str, params: &Value) -> Result<Value, EditorError> {
             self.calls
                 .lock()
                 .unwrap()

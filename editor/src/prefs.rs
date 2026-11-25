@@ -135,7 +135,7 @@ pub(crate) fn load_store() -> EditorStateStore {
 }
 pub(crate) fn save_store(store: &EditorStateStore) -> Result<(), String> {
     let text = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
-    fs_io::atomic_write_text(&state_path(), &(text + "\n"))
+    fs_io::atomic_write_text(&state_path(), &(text + "\n")).map_err(String::from)
 }
 
 #[cfg(test)]
