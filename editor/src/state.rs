@@ -530,7 +530,13 @@ impl Editor {
                 &project,
                 &session_id,
             ))
-            .map(|link| resolve_mirror_path(&link.workspace_file, self.workspace.as_deref()));
+            .and_then(|link| {
+                (self.workspace.is_some() || link.workspace_file.is_absolute())
+                    .then(|| resolve_mirror_path(&link.workspace_file, self.workspace.as_deref()))
+            });
+        let unresolved_link = self.workspace.is_none() && self.store.session_links
+            .get(&prefs::EditorStateStore::session_link_key(&project, &session_id))
+            .is_some_and(|link| !link.workspace_file.is_absolute());
         let finished = loaded.finished;
         let mut buf = DocumentBuffer::from_session(loaded, true, mirror_path);
         if buf.mirror_path.is_some()
@@ -543,7 +549,9 @@ impl Editor {
         self.active_doc = Some(self.documents.len() - 1);
         self.refresh_diff();
         self.dispatch_next();
-        self.status = if finished {
+        self.status = if unresolved_link {
+            "Linked file unavailable without a workspace; session saves locally".into()
+        } else if finished {
             "Finished".into()
         } else {
             "Ready".into()
@@ -1985,6 +1993,40 @@ mod tests {
         editor.documents.clear();
         editor.workspace = None;
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sidebar_session_with_relative_link_saves_locally_without_workspace() {
+        let base = std::env::temp_dir().join(format!("ghostless-sidebar-relative-{}", std::process::id()));
+        let project = base.join("voice");
+        let session_id = "2026-04-02-notes";
+        let folder = project.join("sessions").join(session_id);
+        fs::create_dir_all(&folder).unwrap();
+        let before = "Original text.\n";
+        fs::write(folder.join("before.md"), before).unwrap();
+        fs::write(folder.join("after.md"), before).unwrap();
+        fs::write(folder.join("session.json"), serde_json::json!({
+            "kind": "ghostless-edit-session", "beforeSha256": fs_io::sha256_text(before)
+        }).to_string()).unwrap();
+        let mut store = prefs::EditorStateStore::default();
+        store.session_links.insert(prefs::EditorStateStore::session_link_key(&project, session_id), prefs::SessionLink {
+            workspace_file: "draft.md".into(), last_synced_sha256: fs_io::sha256_text(before)
+        });
+        let mut editor = Editor::empty_with_handlers(store, ok_runner(), Box::new(execute_write_op), noop_wake());
+        editor.open_session_entry(project, session_id.into());
+        assert!(editor.status.contains("Linked file unavailable"));
+        assert!(editor.active_doc_ref().unwrap().mirror_path.is_none());
+        editor.active_working_edit_mut().text = "Saved locally.\n".into();
+        editor.active_notes_edit_mut().text = "My notes".into();
+        editor.changed_active(&mut Tx::default());
+        editor.save_clicked();
+        drain_until_idle(&mut editor);
+        assert!(!editor.active_doc_ref().unwrap().is_dirty());
+        assert!(editor.status.contains("linked file unavailable"));
+        assert_eq!(fs::read_to_string(folder.join("after.md")).unwrap(), "Saved locally.\n");
+        assert_eq!(fs::read_to_string(folder.join("notes.md")).unwrap(), "My notes");
+        editor.flush_on_exit();
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
