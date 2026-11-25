@@ -34,6 +34,16 @@ pub(crate) fn build(editor: &Editor, cx: &Cx<Editor>, kit: &Kit, locked: bool) -
         .color(kit.c.text_base).caret(kit.c.text_base, kit.selection())
         .placeholder("Start writing…", kit.c.text_faint).spellcheck(editor.store.ui.spellcheck)
         .disabled(locked);
+    if editor.find.open && doc.edit.preedit().is_none()
+        && let Some(range) = editor.find.current_range()
+    {
+        // The spans draw the match. This keyed box lets Rune reveal it while
+        // keyboard focus stays in the find bar.
+        field = field.text_highlight(
+            rune::TextHighlight::new(range.clone(), rune::Color::TRANSPARENT)
+                .key(crate::search::SOURCE_MATCH_KEY),
+        );
+    }
     if !locked {
         field = field.on_edit(|e: &mut Editor| e.active_working_edit_mut())
             .on_input_key(|e: &mut Editor, key, tx: &mut Tx| {

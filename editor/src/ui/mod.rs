@@ -45,7 +45,7 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
             .child(col().w(1.0).h_full().fill(kit.c.border_muted))
             .child(col().grow(1.0).w(0.0).min_h(0.0).child(stage))
     } else { stage };
-    let stage = if editor.find.open {
+    let stage = if editor.find.open && editor.view_mode != ViewMode::Compare && editor.active_doc_ref().is_some() {
         col().grow(1.0).w_full().min_h(0.0).child(stage)
             .child(find_bar::build(editor, &kit).pin(None, Some(8.0), Some(8.0), None))
     } else { stage };

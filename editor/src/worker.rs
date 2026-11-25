@@ -1,17 +1,23 @@
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}, mpsc},
     thread,
 };
 use serde_json::Value;
-use crate::{documents::DocId, fs_io, session::valid_session_id, workspace_tree};
+use crate::{
+    documents::DocId, fs_io,
+    quick_open::{FolderMatch, search_workspace_files},
+    session::valid_session_id,
+    workspace_tree::{self, WorkspaceEntry},
+};
 
 pub(crate) type CliFn = dyn Fn(&[&str], Option<&str>) -> Result<String, String> + Send;
 pub(crate) type CliRunner = Box<CliFn>;
 pub(crate) type WriteFn = dyn Fn(&WriteOp) -> Result<WriteOutcome, String> + Send;
 pub(crate) type WriteRunner = Box<WriteFn>;
-pub(crate) type WakeFn = Box<dyn Fn() + Send>;
+pub(crate) type WakeFn = Box<dyn Fn() + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InFlight {
@@ -43,7 +49,6 @@ pub(crate) enum WriteOp {
 }
 
 pub(crate) enum WorkerRequest {
-    FolderSearch { request_id: u64, files: Vec<workspace_tree::WorkspaceEntry>, query: String },
     WriteFile {
         doc_id: DocId,
         generation: u64,
@@ -87,7 +92,6 @@ pub(crate) enum WriteOutcome {
 }
 
 pub(crate) enum WorkerReply {
-    FolderSearch { request_id: u64, matches: Vec<crate::quick_open::FolderMatch> },
     Saved {
         doc_id: DocId,
         generation: u64,
@@ -106,10 +110,98 @@ pub(crate) enum WorkerReply {
     },
 }
 
+struct SearchRequest {
+    id: u64,
+    files: Vec<WorkspaceEntry>,
+    buffers: HashMap<PathBuf, Option<String>>,
+    query: String,
+}
+
+pub(crate) struct SearchReply {
+    pub(crate) id: u64,
+    pub(crate) matches: Vec<FolderMatch>,
+}
+
+pub(crate) struct SearchWorker {
+    tx: Option<mpsc::SyncSender<()>>,
+    pending: Arc<Mutex<Option<SearchRequest>>>,
+    rx: mpsc::Receiver<SearchReply>,
+    latest: Arc<AtomicU64>,
+}
+
+impl SearchWorker {
+    fn spawn(wake: Arc<WakeFn>) -> Self {
+        Self::spawn_with_search(wake, |request, cancelled| {
+            search_workspace_files(&request.files, &request.buffers, &request.query, 200, cancelled)
+        })
+    }
+
+    fn spawn_with_search(
+        wake: Arc<WakeFn>,
+        search: impl Fn(&SearchRequest, &dyn Fn() -> bool) -> Vec<FolderMatch> + Send + 'static,
+    ) -> Self {
+        let (tx, requests) = mpsc::sync_channel(1);
+        let (replies, rx) = mpsc::channel();
+        let pending = Arc::new(Mutex::new(None::<SearchRequest>));
+        let queue = Arc::clone(&pending);
+        let latest = Arc::new(AtomicU64::new(0));
+        let generation = Arc::clone(&latest);
+        thread::spawn(move || {
+            while requests.recv().is_ok() {
+                let Some(request) = queue.lock().unwrap().take() else { continue };
+                let cancelled = || request.id != generation.load(Ordering::Relaxed);
+                if cancelled() {
+                    continue;
+                }
+                let matches = search(&request, &cancelled);
+                if !cancelled() && replies.send(SearchReply { id: request.id, matches }).is_ok() {
+                    wake();
+                }
+            }
+        });
+        Self { tx: Some(tx), rx, pending, latest }
+    }
+
+    pub(crate) fn submit(
+        &self,
+        files: Vec<WorkspaceEntry>,
+        buffers: HashMap<PathBuf, Option<String>>,
+        query: String,
+    ) -> Result<u64, String> {
+        let id = self.latest.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        let tx = self.tx.as_ref().ok_or("Workspace search is unavailable")?;
+        *self.pending.lock().unwrap() = Some(SearchRequest { id, files, buffers, query });
+        match tx.try_send(()) {
+            Ok(()) | Err(mpsc::TrySendError::Full(())) => Ok(id),
+            Err(mpsc::TrySendError::Disconnected(())) => {
+                self.pending.lock().unwrap().take();
+                Err("Workspace search is unavailable".to_owned())
+            }
+        }
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.latest.fetch_add(1, Ordering::Relaxed);
+        self.pending.lock().unwrap().take();
+    }
+
+    pub(crate) fn try_recv(&self) -> Result<SearchReply, mpsc::TryRecvError> {
+        self.rx.try_recv()
+    }
+
+    fn shutdown(&mut self) {
+        // A cancelled reader may still be inside filesystem I/O. It has no writes
+        // to flush, so closing the editor does not wait on that read.
+        self.cancel();
+        self.tx.take();
+    }
+}
+
 pub(crate) struct Worker {
     pub(crate) tx: Option<mpsc::Sender<WorkerRequest>>,
     pub(crate) rx: mpsc::Receiver<WorkerReply>,
     pub(crate) join: Option<thread::JoinHandle<()>>,
+    pub(crate) search: SearchWorker,
 }
 
 impl Worker {
@@ -118,14 +210,13 @@ impl Worker {
         writer: WriteRunner,
         wake: WakeFn,
     ) -> Self {
+        let wake = Arc::new(wake);
+        let search = SearchWorker::spawn(Arc::clone(&wake));
         let (req_tx, req_rx) = mpsc::channel::<WorkerRequest>();
         let (rep_tx, rep_rx) = mpsc::channel::<WorkerReply>();
         let join = thread::spawn(move || {
             while let Ok(request) = req_rx.recv() {
                 let reply = match request {
-                    WorkerRequest::FolderSearch { request_id, files, query } => WorkerReply::FolderSearch {
-                        request_id, matches: crate::quick_open::search_workspace_files(&files, &query, 200),
-                    },
                     WorkerRequest::WriteFile {
                         doc_id,
                         generation,
@@ -232,6 +323,7 @@ impl Worker {
             tx: Some(req_tx),
             rx: rep_rx,
             join: Some(join),
+            search,
         }
     }
 
@@ -252,6 +344,7 @@ impl Worker {
     }
 
     pub(crate) fn shutdown(&mut self) {
+        self.search.shutdown();
         self.tx.take();
         if let Some(handle) = self.join.take() {
             let _ = handle.join();
@@ -387,6 +480,65 @@ pub(crate) fn run_finish(project: &Path, session_id: &str, runner: &CliFn) -> Re
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn blocked_search_does_not_delay_save_or_finish_and_skips_superseded_queries() {
+        use std::time::Duration;
+
+        let wait = Duration::from_secs(5);
+        let (started, searches) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let mut worker = Worker::spawn_with_handlers(
+            Box::new(|_, _| Ok(String::new())),
+            Box::new(|_| Ok(WriteOutcome::Local)),
+            Box::new(|| {}),
+        );
+        worker.search.shutdown();
+        worker.search = SearchWorker::spawn_with_search(
+            Arc::new(Box::new(|| {})),
+            move |request, cancelled| {
+                started.send(request.query.clone()).unwrap();
+                if request.query == "old" {
+                    blocked.recv_timeout(wait).unwrap();
+                    assert!(cancelled());
+                }
+                Vec::new()
+            },
+        );
+        worker.search.submit(Vec::new(), HashMap::new(), "old".into()).unwrap();
+        assert_eq!(searches.recv_timeout(wait).unwrap(), "old");
+        worker.search.submit(Vec::new(), HashMap::new(), "skipped".into()).unwrap();
+        let latest = worker.search.submit(Vec::new(), HashMap::new(), "latest".into()).unwrap();
+
+        let path = PathBuf::from("worker-search-test.md");
+        let doc_id = DocId::File(path.clone());
+        worker.send(WorkerRequest::WriteFile {
+            doc_id: doc_id.clone(),
+            generation: 1,
+            path,
+            content: "draft".into(),
+            clear_recovery: None,
+        }).unwrap();
+        worker.send(WorkerRequest::Finish {
+            doc_id,
+            generation: 1,
+            project: std::env::temp_dir(),
+            session_id: "session".into(),
+            before_sha256: None,
+            snapshot: None,
+            mirror_path: None,
+            mirror_expected_sha256: None,
+        }).unwrap();
+        let save = worker.rx.recv_timeout(wait);
+        let finish = worker.rx.recv_timeout(wait);
+        release.send(()).unwrap();
+
+        assert!(matches!(save, Ok(WorkerReply::Saved { result: Ok(WriteOutcome::Local), .. })));
+        assert!(matches!(finish, Ok(WorkerReply::Finished { result: Ok(()), .. })));
+        assert_eq!(searches.recv_timeout(wait).unwrap(), "latest");
+        assert_eq!(worker.search.rx.recv_timeout(wait).unwrap().id, latest);
+        worker.shutdown();
+    }
 
     #[test]
     fn write_session_direct_writes_atomically_and_enforces_receipt_and_baseline_guards() {

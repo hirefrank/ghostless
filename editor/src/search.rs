@@ -1,6 +1,8 @@
 use std::ops::Range;
 
-use rune::{TextEdit, Tx};
+use rune::TextEdit;
+
+pub(crate) const SOURCE_MATCH_KEY: &str = "find-source-match";
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct FindState {
@@ -12,6 +14,8 @@ pub(crate) struct FindState {
     pub whole_word: bool,
     pub matches: Vec<Range<usize>>,
     pub current: Option<usize>,
+    pub notice: Option<String>,
+    source: String,
 }
 
 fn word_char(c: char) -> bool {
@@ -24,44 +28,141 @@ pub(crate) fn find_matches(
     case_sensitive: bool,
     whole_word: bool,
 ) -> Vec<Range<usize>> {
-    if query.is_empty() {
-        return Vec::new();
-    }
+    match_ranges(text, query, case_sensitive, whole_word).collect()
+}
+
+pub(crate) fn match_ranges<'a>(
+    mut text: &'a str,
+    query: &str,
+    case_sensitive: bool,
+    whole_word: bool,
+) -> impl Iterator<Item = Range<usize>> + 'a {
     let needle = if case_sensitive {
         query.to_owned()
     } else {
-        query.to_lowercase()
+        query.chars().flat_map(char::to_lowercase).collect()
     };
-    let mut result = Vec::new();
+    if needle.is_empty() {
+        text = "";
+    }
     let mut next_start = 0;
-    for (start, _) in text.char_indices() {
-        if start < next_start {
-            continue;
+    text.char_indices().filter_map(move |(start, _)| {
+        if start < next_start
+            || (whole_word && text[..start].chars().next_back().is_some_and(word_char))
+        {
+            return None;
         }
-        let mut folded = String::new();
-        for (offset, c) in text[start..].char_indices() {
-            if case_sensitive {
-                folded.push(c);
-            } else {
-                folded.extend(c.to_lowercase());
-            }
-            if !needle.starts_with(&folded) {
-                break;
-            }
-            if folded == needle {
-                let end = start + offset + c.len_utf8();
-                let boundary = !whole_word
-                    || (!text[..start].chars().next_back().is_some_and(word_char)
-                        && !text[end..].chars().next().is_some_and(word_char));
-                if boundary {
-                    result.push(start..end);
-                    next_start = end;
-                }
-                break;
-            }
+        let tail = &text[start..];
+        let len = if case_sensitive {
+            tail.starts_with(&needle).then_some(needle.len())?
+        } else {
+            folded_prefix_len(tail, &needle)?
+        };
+        let end = start + len;
+        if whole_word && text[end..].chars().next().is_some_and(word_char) {
+            return None;
+        }
+        next_start = end;
+        Some(start..end)
+    })
+}
+
+fn folded_prefix_len(text: &str, mut needle: &str) -> Option<usize> {
+    for (offset, character) in text.char_indices() {
+        for lower in character.to_lowercase() {
+            needle = needle.strip_prefix(lower)?;
+        }
+        if needle.is_empty() {
+            return Some(offset + character.len_utf8());
         }
     }
-    result
+    None
+}
+
+impl FindState {
+    pub(crate) fn current_range(&self) -> Option<&Range<usize>> {
+        self.current.and_then(|index| self.matches.get(index))
+    }
+
+    pub(crate) fn refresh(&mut self, text: &str, anchor: usize) {
+        let matches = find_matches(text, &self.query.text, self.case_sensitive, self.whole_word);
+        self.set_matches(text, matches, None);
+        self.select_at_or_after(anchor);
+    }
+
+    pub(crate) fn set_matches(
+        &mut self,
+        text: &str,
+        matches: Vec<Range<usize>>,
+        current: Option<usize>,
+    ) {
+        self.matches = matches;
+        self.current = current;
+        self.notice = None;
+        if self.source != text {
+            self.source.clear();
+            self.source.push_str(text);
+        }
+    }
+
+    pub(crate) fn document_changed(&mut self, text: &str, caret: usize) {
+        if self.source == text {
+            return;
+        }
+        let anchor = self.current_range().map_or(caret, |range| {
+            // Preserve the occurrence in the unchanged prefix or suffix, even if an
+            // edit before it added or removed other matches. Inside the edit, start
+            // looking at the first changed byte.
+            let prefix = common_bytes(self.source.bytes(), text.bytes());
+            let suffix = common_bytes(
+                self.source.as_bytes()[prefix..].iter().rev().copied(),
+                text.as_bytes()[prefix..].iter().rev().copied(),
+            );
+            if range.end <= prefix {
+                range.start
+            } else if range.start >= self.source.len() - suffix && range.start >= prefix {
+                text.len() - (self.source.len() - range.start)
+            } else {
+                prefix
+            }
+        });
+        self.refresh(text, anchor);
+    }
+
+    fn select_at_or_after(&mut self, anchor: usize) {
+        let index = self.matches.partition_point(|range| range.end <= anchor);
+        self.current = (!self.matches.is_empty()).then_some(if index == self.matches.len() {
+            0
+        } else {
+            index
+        });
+    }
+
+    pub(crate) fn select_after_replacement(&mut self, replaced: Range<usize>) {
+        let next = self
+            .matches
+            .partition_point(|range| range.start < replaced.end);
+        self.current = if next < self.matches.len() {
+            Some(next)
+        } else {
+            self.matches
+                .first()
+                .filter(|range| range.end <= replaced.start)
+                .map(|_| 0)
+        };
+    }
+
+    pub(crate) fn close(&mut self) {
+        self.open = false;
+        self.matches.clear();
+        self.current = None;
+        self.notice = None;
+        self.source = String::new();
+    }
+}
+
+fn common_bytes(a: impl Iterator<Item = u8>, b: impl Iterator<Item = u8>) -> usize {
+    a.zip(b).take_while(|(a, b)| a == b).count()
 }
 
 pub(crate) fn next_match(
@@ -130,14 +231,6 @@ pub(crate) fn replace_all(
         }
     });
     ranges.len()
-}
-
-pub(crate) fn open_find_with_query(find: &mut FindState, query: &str, text: &str, tx: &mut Tx) {
-    find.open = true;
-    find.query.replace_text(query);
-    find.matches = find_matches(text, query, find.case_sensitive, find.whole_word);
-    find.current = (!find.matches.is_empty()).then_some(0);
-    tx.focus("find-query", false);
 }
 
 #[cfg(test)]

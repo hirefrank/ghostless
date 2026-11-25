@@ -32,15 +32,8 @@ pub(crate) fn build(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> Toolb
     )
     .width(Some(240.0))
     .label("Editor mode")
-    .on_pick(|e: &mut Editor, index, _tx: &mut Tx| {
-        let mode = ViewMode::from_index(index);
-        if mode == ViewMode::Compare && !e.active_has_baseline() {
-            return;
-        }
-        e.view_mode = mode;
-        if mode == ViewMode::Compare {
-            e.refresh_diff();
-        }
+    .on_pick(|e: &mut Editor, index, tx: &mut Tx| {
+        e.set_view_mode(ViewMode::from_index(index), tx);
     });
     if !has_baseline {
         modes = modes.segment_state(2, State::Disabled);
