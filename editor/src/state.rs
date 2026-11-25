@@ -1715,10 +1715,7 @@ fn classify_file_flags(
     if let Some(voice) = voice_project
         && let Ok(rel) = path.strip_prefix(voice)
     {
-        if rel
-            .parent()
-            .is_some_and(|p| p.starts_with("corpus") || p.starts_with("transcripts"))
-        {
+        if rel.parent().is_some_and(workspace_tree::is_corpus_tree) {
             lockable = true;
         }
         if workspace_tree::immutable(rel) {

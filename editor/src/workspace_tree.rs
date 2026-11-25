@@ -233,6 +233,17 @@ pub(crate) fn immutable(path: &Path) -> bool {
     }
 }
 
+pub(crate) fn is_corpus_tree(relative: &Path) -> bool {
+    relative.starts_with("corpus") || relative.starts_with("transcripts")
+}
+
+fn is_protected_voice_tree(relative: &Path) -> bool {
+    is_corpus_tree(relative)
+        || ["gold", "holdouts", "sessions"]
+            .iter()
+            .any(|name| relative.starts_with(name))
+}
+
 fn file_kind(path: &Path, voice_relative: Option<&Path>) -> FileKind {
     if let Some(relative) = voice_relative {
         if immutable(relative) {
@@ -241,10 +252,7 @@ fn file_kind(path: &Path, voice_relative: Option<&Path>) -> FileKind {
         if matches!(relative.to_str(), Some("STYLE.md" | "AUDIENCE.md")) {
             return FileKind::EditorialNote;
         }
-        if relative
-            .parent()
-            .is_some_and(|parent| parent.starts_with("corpus") || parent.starts_with("transcripts"))
-        {
+        if relative.parent().is_some_and(is_corpus_tree) {
             return FileKind::Corpus;
         }
     }
@@ -516,17 +524,22 @@ pub(crate) fn create_folder(root: &Path, parent_rel: &str, name: &str) -> Result
     Ok(path)
 }
 
+fn is_protected_voice_path(path: &Path) -> bool {
+    path.ancestors().skip(1).any(|base| {
+        path.strip_prefix(base).is_ok_and(|relative| {
+            (is_protected_voice_tree(relative) || immutable(relative))
+                && base.join("manifest.json").is_file()
+                && manifest_is_ghostless(base)
+        })
+    })
+}
+
 fn ensure_creation_allowed(path: &Path) -> Result<(), String> {
     let parent = path.parent().ok_or("Destination has no parent")?;
     let parent = parent.canonicalize().map_err(|error| path_error(parent, error))?;
     let target = parent.join(path.file_name().ok_or("Destination has no name")?);
-    for base in parent.ancestors() {
-        if is_regular_file(&base.join("manifest.json")) && manifest_is_ghostless(base)
-            && let Ok(relative) = target.strip_prefix(base)
-            && ["gold", "holdouts", "corpus", "sessions"].iter().any(|name| relative.starts_with(name))
-        {
-            return Err(format!("Cannot create files in protected voice data: {}", target.display()));
-        }
+    if is_protected_voice_path(&target) {
+        return Err(format!("Protected voice data: {}", target.display()));
     }
     Ok(())
 }
@@ -537,14 +550,7 @@ fn ensure_mutable(path: &Path) -> Result<(), String> {
         .file_type();
     let protected = |path: &Path| {
         path.file_name() == Some(OsStr::new("manifest.json"))
-            || path.ancestors().skip(1).any(|base| {
-                if !is_regular_file(&base.join("manifest.json")) || !manifest_is_ghostless(base) {
-                    return false;
-                }
-                path.strip_prefix(base).is_ok_and(|relative| {
-                    immutable(relative) || ["gold", "holdouts", "corpus"].iter().any(|name| relative.starts_with(name))
-                })
-            })
+            || is_protected_voice_path(path)
     };
     if protected(path) || path.canonicalize().is_ok_and(|resolved| protected(&resolved)) {
         return Err(format!("Protected workspace file: {}", path.display()));
@@ -577,6 +583,7 @@ pub(crate) fn rename_entry(root: &Path, rel_path: &str, new_name: &str) -> Resul
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(path_error(&target, error)),
         }
+        ensure_creation_allowed(&target)?;
         fs::rename(&source, &target).map_err(|error| path_error(&source, error))?;
     }
     Ok(target)
@@ -793,6 +800,8 @@ mod tests {
         assert_eq!(corpus.kind, FileKind::Corpus);
         assert_eq!(corpus.abs_path, voice.join("corpus/gold/a.md"));
         assert_eq!(corpus.rel_path, "voice/corpus/gold/a.md");
+        let transcript = tree.get("voice/transcripts/a.txt").unwrap();
+        assert_eq!(transcript.data.as_ref().unwrap().kind, FileKind::Corpus);
 
         let tree = scan_workspace(&workspace.0, Some(&voice), true);
         assert!(tree.contains("legacy/old.py"));
@@ -919,15 +928,29 @@ mod tests {
             assert!(create_folder(root, "", name).is_err());
             assert!(rename_entry(root, "seeds/demo/NEXT.md", name).is_err());
         }
-        for parent in ["voice/gold", "voice/holdouts", "voice/corpus", "voice/corpus/gold", "voice/sessions", "voice/sessions/2026-11-23"] {
+        for parent in [
+            "voice/gold",
+            "voice/holdouts",
+            "voice/corpus",
+            "voice/corpus/gold",
+            "voice/transcripts",
+            "voice/sessions",
+            "voice/sessions/2026-11-23",
+        ] {
             assert!(create_file(root, parent, "new").is_err(), "{parent}");
             assert!(create_folder(root, parent, "new").is_err(), "{parent}");
             assert!(!root.join(parent).join("new.md").exists());
             assert!(!root.join(parent).join("new").exists());
         }
-        assert!(create_file(&root.join("voice/corpus"), "", "new").is_err());
+        for parent in ["voice/corpus", "voice/transcripts"] {
+            let opened_subfolder = root.join(parent);
+            assert!(create_file(&opened_subfolder, "", "new").is_err(), "{parent}");
+            assert!(create_folder(&opened_subfolder, "", "new").is_err(), "{parent}");
+        }
         assert!(delete_entry(&root.join("voice/corpus"), "gold/a.md").is_err());
         assert!(create_file(root, "voice/drafts", "new").is_ok());
+        assert!(create_folder(root, "", "transcripts").is_ok());
+        assert!(create_file(root, "transcripts", "ordinary").is_ok());
         assert!(create_file(root, "../escape", "draft").is_err());
         assert!(delete_entry(root, "").is_err());
         assert!(delete_entry(root, "seeds/../voice/manifest.json").is_err());
@@ -940,9 +963,11 @@ mod tests {
             "voice/gold/a.md",
             "voice/holdouts/b.markdown",
             "voice/corpus/gold/a.md",
+            "voice/transcripts/a.txt",
             "voice/gold",
             "voice/holdouts",
             "voice/corpus",
+            "voice/transcripts",
             "voice/sessions/2026-11-23/before.md",
             "voice/sessions/2026-11-23/after.md",
             "voice/sessions/2026-11-23/notes.md",
