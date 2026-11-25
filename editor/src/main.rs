@@ -43,14 +43,20 @@ fn main() {
     };
     let app = App::new(spec);
     let handle = app.handle();
+    let wake_handle = handle.clone();
     let app = app
-        .init(move || Editor::new(session, Box::new(move || handle.wake())))
+        .keep_running()
+        .init(move || {
+            let mut editor = Editor::new(session, Box::new(move || wake_handle.wake()));
+            editor.reopen_window = Some(Box::new(move || handle.show()));
+            editor
+        })
         .on_focus(|editor, focused, _| {
             if !focused {
                 editor.flush_autosave_buffers();
             }
         })
-        .on_close(|editor, _| editor.flush_on_exit())
-        .on_quit(|editor, _| editor.flush_on_exit());
+        .on_close(on_window_close)
+        .on_quit(|editor, _| { editor.flush_on_exit(); });
     app.run();
 }

@@ -85,6 +85,7 @@ pub(crate) struct Editor {
     pub(crate) pending_close: Option<DocId>,
     pub(crate) last_window_title: Option<String>,
     pub(crate) flushed: bool,
+    pub(crate) reopen_window: Option<Box<dyn Fn()>>,
     pub(crate) status: String,
     pub(crate) worker: Worker,
 }
@@ -184,6 +185,7 @@ impl Editor {
             pending_close: None,
             last_window_title: None,
             flushed: false,
+            reopen_window: None,
             status,
             worker,
         }
@@ -233,6 +235,7 @@ impl Editor {
             pending_close: None,
             last_window_title: None,
             flushed: false,
+            reopen_window: None,
             status: "Ready".into(),
             worker,
         }
@@ -1567,17 +1570,30 @@ impl Editor {
         success
     }
 
-    pub(crate) fn flush_on_exit(&mut self) {
+    pub(crate) fn flush_on_exit(&mut self) -> bool {
         if self.flushed {
-            return;
+            return true;
+        }
+        if !self.drain_autosave_work() {
+            return false;
         }
         self.flushed = true;
-        self.drain_autosave_work();
         if self.workspace.is_some() {
             self.save_open_tabs_pref();
             self.save_ui_prefs_if_workspace();
         }
         self.worker.shutdown();
+        true
+    }
+}
+
+pub(crate) fn on_window_close(editor: &mut Editor, tx: &mut Tx) {
+    if editor.flush_on_exit() {
+        tx.quit();
+    } else {
+        let reason = editor.status.strip_prefix("Workspace not changed: ").unwrap_or(&editor.status);
+        editor.status = format!("Could not close: {reason}");
+        if let Some(reopen) = &editor.reopen_window { reopen(); }
     }
 }
 
@@ -2052,6 +2068,52 @@ mod tests {
     }
 
     #[test]
+    fn window_close_reopens_when_recovery_write_fails() {
+        let mut store = prefs::EditorStateStore::default();
+        store.ui.autosave_workspace_files = false;
+        let mut editor = Editor::empty_with_handlers(store, ok_runner(), Box::new(|_| Err("recovery unavailable".into())), noop_wake());
+        editor.documents.push(DocumentBuffer::from_workspace_file(PathBuf::from("/tmp/recovery-draft.md"), "draft.md".into(), "before".into(), false, false, true, None));
+        editor.active_doc = Some(0);
+        let reopened = Arc::new(Mutex::new(false));
+        let signal = reopened.clone();
+        editor.reopen_window = Some(Box::new(move || *signal.lock().unwrap() = true));
+        editor.active_working_edit_mut().text = "unsaved".into();
+        editor.changed_active(&mut Tx::default());
+        on_window_close(&mut editor, &mut Tx::default());
+        assert!(*reopened.lock().unwrap());
+        assert!(editor.documents[0].is_dirty());
+        assert!(!editor.flushed);
+        assert!(editor.status.contains("recovery unavailable"));
+        editor.documents.clear();
+    }
+
+    #[test]
+    fn window_close_reopens_on_save_failure_and_retries() {
+        let calls = Arc::new(Mutex::new(0));
+        let attempts = calls.clone();
+        let writer: WriteRunner = Box::new(move |_| {
+            let mut count = attempts.lock().unwrap();
+            *count += 1;
+            if *count == 1 { Err("disk full".into()) } else { Ok(()) }
+        });
+        let reopened = Arc::new(Mutex::new(0));
+        let reopen_count = reopened.clone();
+        let mut editor = Editor::with_handlers(test_session(), prefs::EditorStateStore::default(), ok_runner(), writer, noop_wake());
+        editor.reopen_window = Some(Box::new(move || *reopen_count.lock().unwrap() += 1));
+        editor.active_working_edit_mut().text = "Keep this edit".into();
+        editor.changed_active(&mut Tx::default());
+        on_window_close(&mut editor, &mut Tx::default());
+        assert_eq!(*reopened.lock().unwrap(), 1);
+        assert!(!editor.flushed);
+        assert!(editor.documents[0].is_dirty());
+        assert!(editor.status.contains("disk full"));
+        on_window_close(&mut editor, &mut Tx::default());
+        assert_eq!(*calls.lock().unwrap(), 2);
+        assert!(editor.flushed);
+        assert!(!editor.documents[0].is_dirty());
+    }
+
+    #[test]
     fn flush_on_exit_saves_dirty_edits_before_autosave_timer_and_is_idempotent() {
         let writes: Arc<Mutex<Vec<WriteOp>>> = Arc::new(Mutex::new(Vec::new()));
         let recorded = writes.clone();
@@ -2172,9 +2234,9 @@ mod tests {
         assert!(!poll(&mut editor, 10.0, &mut tx));
         assert_eq!(*calls.lock().unwrap(), 1);
 
-        editor.flush_on_exit();
-        editor.flush_on_exit();
-        assert_eq!(*calls.lock().unwrap(), 2);
+        assert!(!editor.flush_on_exit());
+        assert!(!editor.flush_on_exit());
+        assert_eq!(*calls.lock().unwrap(), 3);
     }
 
     #[test]
