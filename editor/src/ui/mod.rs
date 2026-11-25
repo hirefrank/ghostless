@@ -388,6 +388,9 @@ fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
                     .color(kit.c.text_base)
                     .wrap(),
             );
+            if let Some(error) = &editor.dialog_error {
+                body = body.child(text(error.clone()).font(kit.ty.small).color(kit.c.danger.fg).wrap());
+            }
             body = body.child(Divider::horizontal().build(kit));
             body = body.child(
                 row()

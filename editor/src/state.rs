@@ -18,7 +18,7 @@ use crate::{
     session::{LaunchTarget, Session, load_session},
     worker::{
         CliRunner, InFlight, WakeFn, Worker, WorkerReply, WorkerRequest, WriteRunner,
-        execute_write_op,
+        WriteOutcome, clear_recovery_copy, execute_write_op,
     },
     workspace_tree::{self, FileKind, SessionSummary, WorkspaceEntry},
 };
@@ -102,6 +102,7 @@ impl Editor {
                     editor.sessions =
                         workspace_tree::scan_sessions(voice, &editor.store.session_links);
                 }
+                editor.prompt_recovery_if_needed();
                 editor
             }
             LaunchTarget::Workspace {
@@ -158,13 +159,7 @@ impl Editor {
         } else {
             "Ready".into()
         };
-        let mut buf = DocumentBuffer::from_session(session, true, mirror_path);
-        if buf.mirror_path.is_some()
-            && let Some((project, id)) = buf.voice_project.as_ref().zip(buf.session_id.as_ref())
-            && let Some(link) = store.session_links.get(&prefs::EditorStateStore::session_link_key(project, id))
-        {
-            buf.last_disk_sha256 = link.last_synced_sha256.clone();
-        }
+        let buf = DocumentBuffer::from_session(session, true, mirror_path);
         let sidebar_pane = PaneState::new(250.0).range(180.0, 420.0).collapsed();
         let inspector_pane = PaneState::new(310.0).range(240.0, 480.0);
         Self {
@@ -479,7 +474,7 @@ impl Editor {
 
     fn prompt_recovery_if_needed(&mut self) {
         let Some(doc) = self.active_doc_ref() else { return; };
-        if doc.is_session() || doc.read_only || doc.is_dirty() || !doc.recovery_path().is_file() { return; }
+        if doc.read_only || doc.is_dirty() || !doc.recovery_path().is_file() { return; }
         if self.active_dialog.is_none() {
             self.active_dialog = Some(DialogKind::Recover { doc_id: doc.id.clone(), title: doc.title.clone() });
         } else {
@@ -494,11 +489,16 @@ impl Editor {
         let doc = &mut self.documents[pos];
         let recovery = doc.recovery_path();
         if restore {
-            match fs_io::read_utf8(&recovery) {
-                Ok(text) => {
-                    doc.edit = TextEdit::new(text);
+            match doc.read_recovery() {
+                Ok(snapshot) => {
+                    doc.edit = TextEdit::new(snapshot.text);
+                    if doc.is_session() {
+                        doc.notes = Some(TextEdit::new(snapshot.notes));
+                    }
                     doc.generation += 1;
                     doc.pinned = true;
+                    doc.last_saved_label = Some("Unsaved".into());
+                    self.refresh_diff();
                     self.status = "Recovered unsaved changes; save when ready".into();
                 }
                 Err(error) => { self.dialog_error = Some(error); return; }
@@ -520,6 +520,7 @@ impl Editor {
         if let Some(pos) = self.documents.iter().position(|d| d.id == id) {
             self.documents[pos].pinned = true;
             self.switch_active_doc(pos);
+            self.prompt_recovery_if_needed();
             return;
         }
         let loaded = match load_session(project.clone(), session_id.clone()) {
@@ -544,12 +545,7 @@ impl Editor {
         let unknown_link = session_link.is_some_and(|link| link.last_synced_sha256.is_empty());
         let unresolved_link = self.workspace.is_none() && session_link.is_some_and(|link| !link.workspace_file.is_absolute());
         let finished = loaded.finished;
-        let mut buf = DocumentBuffer::from_session(loaded, true, mirror_path);
-        if buf.mirror_path.is_some()
-            && let Some(link) = self.store.session_links.get(&prefs::EditorStateStore::session_link_key(&project, &session_id))
-        {
-            buf.last_disk_sha256 = link.last_synced_sha256.clone();
-        }
+        let buf = DocumentBuffer::from_session(loaded, true, mirror_path);
         self.flush_leaving_doc();
         self.documents.push(buf);
         self.active_doc = Some(self.documents.len() - 1);
@@ -564,6 +560,7 @@ impl Editor {
         } else {
             "Ready".into()
         };
+        self.prompt_recovery_if_needed();
     }
 
     pub(crate) fn open_voice_doc(&mut self, filename: &str, read_only: bool) {
@@ -644,6 +641,7 @@ impl Editor {
     pub(crate) fn activate_tab(&mut self, tab_key: &str, tx: &mut Tx) {
         if let Some(pos) = self.documents.iter().position(|d| d.id.tab_key() == tab_key) {
             self.switch_active_doc(pos);
+            self.prompt_recovery_if_needed();
             if let Some(doc) = self.documents.get(pos)
                 && !doc.is_session()
                 && let Some(rel) = self.rel_from_workspace(&doc.path)
@@ -678,7 +676,6 @@ impl Editor {
         if !doc.is_session()
             && !self.store.ui.autosave_workspace_files
             && doc.is_dirty()
-            && doc.is_editable()
         {
             self.active_dialog = Some(DialogKind::ConfirmClose {
                 doc_id: doc.id.clone(),
@@ -688,14 +685,16 @@ impl Editor {
             return false;
         }
         let doc_id = doc.id.clone();
-        if doc.is_editable() && doc.is_dirty() {
-            if !self.drain_single_doc_save(&doc_id) {
+        if doc.is_dirty() {
+            if doc.read_only || !self.drain_single_doc_save(&doc_id) {
                 return false;
             }
         } else if self.worker_busy.as_ref().is_some_and(|(id, _)| id == &doc_id) {
             self.drain_until_idle();
         }
-        self.remove_doc_at(pos);
+        if let Some(pos) = self.documents.iter().position(|doc| doc.id == doc_id) {
+            self.remove_doc_at(pos);
+        }
         self.sync_window_title(tx);
         true
     }
@@ -747,15 +746,28 @@ impl Editor {
         let Some(DialogKind::ConfirmClose { doc_id, .. }) = self.active_dialog.clone() else {
             return;
         };
-        self.close_dialog();
-        if let Some(pos) = self.documents.iter().position(|d| d.id == doc_id) {
-            let _ = fs::remove_file(self.documents[pos].recovery_path());
-            if self.pending_close.as_ref() == Some(&doc_id) {
-                self.pending_close = None;
+        if let Some(doc) = self.documents.iter_mut().find(|doc| doc.id == doc_id) {
+            doc.pending_save = false;
+            doc.pending_recovery = false;
+            doc.autosave_due = None;
+            doc.recovery_due = None;
+        }
+        if self.pending_close.as_ref() == Some(&doc_id) {
+            self.pending_close = None;
+        }
+        if self.worker_busy.as_ref().is_some_and(|(id, _)| id == &doc_id) {
+            // Finish any recovery write before removing its copy.
+            self.drain_until_idle();
+        }
+        if let Some(pos) = self.documents.iter().position(|doc| doc.id == doc_id) {
+            if let Err(error) = clear_recovery_copy(&self.documents[pos].recovery_path()) {
+                self.dialog_error = Some(error);
+                return;
             }
             self.remove_doc_at(pos);
             self.sync_window_title(tx);
         }
+        self.close_dialog();
     }
 
     pub(crate) fn cycle_tab(&mut self, backwards: bool, tx: &mut Tx) {
@@ -973,6 +985,15 @@ impl Editor {
         }
     }
 
+    fn has_pending_writes_under(&self, target: &Path) -> bool {
+        self.documents.iter().any(|doc| {
+            let writing = self.worker_busy.as_ref().is_some_and(|(id, _)| id == &doc.id);
+            let file = !doc.is_session() && doc.path.starts_with(target);
+            let mirror = doc.mirror_path.as_ref().is_some_and(|path| path.starts_with(target));
+            (file || mirror) && (writing || doc.is_dirty())
+        })
+    }
+
     pub(crate) fn submit_dialog(&mut self, tx: &mut Tx) {
         let Some(dialog) = self.active_dialog.clone() else {
             return;
@@ -1018,6 +1039,10 @@ impl Editor {
             DialogKind::Rename { rel_path } => {
                 let old_abs = root.join(&rel_path);
                 let old_canon = old_abs.canonicalize().unwrap_or(old_abs);
+                if self.has_pending_writes_under(&old_canon) {
+                    self.dialog_error = Some("Wait for saves to finish or close unsaved files before renaming them.".into());
+                    return;
+                }
                 match workspace_tree::rename_entry(&root, &rel_path, &input) {
                     Ok(renamed) => {
                         let new_canon = renamed.canonicalize().unwrap_or(renamed);
@@ -1052,10 +1077,7 @@ impl Editor {
             DialogKind::Delete { rel_path, .. } => {
                 let target_abs = root.join(&rel_path);
                 let target_canon = target_abs.canonicalize().unwrap_or(target_abs);
-                if self.documents.iter().any(|doc| {
-                    !doc.is_session() && doc.path.starts_with(&target_canon)
-                        && (doc.is_dirty() || self.worker_busy.as_ref().is_some_and(|(id, _)| id == &doc.id))
-                }) {
+                if self.has_pending_writes_under(&target_canon) {
                     self.dialog_error = Some("Save or close unsaved files before deleting them.".into());
                     return;
                 }
@@ -1183,7 +1205,7 @@ impl Editor {
     pub(crate) fn flush_autosave_buffers(&mut self) {
         let autosave_files = self.store.ui.autosave_workspace_files;
         for doc in &mut self.documents {
-            if doc.is_editable() && doc.is_dirty() {
+            if doc.can_save() && doc.is_dirty() {
                 if doc.is_session() || autosave_files {
                     doc.pending_save = true;
                     doc.autosave_due = None;
@@ -1194,6 +1216,47 @@ impl Editor {
             }
         }
         self.dispatch_next();
+    }
+
+    fn mirror_sync_hash(store: &prefs::EditorStateStore, doc: &DocumentBuffer) -> Option<String> {
+        doc.mirror_path.as_ref()?;
+        let (project, id) = doc.voice_project.as_ref().zip(doc.session_id.as_ref())?;
+        let key = prefs::EditorStateStore::session_link_key(project, id);
+        store.session_links.get(&key).map(|link| link.last_synced_sha256.clone())
+    }
+
+    fn saved_snapshot(
+        store: &mut prefs::EditorStateStore,
+        doc: &mut DocumentBuffer,
+        generation: u64,
+        sha256: String,
+        outcome: WriteOutcome,
+    ) -> Option<String> {
+        doc.saved_generation = doc.saved_generation.max(generation);
+        doc.last_disk_sha256 = sha256.clone();
+        let key = doc.voice_project.as_ref().zip(doc.session_id.as_ref())
+            .map(|(project, id)| prefs::EditorStateStore::session_link_key(project, id));
+        let link = key.as_ref().and_then(|key| store.session_links.get_mut(key));
+        match outcome {
+            WriteOutcome::Mirrored => {
+                if let Some(link) = link {
+                    link.last_synced_sha256 = sha256;
+                    if let Err(error) = prefs::save_store(store) {
+                        return Some(format!("Could not save link state: {error}"));
+                    }
+                }
+                None
+            }
+            WriteOutcome::MirrorSkipped(error) => Some(error),
+            WriteOutcome::Local if doc.mirror_path.is_none() => link.map(|link| {
+                if link.last_synced_sha256.is_empty() {
+                    "Linked draft has no known sync state".into()
+                } else {
+                    "Linked file unavailable without a workspace".into()
+                }
+            }),
+            WriteOutcome::Local => None,
+        }
     }
 
     pub(crate) fn dispatch_next(&mut self) {
@@ -1225,7 +1288,7 @@ impl Editor {
                 before_sha256: doc.before_sha256.clone(),
                 snapshot,
                 mirror_path: doc.mirror_path.clone(),
-                mirror_expected_sha256: doc.mirror_path.as_ref().map(|_| doc.last_disk_sha256.clone()),
+                mirror_expected_sha256: Self::mirror_sync_hash(&self.store, doc),
             }) {
                 Ok(()) => {
                     self.worker_busy = Some((doc_id, InFlight::Finish));
@@ -1266,7 +1329,7 @@ impl Editor {
                         .as_ref()
                         .map_or_else(String::new, |n| n.text.clone()),
                     mirror_path: doc.mirror_path.clone(),
-                mirror_expected_sha256: doc.mirror_path.as_ref().map(|_| doc.last_disk_sha256.clone()),
+                mirror_expected_sha256: Self::mirror_sync_hash(&self.store, doc),
                 }
             } else {
                 WorkerRequest::WriteFile {
@@ -1328,29 +1391,21 @@ impl Editor {
                 let mut should_close = false;
                 if let Some(doc) = self.documents.iter_mut().find(|d| d.id == doc_id) {
                     match result {
-                        Ok(()) => {
-                            doc.saved_generation = doc.saved_generation.max(generation);
-                            doc.last_disk_sha256 = sha256.clone();
-                            if doc.mirror_path.is_some() && let Some((project, id)) = doc.voice_project.as_ref().zip(doc.session_id.as_ref()) {
-                                let key = prefs::EditorStateStore::session_link_key(project, id);
-                                if let Some(link) = self.store.session_links.get_mut(&key) {
-                                    link.last_synced_sha256 = sha256;
-                                    if let Err(error) = prefs::save_store(&self.store) { eprintln!("ghostless-editor: cannot persist link state: {error}"); }
-                                }
-                            }
+                        Ok(outcome) => {
+                            let warning = Self::saved_snapshot(&mut self.store, doc, generation, sha256, outcome);
                             doc.save_error = None;
-                            if doc.generation > doc.saved_generation {
-                                doc.pending_save = true;
+                            if doc.is_dirty() {
+                                if doc.is_session() || self.store.ui.autosave_workspace_files {
+                                    doc.pending_save = true;
+                                }
+                                doc.last_saved_label = Some("Unsaved".into());
+                                self.status = warning.unwrap_or_else(|| "Unsaved changes".into());
                             } else {
                                 doc.last_saved_label = Some(DocumentBuffer::format_saved_utc());
-                                let link = doc.voice_project.as_ref().zip(doc.session_id.as_ref()).and_then(|(project, id)| {
-                                    self.store.session_links.get(&prefs::EditorStateStore::session_link_key(project, id))
-                                });
-                                self.status = if doc.mirror_path.is_none() && link.is_some_and(|link| link.last_synced_sha256.is_empty()) {
-                                    "Saved locally; linked draft has no known sync state"
-                                } else if doc.mirror_path.is_none() && link.is_some_and(|link| !link.workspace_file.is_absolute()) {
-                                    "Saved locally; linked file unavailable without a workspace"
-                                } else { "Saved locally" }.into();
+                                self.status = warning.map_or_else(
+                                    || "Saved locally".into(),
+                                    |reason| format!("Saved locally. {reason}"),
+                                );
                                 if self.pending_close.as_ref() == Some(&doc_id) {
                                     should_close = true;
                                 }
@@ -1387,7 +1442,7 @@ impl Editor {
                 saved_ok
             }
             WorkerReply::RecoveryWritten { doc_id, result } => match result {
-                Ok(()) => {
+                Ok(_) => {
                     if let Some(doc) = self.documents.iter_mut().find(|d| d.id == doc_id) {
                         doc.save_error = None;
                     }
@@ -1404,25 +1459,14 @@ impl Editor {
             WorkerReply::Finished {
                 doc_id,
                 generation,
-                saved_snapshot,
-                after_sha256,
+                snapshot,
                 result,
             } => {
                 let mut finished_ok = false;
                 if let Some(doc) = self.documents.iter_mut().find(|d| d.id == doc_id) {
-                    if saved_snapshot {
-                        doc.saved_generation = doc.saved_generation.max(generation);
-                        if let Some(sha) = after_sha256 {
-                            doc.last_disk_sha256 = sha.clone();
-                            if doc.mirror_path.is_some() && let Some((project, id)) = doc.voice_project.as_ref().zip(doc.session_id.as_ref()) {
-                                let key = prefs::EditorStateStore::session_link_key(project, id);
-                                if let Some(link) = self.store.session_links.get_mut(&key) {
-                                    link.last_synced_sha256 = sha;
-                                    if let Err(error) = prefs::save_store(&self.store) { eprintln!("ghostless-editor: cannot persist link state: {error}"); }
-                                }
-                            }
-                        }
-                    }
+                    let warning = snapshot.and_then(|(sha, outcome)| {
+                        Self::saved_snapshot(&mut self.store, doc, generation, sha, outcome)
+                    });
                     doc.finish_requested = false;
                     match result {
                         Ok(()) => {
@@ -1432,7 +1476,10 @@ impl Editor {
                             doc.autosave_due = None;
                             doc.save_error = None;
                             doc.last_saved_label = Some("Finished".into());
-                            self.status = "Finished. Final and receipt saved locally.".into();
+                            self.status = warning.map_or_else(
+                                || "Finished. Final and receipt saved locally.".into(),
+                                |reason| format!("Finished locally. {reason}"),
+                            );
                             if let Some(voice) = &self.voice_project {
                                 self.sessions = workspace_tree::scan_sessions(
                                     voice,
@@ -1545,8 +1592,7 @@ impl Editor {
             }
 
             if let Some(doc) = self.documents.iter_mut().find(|d| {
-                d.is_editable()
-                    && d.is_dirty()
+                d.can_save() && d.is_dirty()
                     && (d.is_session() || autosave)
                     && !attempted_save.contains(&d.id)
             }) {
@@ -1560,8 +1606,7 @@ impl Editor {
             }
 
             if let Some(doc) = self.documents.iter_mut().find(|d| {
-                d.is_editable()
-                    && d.is_dirty()
+                d.can_save() && d.is_dirty()
                     && !d.is_session()
                     && !autosave
                     && !attempted_recovery.contains(&d.id)
@@ -1577,7 +1622,7 @@ impl Editor {
 
             break;
         }
-        if self.documents.iter().any(|doc| doc.save_error.is_some()) {
+        if self.documents.iter().any(|doc| doc.save_error.is_some() || (doc.read_only && doc.is_dirty())) {
             success = false;
         }
         if !success {
@@ -1588,6 +1633,29 @@ impl Editor {
             }
         }
         success
+    }
+
+    fn show_close_error(&mut self) {
+        let reason = self.status.strip_prefix("Workspace not changed: ").unwrap_or(&self.status);
+        self.status = format!("Could not close: {reason}");
+    }
+
+    pub(crate) fn on_application_quit(&mut self) {
+        if self.flush_on_exit() {
+            return;
+        }
+        for doc in self.documents.iter().filter(|doc| doc.is_dirty()) {
+            let path = doc.recovery_path();
+            match doc.recovery_contents().and_then(|text| fs_io::atomic_write_text(&path, &text)) {
+                Ok(()) => eprintln!("ghostless-editor: saved a recovery copy for {}", doc.title),
+                Err(error) => eprintln!("ghostless-editor: could not recover {}: {error}", doc.title),
+            }
+        }
+        if self.workspace.is_some() {
+            self.save_open_tabs_pref();
+        }
+        self.worker.shutdown();
+        self.flushed = true;
     }
 
     pub(crate) fn flush_on_exit(&mut self) -> bool {
@@ -1611,8 +1679,7 @@ pub(crate) fn on_window_close(editor: &mut Editor, tx: &mut Tx) {
     if editor.flush_on_exit() {
         tx.quit();
     } else {
-        let reason = editor.status.strip_prefix("Workspace not changed: ").unwrap_or(&editor.status);
-        editor.status = format!("Could not close: {reason}");
+        editor.show_close_error();
         if let Some(reopen) = &editor.reopen_window { reopen(); }
     }
 }
@@ -1686,7 +1753,7 @@ pub(crate) fn poll(editor: &mut Editor, clock: f64, tx: &mut Tx) -> bool {
     let autosave = editor.store.ui.autosave_workspace_files;
     let mut next_wake: Option<f64> = None;
     for doc in &mut editor.documents {
-        if !doc.is_editable() || !doc.is_dirty() {
+        if !doc.can_save() || !doc.is_dirty() {
             continue;
         }
         if doc.is_session() || autosave {
@@ -1739,6 +1806,14 @@ pub(crate) fn poll(editor: &mut Editor, clock: f64, tx: &mut Tx) -> bool {
 }
 
 pub(crate) fn on_key(editor: &mut Editor, key: &KeyEvent, tx: &mut Tx) -> bool {
+    if key.is_command('q') && !key.mods.shift && !key.mods.alt {
+        if editor.flush_on_exit() {
+            tx.quit();
+        } else {
+            editor.show_close_error();
+        }
+        return true;
+    }
     if editor.active_dialog.is_some() {
         return false;
     }
@@ -1818,7 +1893,7 @@ mod tests {
     }
 
     fn ok_writer() -> WriteRunner {
-        Box::new(|_| Ok(()))
+        Box::new(|_| Ok(WriteOutcome::Local))
     }
 
     fn ok_runner() -> CliRunner {
@@ -1850,7 +1925,7 @@ mod tests {
             recorded.lock().unwrap().push(op.clone());
             let _ = entered_tx.send(());
             let _ = release_rx.lock().unwrap().recv();
-            Ok(())
+            Ok(WriteOutcome::Local)
         });
 
         let mut editor = Editor::with_handlers(
@@ -1904,7 +1979,7 @@ mod tests {
                 let _ = started_tx.send(());
                 let _ = release_rx.lock().unwrap().recv();
             }
-            Ok(())
+            Ok(WriteOutcome::Local)
         });
 
         let mut editor = Editor::with_handlers(
@@ -1984,15 +2059,229 @@ mod tests {
     }
 
     #[test]
+    fn dirty_locked_file_saves_on_tab_or_window_close() {
+        for action in ["tab", "manual tab", "window"] {
+            let mut store = prefs::EditorStateStore::default();
+            store.ui.autosave_workspace_files = action != "manual tab";
+            let saved = Arc::new(Mutex::new(Vec::new()));
+            let recorded = saved.clone();
+            let writer: WriteRunner = Box::new(move |op| {
+                if let WriteOp::File { content, .. } = op {
+                    recorded.lock().unwrap().push(content.clone());
+                }
+                Ok(WriteOutcome::Local)
+            });
+            let mut editor = Editor::empty_with_handlers(store, ok_runner(), writer, noop_wake());
+            editor.documents.push(DocumentBuffer::from_workspace_file(
+                "/tmp/pre-answers.md".into(), "pre-answers.md".into(), "old".into(),
+                false, true, true, None,
+            ));
+            editor.active_doc = Some(0);
+            let mut tx = Tx::default();
+            editor.active_working_edit_mut().text = "latest edit".into();
+            editor.changed_active(&mut tx);
+            editor.toggle_active_user_lock();
+            assert!(editor.active_doc_ref().unwrap().user_locked);
+            match action {
+                "tab" => assert!(editor.close_active_tab(&mut tx)),
+                "manual tab" => {
+                    assert!(!editor.close_active_tab(&mut tx));
+                    assert!(matches!(editor.active_dialog, Some(DialogKind::ConfirmClose { .. })));
+                    editor.confirm_close_save();
+                    drain_until_idle(&mut editor);
+                    assert!(editor.documents.is_empty());
+                }
+                _ => assert!(editor.flush_on_exit()),
+            }
+            assert_eq!(*saved.lock().unwrap(), ["latest edit"]);
+        }
+    }
+
+    fn block_first_write(
+        writer: WriteRunner,
+    ) -> (WriteRunner, mpsc::Receiver<()>, mpsc::Sender<()>) {
+        let (started, started_rx) = mpsc::channel();
+        let (release_tx, release) = mpsc::channel();
+        let release = Mutex::new(Some(release));
+        let wrapped: WriteRunner = Box::new(move |op| {
+            if let Some(release) = release.lock().unwrap().take() {
+                started.send(()).unwrap();
+                release.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            writer(op)
+        });
+        (wrapped, started_rx, release_tx)
+    }
+
+    #[test]
+    fn manual_save_does_not_write_edits_made_during_the_save() {
+        let mut store = prefs::EditorStateStore::default();
+        store.ui.autosave_workspace_files = false;
+        let saved = Arc::new(Mutex::new(Vec::new()));
+        let recorded = saved.clone();
+        let (writer, started, release) = block_first_write(Box::new(move |op| {
+            if let WriteOp::File { content, .. } = op {
+                recorded.lock().unwrap().push(content.clone());
+            }
+            Ok(WriteOutcome::Local)
+        }));
+        let mut editor = Editor::empty_with_handlers(store, ok_runner(), writer, noop_wake());
+        editor.documents.push(DocumentBuffer::from_workspace_file(
+            "/tmp/manual.md".into(), "manual.md".into(), "old".into(), false, false, true, None,
+        ));
+        editor.active_doc = Some(0);
+        let mut tx = Tx::default();
+        editor.active_working_edit_mut().text = "explicit save".into();
+        editor.changed_active(&mut tx);
+        editor.save_clicked();
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        editor.active_working_edit_mut().text = "subsequent edit".into();
+        editor.changed_active(&mut tx);
+        release.send(()).unwrap();
+        drain_until_idle(&mut editor);
+        assert_eq!(*saved.lock().unwrap(), ["explicit save"]);
+        assert!(editor.active_doc_ref().unwrap().is_dirty());
+        editor.save_clicked();
+        drain_until_idle(&mut editor);
+        assert_eq!(*saved.lock().unwrap(), ["explicit save", "subsequent edit"]);
+    }
+
+    #[test]
+    fn rename_waits_for_save_and_keeps_latest_contents() {
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("ghostless-rename-busy-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let prev_home = std::env::var_os("GHOSTLESS_HOME");
+        unsafe { std::env::set_var("GHOSTLESS_HOME", root.join("home")); }
+        let original = root.join("draft.md");
+        fs::write(&original, "old").unwrap();
+        let (writer, started, release) = block_first_write(Box::new(execute_write_op));
+        let mut editor = Editor::empty_with_handlers(
+            prefs::EditorStateStore::default(), ok_runner(), writer, noop_wake(),
+        );
+        editor.open_workspace_file(original.clone(), true);
+        editor.workspace = Some(root.clone());
+        editor.active_working_edit_mut().text = "latest".into();
+        let mut tx = Tx::default();
+        editor.changed_active(&mut tx);
+        editor.save_clicked();
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        editor.active_dialog = Some(DialogKind::Rename { rel_path: "draft.md".into() });
+        editor.dialog_input.text = "renamed.md".into();
+        editor.submit_dialog(&mut tx);
+        assert!(editor.dialog_error.is_some());
+        assert!(original.is_file());
+
+        release.send(()).unwrap();
+        drain_until_idle(&mut editor);
+        editor.submit_dialog(&mut tx);
+        assert!(!original.exists());
+        assert_eq!(fs::read_to_string(root.join("renamed.md")).unwrap(), "latest");
+        assert!(editor.flush_on_exit());
+        unsafe {
+            if let Some(value) = prev_home { std::env::set_var("GHOSTLESS_HOME", value); }
+            else { std::env::remove_var("GHOSTLESS_HOME"); }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn discard_waits_for_inflight_recovery_before_removing_copy() {
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("ghostless-discard-busy-{}", std::process::id()));
+        let prev_home = std::env::var_os("GHOSTLESS_HOME");
+        unsafe { std::env::set_var("GHOSTLESS_HOME", root.join("home")); }
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("draft.md");
+        fs::write(&path, "disk version").unwrap();
+        let mut store = prefs::EditorStateStore::default();
+        store.ui.autosave_workspace_files = false;
+        let (writer, started, release) = block_first_write(Box::new(execute_write_op));
+        let mut editor = Editor::empty_with_handlers(store, ok_runner(), writer, noop_wake());
+        editor.open_workspace_file(path.clone(), true);
+        let recovery = editor.active_doc_ref().unwrap().recovery_path();
+        let mut tx = Tx::default();
+        editor.active_working_edit_mut().text = "discarded text".into();
+        editor.changed_active(&mut tx);
+        editor.flush_autosave_buffers();
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(!editor.close_active_tab(&mut tx));
+        release.send(()).unwrap();
+        editor.confirm_close_discard(&mut tx);
+        assert!(editor.worker_busy.is_none());
+        assert!(editor.documents.is_empty());
+        assert!(!recovery.exists());
+        assert_eq!(fs::read_to_string(path).unwrap(), "disk version");
+        unsafe {
+            if let Some(value) = prev_home { std::env::set_var("GHOSTLESS_HOME", value); }
+            else { std::env::remove_var("GHOSTLESS_HOME"); }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn application_quit_preserves_failed_session_save_for_reopen() {
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("ghostless-quit-recovery-{}", std::process::id()));
+        let prev_home = std::env::var_os("GHOSTLESS_HOME");
+        unsafe { std::env::set_var("GHOSTLESS_HOME", root.join("home")); }
+        let mut session = test_session();
+        session.project = root.join("voice");
+        session.before_sha256 = fs_io::sha256_text(&session.original);
+        let folder = session.project.join("sessions").join(&session.id);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("before.md"), &session.original).unwrap();
+        fs::write(folder.join("after.md"), &session.after).unwrap();
+        fs::write(folder.join("session.json"), serde_json::json!({
+            "kind": "ghostless-edit-session",
+            "beforeSha256": session.before_sha256,
+        }).to_string()).unwrap();
+        let mut editor = Editor::with_handlers(
+            session.clone(), prefs::EditorStateStore::default(), ok_runner(),
+            Box::new(|_| Err("session directory is read-only".into())), noop_wake(),
+        );
+        editor.active_working_edit_mut().text = "unsaved body".into();
+        editor.active_notes_edit_mut().text = "unsaved notes".into();
+        let mut tx = Tx::default();
+        editor.changed_active(&mut tx);
+        let quit = KeyEvent { key: Key::Command('q'), mods: Default::default() };
+        assert!(on_key(&mut editor, &quit, &mut tx));
+        assert!(!editor.flushed);
+        assert!(editor.active_doc_ref().unwrap().is_dirty());
+        assert!(editor.status.contains("Could not close"));
+        editor.on_application_quit();
+        assert!(editor.flushed);
+        let copy = editor.active_doc_ref().unwrap().recovery_path();
+        assert!(copy.is_file());
+
+        let mut reopened = Editor::new(LaunchTarget::Session(session), noop_wake());
+        assert!(matches!(reopened.active_dialog, Some(DialogKind::Recover { .. })));
+        reopened.resolve_recovery(true);
+        assert_eq!(reopened.active_working_edit().text, "unsaved body");
+        assert_eq!(reopened.active_notes_edit().text, "unsaved notes");
+        assert!(reopened.active_doc_ref().unwrap().is_dirty());
+        assert!(copy.is_file());
+        reopened.save_clicked();
+        drain_until_idle(&mut reopened);
+        assert!(!copy.exists());
+        assert_eq!(fs::read_to_string(folder.join("after.md")).unwrap(), "unsaved body");
+        assert_eq!(fs::read_to_string(folder.join("notes.md")).unwrap(), "unsaved notes");
+        unsafe {
+            if let Some(value) = prev_home { std::env::set_var("GHOSTLESS_HOME", value); }
+            else { std::env::remove_var("GHOSTLESS_HOME"); }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn deleting_file_or_folder_with_dirty_tab_is_rejected() {
         let root = std::env::temp_dir().join(format!("ghostless-delete-dirty-{}", std::process::id()));
         fs::create_dir_all(root.join("drafts")).unwrap();
         let file = root.join("drafts/draft.md");
         fs::write(&file, "disk version").unwrap();
         let mut editor = Editor::empty_with_handlers(prefs::EditorStateStore::default(), ok_runner(), ok_writer(), noop_wake());
+        editor.open_workspace_file(file.clone(), true);
         editor.workspace = Some(root.clone());
-        editor.documents.push(DocumentBuffer::from_workspace_file(file.clone(), "draft.md".into(), "disk version".into(), false, false, true, None));
-        editor.active_doc = Some(0);
         editor.active_working_edit_mut().text = "unsaved work".into();
         editor.changed_active(&mut Tx::default());
         for (rel, is_dir) in [("drafts/draft.md", false), ("drafts", true)] {
@@ -2078,7 +2367,7 @@ mod tests {
         editor.save_clicked();
         drain_until_idle(&mut editor);
         assert!(!editor.active_doc_ref().unwrap().is_dirty());
-        assert!(editor.status.contains("linked file unavailable"));
+        assert!(editor.status.contains("unavailable without a workspace"));
         assert_eq!(fs::read_to_string(folder.join("after.md")).unwrap(), "Saved locally.\n");
         assert_eq!(fs::read_to_string(folder.join("notes.md")).unwrap(), "My notes");
         editor.flush_on_exit();
@@ -2092,16 +2381,16 @@ mod tests {
         store.session_links.insert(prefs::EditorStateStore::session_link_key(&session.project, &session.id), prefs::SessionLink { workspace_file: "draft.md".into(), last_synced_sha256: "known".into() });
         let writes: Arc<Mutex<Vec<WriteOp>>> = Arc::new(Mutex::new(Vec::new()));
         let captured = writes.clone();
-        let writer: WriteRunner = Box::new(move |op| { captured.lock().unwrap().push(op.clone()); Ok(()) });
+        let writer: WriteRunner = Box::new(move |op| { captured.lock().unwrap().push(op.clone()); Ok(WriteOutcome::Local) });
         let mut editor = Editor::with_handlers(session, store, ok_runner(), writer, noop_wake());
-        assert!(editor.status.contains("linked file unavailable") || editor.status.contains("Linked file unavailable"));
+        assert!(editor.status.contains("unavailable without a workspace") || editor.status.contains("Linked file unavailable"));
         editor.active_working_edit_mut().text = "session edit".into();
         editor.changed_active(&mut Tx::default());
         editor.save_clicked();
         drain_until_idle(&mut editor);
         assert!(matches!(&writes.lock().unwrap()[0], WriteOp::Session { mirror_path: None, .. }));
         assert!(!editor.documents[0].is_dirty());
-        assert!(editor.status.contains("linked file unavailable"));
+        assert!(editor.status.contains("unavailable without a workspace"));
     }
 
     #[test]
@@ -2192,7 +2481,7 @@ mod tests {
         let writer: WriteRunner = Box::new(move |_| {
             let mut count = attempts.lock().unwrap();
             *count += 1;
-            if *count == 1 { Err("disk full".into()) } else { Ok(()) }
+            if *count == 1 { Err("disk full".into()) } else { Ok(WriteOutcome::Local) }
         });
         let reopened = Arc::new(Mutex::new(0));
         let reopen_count = reopened.clone();
@@ -2217,7 +2506,7 @@ mod tests {
         let recorded = writes.clone();
         let writer: WriteRunner = Box::new(move |op| {
             recorded.lock().unwrap().push(op.clone());
-            Ok(())
+            Ok(WriteOutcome::Local)
         });
 
         let mut editor = Editor::with_handlers(
@@ -2268,7 +2557,7 @@ mod tests {
                 let _ = started_tx.send(());
                 let _ = release_rx.lock().unwrap().recv();
             }
-            Ok(())
+            Ok(WriteOutcome::Local)
         });
         let runner: CliRunner = Box::new(move |args, _| {
             if args[0] == "finish" {
@@ -2389,6 +2678,7 @@ mod tests {
         editor.activate_tab(&key_b, &mut tx);
         assert_eq!(editor.active_working_edit().text, "Beta two");
 
+        drop(editor);
         unsafe {
             if let Some(v) = prev_home {
                 std::env::set_var("GHOSTLESS_HOME", v);
@@ -2453,6 +2743,7 @@ mod tests {
         assert!(!b_rec.exists());
         assert!(!editor.active_doc_ref().unwrap().is_dirty());
 
+        drop(editor);
         unsafe {
             if let Some(v) = prev_home {
                 std::env::set_var("GHOSTLESS_HOME", v);

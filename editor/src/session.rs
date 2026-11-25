@@ -94,11 +94,14 @@ pub(crate) fn parse_launch(args: Vec<String>) -> Result<LaunchTarget, String> {
     let loaded = load_session(project, id)?;
     if let Some(path) = linked_draft {
         let current = crate::fs_io::read_utf8(&path)?;
-        if crate::fs_io::sha256_text(&current) != loaded.before_sha256 {
+        // Python reads drafts in universal-newline mode. Compare the same text
+        // before linking, then store a hash of the actual draft for later writes.
+        let normalized = current.replace("\r\n", "\n").replace('\r', "\n");
+        if crate::fs_io::sha256_text(&normalized) != loaded.before_sha256 {
             return Err("Draft changed while starting the session; the session was created without a link".into());
         }
         let mut store = prefs::load_store();
-        store.session_links.insert(prefs::EditorStateStore::session_link_key(&loaded.project, &loaded.id), prefs::SessionLink { workspace_file: path, last_synced_sha256: loaded.before_sha256.clone() });
+        store.session_links.insert(prefs::EditorStateStore::session_link_key(&loaded.project, &loaded.id), prefs::SessionLink { workspace_file: path, last_synced_sha256: crate::fs_io::sha256_text(&current) });
         prefs::save_store(&store)?;
     }
     Ok(LaunchTarget::Session(loaded))
@@ -156,13 +159,16 @@ mod tests {
         let old_home = std::env::var_os("GHOSTLESS_HOME");
         unsafe { std::env::set_var("GHOSTLESS_HOME", &home); }
         run_cli(&["init", voice.to_str().unwrap(), "--no-git"], None).unwrap();
-        let draft = base.join("draft.md"); fs::write(&draft, "Original draft text.\n").unwrap();
+        let draft = base.join("draft.md");
+        let original = "Original draft text.\r\nSecond line.\r\n";
+        fs::write(&draft, original).unwrap();
         let target = parse_launch(vec!["--project".into(), voice.display().to_string(), "--draft".into(), draft.display().to_string(), "--link-draft".into()]).unwrap();
         let LaunchTarget::Session(session) = target else { panic!("expected session"); };
         let store = prefs::load_store();
         let link = store.session_links.get(&prefs::EditorStateStore::session_link_key(&session.project, &session.id)).unwrap();
         assert_eq!(link.workspace_file, draft.canonicalize().unwrap());
-        assert_eq!(link.last_synced_sha256, crate::fs_io::sha256_text("Original draft text.\n"));
+        assert_eq!(link.last_synced_sha256, crate::fs_io::sha256_text(original));
+        assert_eq!(session.original, original.replace("\r\n", "\n"));
         let key = prefs::EditorStateStore::session_link_key(&session.project, &session.id);
         let mut editor = crate::state::Editor::with_handlers(session.clone(), store, Box::new(run_cli), Box::new(crate::worker::execute_write_op), Box::new(|| {}));
         editor.active_working_edit_mut().text = "Revised text.\n".into();
@@ -175,8 +181,11 @@ mod tests {
         let mut reopened = crate::state::Editor::with_handlers(loaded, prefs::load_store(), Box::new(run_cli), Box::new(crate::worker::execute_write_op), Box::new(|| {}));
         reopened.active_working_edit_mut().text = "Must not overwrite.\n".into();
         reopened.changed_active(&mut rune::Tx::default());
-        reopened.flush_on_exit();
+        assert!(reopened.flush_on_exit());
         assert_eq!(fs::read_to_string(&draft).unwrap(), "External update.\n");
+        let saved = load_session(session.project.clone(), session.id.clone()).unwrap();
+        assert_eq!(saved.after, "Must not overwrite.\n");
+        assert_eq!(prefs::load_store().session_links[&key].last_synced_sha256, crate::fs_io::sha256_text("Revised text.\n"));
         assert!(reopened.status.contains("changed outside"));
         unsafe { if let Some(value) = old_home { std::env::set_var("GHOSTLESS_HOME", value); } else { std::env::remove_var("GHOSTLESS_HOME"); } }
         fs::remove_dir_all(base).unwrap();

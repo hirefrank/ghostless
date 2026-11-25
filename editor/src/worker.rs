@@ -9,7 +9,7 @@ use crate::{documents::DocId, fs_io, session::valid_session_id};
 
 pub(crate) type CliFn = dyn Fn(&[&str], Option<&str>) -> Result<String, String> + Send;
 pub(crate) type CliRunner = Box<CliFn>;
-pub(crate) type WriteFn = dyn Fn(&WriteOp) -> Result<(), String> + Send;
+pub(crate) type WriteFn = dyn Fn(&WriteOp) -> Result<WriteOutcome, String> + Send;
 pub(crate) type WriteRunner = Box<WriteFn>;
 pub(crate) type WakeFn = Box<dyn Fn() + Send>;
 
@@ -78,22 +78,28 @@ pub(crate) enum WorkerRequest {
     },
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum WriteOutcome {
+    Local,
+    Mirrored,
+    MirrorSkipped(String),
+}
+
 pub(crate) enum WorkerReply {
     Saved {
         doc_id: DocId,
         generation: u64,
         sha256: String,
-        result: Result<(), String>,
+        result: Result<WriteOutcome, String>,
     },
     RecoveryWritten {
         doc_id: DocId,
-        result: Result<(), String>,
+        result: Result<WriteOutcome, String>,
     },
     Finished {
         doc_id: DocId,
         generation: u64,
-        saved_snapshot: bool,
-        after_sha256: Option<String>,
+        snapshot: Option<(String, WriteOutcome)>,
         result: Result<(), String>,
     },
 }
@@ -184,8 +190,7 @@ impl Worker {
                         mirror_path,
                         mirror_expected_sha256,
                     } => {
-                        let mut saved_snapshot = false;
-                        let mut after_sha256 = None;
+                        let mut saved_snapshot = None;
                         let result = if let Some((after, notes)) = snapshot {
                             let sha = fs_io::sha256_text(&after);
                             match writer(&WriteOp::Session {
@@ -197,9 +202,8 @@ impl Worker {
                                 mirror_path,
                                 mirror_expected_sha256,
                             }) {
-                                Ok(()) => {
-                                    saved_snapshot = true;
-                                    after_sha256 = Some(sha);
+                                Ok(outcome) => {
+                                    saved_snapshot = Some((sha, outcome));
                                     run_finish(&project, &session_id, &*runner)
                                 }
                                 Err(error) => Err(error),
@@ -210,8 +214,7 @@ impl Worker {
                         WorkerReply::Finished {
                             doc_id,
                             generation,
-                            saved_snapshot,
-                            after_sha256,
+                            snapshot: saved_snapshot,
                             result,
                         }
                     }
@@ -251,7 +254,7 @@ impl Worker {
     }
 }
 
-pub(crate) fn execute_write_op(op: &WriteOp) -> Result<(), String> {
+pub(crate) fn execute_write_op(op: &WriteOp) -> Result<WriteOutcome, String> {
     match op {
         WriteOp::File {
             path,
@@ -259,17 +262,15 @@ pub(crate) fn execute_write_op(op: &WriteOp) -> Result<(), String> {
             clear_recovery,
         } => {
             fs_io::atomic_write_text(path, content)?;
-            if let Some(recovery) = clear_recovery
-                && recovery.exists()
-            {
-                let _ = fs::remove_file(recovery);
+            if let Some(recovery) = clear_recovery {
+                clear_recovery_copy(recovery)?;
             }
-            Ok(())
+            Ok(WriteOutcome::Local)
         }
         WriteOp::Recovery {
             recovery_path,
             content,
-        } => fs_io::atomic_write_text(recovery_path, content),
+        } => fs_io::atomic_write_text(recovery_path, content).map(|()| WriteOutcome::Local),
         WriteOp::Session {
             project,
             session_id,
@@ -298,10 +299,7 @@ pub(crate) fn write_session_direct(
     notes: &str,
     mirror_path: Option<&Path>,
     mirror_expected_sha256: Option<&str>,
-) -> Result<(), String> {
-    if mirror_path.is_some_and(|path| !path.is_absolute()) {
-        return Err("Session mirror path requires a workspace root".into());
-    }
+) -> Result<WriteOutcome, String> {
     if !valid_session_id(session_id) {
         return Err("Invalid session ID".into());
     }
@@ -329,19 +327,39 @@ pub(crate) fn write_session_direct(
     if fs_io::sha256_text(&before) != expected_sha {
         return Err(format!("The immutable baseline has changed in {}.", folder.display()));
     }
-    if let Some(mirror) = mirror_path {
-        let expected = mirror_expected_sha256.filter(|value| !value.is_empty()).ok_or("Linked draft has no known sync state; save stopped")?;
-        let current = fs_io::read_utf8(mirror)?;
-        if fs_io::sha256_text(&current) != expected {
-            return Err("Linked draft changed outside the editor; save stopped".into());
-        }
-    }
-    fs_io::atomic_write_text(&folder.join("after.md"), after)?;
+    let after_path = folder.join("after.md");
+    fs_io::atomic_write_text(&after_path, after)?;
     fs_io::atomic_write_text(&folder.join("notes.md"), notes)?;
-    if let Some(mirror) = mirror_path {
-        fs_io::atomic_write_text(mirror, after)?;
+    clear_recovery_copy(&crate::documents::session_recovery_path(&after_path))?;
+
+    let Some(mirror) = mirror_path else {
+        return Ok(WriteOutcome::Local);
+    };
+    match write_mirror(mirror, mirror_expected_sha256, after) {
+        Ok(()) => Ok(WriteOutcome::Mirrored),
+        Err(error) => Ok(WriteOutcome::MirrorSkipped(error)),
     }
-    Ok(())
+}
+
+pub(crate) fn clear_recovery_copy(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Cannot remove recovery copy {}: {error}", path.display())),
+    }
+}
+
+fn write_mirror(path: &Path, expected_sha256: Option<&str>, after: &str) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err("Linked path is outside the workspace".into());
+    }
+    let expected = expected_sha256.filter(|hash| !hash.is_empty())
+        .ok_or("Linked draft has no known sync state")?;
+    let current = fs_io::read_utf8(path)?;
+    if fs_io::sha256_text(&current) != expected {
+        return Err("Linked draft changed outside the editor".into());
+    }
+    fs_io::atomic_write_text(path, after)
 }
 
 pub(crate) fn run_finish(project: &Path, session_id: &str, runner: &CliFn) -> Result<(), String> {
@@ -398,17 +416,33 @@ mod tests {
         assert_eq!(fs_io::read_utf8(&mirror).unwrap(), "Revised prose.\n");
 
         fs_io::atomic_write_text(&mirror, "external edit").unwrap();
-        let err = write_session_direct(&base, session_id, Some(&before_sha), "Must not overwrite", "", Some(&mirror), Some(&fs_io::sha256_text("Revised prose.\n"))).unwrap_err();
-        assert!(err.contains("changed outside"));
+        let outcome = write_session_direct(
+            &base, session_id, Some(&before_sha), "Local edits", "Local notes",
+            Some(&mirror), Some(&fs_io::sha256_text("Revised prose.\n")),
+        ).unwrap();
+        assert!(matches!(outcome, WriteOutcome::MirrorSkipped(error) if error.contains("changed outside")));
         assert_eq!(fs_io::read_utf8(&mirror).unwrap(), "external edit");
-        assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Revised prose.\n");
+        assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Local edits");
+        assert_eq!(fs_io::read_utf8(&session_dir.join("notes.md")).unwrap(), "Local notes");
+
+        let missing = base.join("missing.md");
+        for invalid_mirror in [missing.as_path(), Path::new("../outside.md")] {
+            let outcome = write_session_direct(
+                &base, session_id, Some(&before_sha), "Local edits", "Local notes",
+                Some(invalid_mirror), Some(&before_sha),
+            ).unwrap();
+            assert!(matches!(outcome, WriteOutcome::MirrorSkipped(_)));
+            assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Local edits");
+            assert_eq!(fs_io::read_utf8(&session_dir.join("notes.md")).unwrap(), "Local notes");
+        }
+        assert!(!missing.exists());
 
         // Tampered before.md must be refused without overwriting after.md.
         fs_io::atomic_write_text(&session_dir.join("before.md"), "Tampered!\n").unwrap();
         let err = write_session_direct(&base, session_id, Some(&before_sha), "Bad write", "", None, None)
             .unwrap_err();
         assert!(err.contains("immutable baseline has changed"), "{err}");
-        assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Revised prose.\n");
+        assert_eq!(fs_io::read_utf8(&session_dir.join("after.md")).unwrap(), "Local edits");
 
         // Restore before.md, add receipt.json -> finished session must be refused.
         fs_io::atomic_write_text(&session_dir.join("before.md"), before).unwrap();

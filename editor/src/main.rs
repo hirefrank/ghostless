@@ -57,6 +57,6 @@ fn main() {
             }
         })
         .on_close(on_window_close)
-        .on_quit(|editor, _| { editor.flush_on_exit(); });
+        .on_quit(|editor, _| editor.on_application_quit());
     app.run();
 }

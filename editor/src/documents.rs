@@ -4,6 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use rune::TextEdit;
+use serde::{Deserialize, Serialize};
 use crate::{fs_io, prefs, session::Session};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -19,6 +20,12 @@ impl DocId {
             DocId::Session { project, id } => format!("session:{}::{id}", project.display()),
         }
     }
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct SessionRecovery {
+    pub text: String,
+    pub notes: String,
 }
 
 pub(crate) struct DocumentBuffer {
@@ -144,7 +151,11 @@ impl DocumentBuffer {
     }
 
     pub(crate) fn is_editable(&self) -> bool {
-        !self.read_only && !self.finished && !self.user_locked && !self.finish_requested
+        self.can_save() && !self.user_locked
+    }
+
+    pub(crate) fn can_save(&self) -> bool {
+        !self.read_only && !self.finished && !self.finish_requested
     }
 
     pub(crate) fn word_counts(&self) -> (usize, Option<usize>) {
@@ -175,7 +186,30 @@ impl DocumentBuffer {
     }
 
     pub(crate) fn recovery_path(&self) -> PathBuf {
-        recovery_path_for(&self.path)
+        if self.is_session() {
+            session_recovery_path(&self.path)
+        } else {
+            recovery_path_for(&self.path)
+        }
+    }
+
+    pub(crate) fn recovery_contents(&self) -> Result<String, String> {
+        match &self.notes {
+            Some(notes) => serde_json::to_string(&SessionRecovery {
+                text: self.edit.text.clone(),
+                notes: notes.text.clone(),
+            }).map_err(|error| error.to_string()),
+            None => Ok(self.edit.text.clone()),
+        }
+    }
+
+    pub(crate) fn read_recovery(&self) -> Result<SessionRecovery, String> {
+        let text = fs_io::read_utf8(&self.recovery_path())?;
+        if self.is_session() {
+            serde_json::from_str(&text).map_err(|error| format!("Invalid session recovery copy: {error}"))
+        } else {
+            Ok(SessionRecovery { text, notes: String::new() })
+        }
     }
 
     pub(crate) fn format_saved_utc() -> String {
@@ -194,6 +228,10 @@ impl DocumentBuffer {
 pub(crate) fn recovery_path_for(path: &Path) -> PathBuf {
     let key = fs_io::sha256_text(&path.to_string_lossy());
     prefs::recovery_dir().join(format!("{key}.md"))
+}
+
+pub(crate) fn session_recovery_path(path: &Path) -> PathBuf {
+    recovery_path_for(path).with_extension("json")
 }
 
 pub(crate) fn count_words(text: &str) -> usize {
