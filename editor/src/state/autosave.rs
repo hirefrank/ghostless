@@ -636,12 +636,7 @@ impl Editor {
 
 pub(crate) fn poll(editor: &mut Editor, clock: f64, tx: &mut Tx) -> bool {
     if !editor.fonts_initialized {
-        let sans = if editor.store.ui.font_family == prefs::FontChoice::Serif {
-            "Georgia, serif"
-        } else {
-            "Inter, sans-serif"
-        };
-        tx.set_font_families(sans, "IBM Plex Mono, monospace");
+        crate::theme::apply_font_choice(editor.store.ui.font_family, tx);
         editor.fonts_initialized = true;
     }
     let mut changed = editor.notifications.tick(clock, tx);

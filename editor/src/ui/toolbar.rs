@@ -110,8 +110,7 @@ fn view_settings(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
         themes = themes.child(
             Button::new(label)
                 .on_press(move |e: &mut Editor| {
-                    e.store.ui.theme = mode;
-                    let _ = crate::prefs::save_store(&e.store);
+                    e.set_theme_mode(mode);
                 })
                 .build(kit),
         );
@@ -126,16 +125,7 @@ fn view_settings(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
         fonts = fonts.child(
             Button::new(label)
                 .on_press_tx(move |e: &mut Editor, tx: &mut Tx| {
-                    e.store.ui.font_family = font;
-                    tx.set_font_families(
-                        if font == FontChoice::Serif {
-                            "Georgia, serif"
-                        } else {
-                            "Inter, sans-serif"
-                        },
-                        "IBM Plex Mono, monospace",
-                    );
-                    let _ = crate::prefs::save_store(&e.store);
+                    e.set_font_choice(font, tx);
                 })
                 .build(kit),
         );
@@ -148,8 +138,7 @@ fn view_settings(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
                 .child(
                     Button::new("−")
                         .on_press(|e: &mut Editor| {
-                            e.store.ui.font_size = (e.store.ui.font_size - 1.0).clamp(13.0, 24.0);
-                            let _ = crate::prefs::save_store(&e.store);
+                            e.adjust_font_size(-1.0);
                         })
                         .build(kit),
                 )
@@ -157,8 +146,7 @@ fn view_settings(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
                 .child(
                     Button::new("+")
                         .on_press(|e: &mut Editor| {
-                            e.store.ui.font_size = (e.store.ui.font_size + 1.0).clamp(13.0, 24.0);
-                            let _ = crate::prefs::save_store(&e.store);
+                            e.adjust_font_size(1.0);
                         })
                         .build(kit),
                 ),
@@ -185,10 +173,7 @@ fn view_settings(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
         .child(
             Switch::new(editor.store.ui.autosave_workspace_files)
                 .label("Auto-save files")
-                .on_toggle(|e: &mut Editor| {
-                    e.store.ui.autosave_workspace_files = !e.store.ui.autosave_workspace_files;
-                    let _ = crate::prefs::save_store(&e.store);
-                })
+                .on_toggle(Editor::toggle_autosave)
                 .build(kit),
         )
         .child(

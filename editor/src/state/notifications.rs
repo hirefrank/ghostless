@@ -7,6 +7,7 @@ use std::time::Duration;
 #[derive(Clone)]
 pub(crate) enum NoticeAction {
     Compare(DocId),
+    Rebuild,
 }
 
 pub(crate) struct Notice {
@@ -58,6 +59,7 @@ impl Editor {
         self.notifications.dismiss(id);
         match action {
             NoticeAction::Compare(doc_id) => self.compare_external(doc_id, tx),
+            NoticeAction::Rebuild => self.request_voice_build(),
         }
     }
 }

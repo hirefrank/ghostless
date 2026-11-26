@@ -15,6 +15,7 @@ pub(super) fn mount(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
         if let Some(action) = entry.options.action.clone() {
             let label = match &action {
                 NoticeAction::Compare(_) => "Compare",
+                NoticeAction::Rebuild => "Rebuild",
             };
             toast = toast.action(kit, label, true, move |editor: &mut Editor, tx| {
                 editor.run_notice_action(id, &action, tx);

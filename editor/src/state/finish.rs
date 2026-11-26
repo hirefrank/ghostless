@@ -129,6 +129,7 @@ impl Editor {
             return;
         };
         self.chrome.finish_wait = Some(doc.id.clone());
+        self.studio.open = false;
         self.save_clicked();
     }
 
@@ -396,7 +397,7 @@ impl Editor {
             self.close_dialog();
         }
         if receipt.rebuilt {
-            self.invalidate_voice_analysis();
+            self.voice_rebuilt();
         }
         if !receipt.warnings.is_empty() {
             self.status = format!("Finished. {}", receipt.warnings.join(" "));

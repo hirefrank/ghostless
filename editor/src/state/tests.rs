@@ -2207,7 +2207,6 @@ fn section_switch_during_judge_keeps_the_new_section_score() {
 
 #[test]
 fn aba_section_switch_and_rebuild_drop_stale_judge_replies() {
-    use crate::bridge::BuildSummary;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let calls = Arc::new(AtomicUsize::new(0));
@@ -2266,16 +2265,7 @@ fn aba_section_switch_and_rebuild_drop_stale_judge_replies() {
     editor.request_judge(0.0);
     poll(&mut editor, delay, &mut tx);
     assert_eq!(started_rx.recv_timeout(Duration::from_secs(2)).unwrap(), 0);
-    editor.apply_bridge_reply(crate::bridge::BridgeReply::Build {
-        doc_id: Some(editor.documents[0].id.clone()),
-        result: Ok(BuildSummary {
-            gold_pieces: 1,
-            counts: serde_json::Value::Null,
-            bronze_format_only: false,
-            warnings: Vec::new(),
-            generated_at: String::new(),
-        }),
-    });
+    editor.invalidate_voice_analysis();
     assert_eq!(editor.documents[0].judge_epoch, 1);
     assert!(editor.documents[0].latest_judge_request.is_none());
     assert!(editor.active_judge_report().is_none());

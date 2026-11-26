@@ -254,6 +254,13 @@ pub(crate) fn build(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
         );
 
         root = root.child(Divider::horizontal().build(kit));
+        let mut review = SidebarRow::new("Rules & Checks")
+            .icon(&glyphs::FILE_TEXT)
+            .on_select(Editor::open_voice_studio);
+        let pending = editor.studio.pending_count();
+        if pending > 0 {
+            review = review.badge(pending.to_string());
+        }
         let voice_sec = SidebarSection::new("Voice")
             .collapsed(editor.voice_collapsed)
             .on_toggle(|e: &mut Editor, _| e.voice_collapsed = !e.voice_collapsed)
@@ -279,6 +286,7 @@ pub(crate) fn build(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> El {
                     .build(kit)
                     .key("voice-guide"),
             )
+            .row(review.build(kit).key("voice-studio-open"))
             .build(kit);
         root = root.child(voice_sec);
     }

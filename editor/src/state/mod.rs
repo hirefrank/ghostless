@@ -21,11 +21,13 @@ use std::{
 };
 
 mod autosave;
+mod commands;
 mod dialogs;
 mod finish;
 mod keybindings;
 mod notifications;
 mod search_state;
+mod studio;
 mod voice;
 mod watching;
 mod workspace_actions;
@@ -34,10 +36,12 @@ mod workspace_actions;
 mod tests;
 
 pub(crate) use autosave::poll;
+pub(crate) use commands::filtered_commands;
 pub(crate) use dialogs::DialogKind;
 pub(crate) use finish::FinishModal;
 pub(crate) use keybindings::on_key;
 pub(crate) use notifications::NoticeAction;
+pub(crate) use studio::{ALL_SECTIONS, Decision, ReviewKind};
 #[cfg(test)]
 pub(in crate::state) use voice::judge_target;
 pub(crate) use voice::section_for_document;
@@ -87,6 +91,7 @@ pub(crate) struct WorkspaceChrome {
     pub(crate) dialog_input: TextEdit,
     pub(crate) dialog_error: Option<String>,
     pub(crate) finish: Option<FinishModal>,
+    pub(crate) palette: commands::PaletteState,
     pub(in crate::state) finish_wait: Option<DocId>,
 }
 
@@ -125,7 +130,7 @@ pub(crate) struct Editor {
     pub(crate) section_menu_open: bool,
     pub(crate) rule_draft: TextEdit,
     pub(crate) notifications: notifications::Notifications,
-    pub(crate) voice_review: watching::VoiceReviewCounts,
+    pub(crate) studio: studio::Studio,
     watching: watching::WatchState,
     external_compare: Option<DocId>,
     finish_options: Option<crate::bridge::FinishOptions>,
@@ -277,7 +282,7 @@ impl Editor {
             section_menu_open: false,
             rule_draft: TextEdit::new(""),
             notifications: Default::default(),
-            voice_review: Default::default(),
+            studio: Default::default(),
             watching: Default::default(),
             external_compare: None,
             finish_options: None,
@@ -348,7 +353,7 @@ impl Editor {
             section_menu_open: false,
             rule_draft: TextEdit::new(""),
             notifications: Default::default(),
-            voice_review: Default::default(),
+            studio: Default::default(),
             watching: Default::default(),
             external_compare: None,
             finish_options: None,
@@ -469,6 +474,7 @@ impl Editor {
         }
     }
     pub(crate) fn switch_active_doc(&mut self, pos: usize) {
+        self.studio.open = false;
         if pos >= self.documents.len() {
             return;
         }
@@ -681,6 +687,7 @@ impl Editor {
             self.refresh_diff();
         }
         self.view_mode = mode;
+        self.studio.open = false;
         if !self.can_replace_find() {
             self.find.show_replace = false;
         }

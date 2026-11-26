@@ -6,6 +6,7 @@ use rune_kit::{
 };
 
 mod canvas;
+mod command_palette;
 mod compare;
 mod external_conflict;
 mod find_bar;
@@ -21,6 +22,7 @@ mod sidebar;
 mod status_bar;
 mod tabs;
 mod toolbar;
+mod voice_studio;
 
 #[cfg(test)]
 pub(crate) const TEXTAREA_LINE_HEIGHT: f32 = 17.5;
@@ -33,34 +35,40 @@ pub(crate) fn working_textarea_metrics(pane_height: Option<f32>) -> (f32, usize)
 }
 
 pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
-    if editor.is_landing_view() {
-        return crate::ui_welcome::view(editor, cx);
-    }
-
     let kit = crate::theme::build_kit(editor.store.ui.theme, cx.system_dark());
     let mut overlays: Vec<El> = Vec::new();
+    if editor.is_landing_view() {
+        command_palette::mount(editor, &kit, &mut overlays);
+        return rune_kit::root(crate::ui_welcome::view(editor, cx), overlays);
+    }
 
     let tb = toolbar::build(editor, &kit, &mut overlays);
     let sb = sidebar::build(editor, &kit, &mut overlays);
     let insp = build_inspector(editor, cx, &kit, &mut overlays);
 
-    let stage = build_stage(editor, cx, &kit);
-    let stage = if editor.reference.open && editor.view_mode != ViewMode::Compare {
-        row()
-            .grow(1.0)
-            .w_full()
-            .min_h(0.0)
-            .child(col().grow(1.0).w(0.0).min_h(0.0).child(reference::build(
-                editor,
-                &kit,
-                &mut overlays,
-            )))
-            .child(col().w(1.0).h_full().fill(kit.c.border_muted))
-            .child(col().grow(1.0).w(0.0).min_h(0.0).child(stage))
+    let stage = if editor.studio.open {
+        voice_studio::build(editor, &kit, &mut overlays)
     } else {
-        stage
+        build_stage(editor, cx, &kit)
     };
-    let stage = if editor.find.open
+    let stage =
+        if !editor.studio.open && editor.reference.open && editor.view_mode != ViewMode::Compare {
+            row()
+                .grow(1.0)
+                .w_full()
+                .min_h(0.0)
+                .child(col().grow(1.0).w(0.0).min_h(0.0).child(reference::build(
+                    editor,
+                    &kit,
+                    &mut overlays,
+                )))
+                .child(col().w(1.0).h_full().fill(kit.c.border_muted))
+                .child(col().grow(1.0).w(0.0).min_h(0.0).child(stage))
+        } else {
+            stage
+        };
+    let stage = if !editor.studio.open
+        && editor.find.open
         && editor.view_mode != ViewMode::Compare
         && editor.active_doc_ref().is_some()
     {
@@ -133,6 +141,7 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
     mount_dialogs(editor, &kit, &mut overlays);
     notifications::mount(editor, &kit, &mut overlays);
     finish_modal::mount(editor, &kit, &mut overlays);
+    command_palette::mount(editor, &kit, &mut overlays);
     quick_switcher::mount(editor, &kit, &mut overlays);
     folder_search::mount(editor, &kit, &mut overlays);
     rune_kit::root(shell, overlays)

@@ -1,8 +1,6 @@
 use super::{Editor, JUDGE_DELAY, ViewMode, load_placeholder};
 use crate::{
-    bridge::BridgeOp,
     documents::{DocId, DocumentBuffer, ExternalConflict},
-    error::EditorError,
     fs_io, prefs,
     state::notifications::NoticeAction,
     ui::reference::ReferenceSource,
@@ -11,7 +9,6 @@ use crate::{
     workspace_tree,
 };
 use rune::{TextEdit, Tx};
-use serde_json::Value;
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
@@ -26,20 +23,12 @@ pub(crate) struct WatchState {
     deferred: BTreeSet<PathBuf>,
 }
 
-#[derive(Default)]
-pub(crate) struct VoiceReviewCounts {
-    rules_request: Option<u64>,
-    checks_request: Option<u64>,
-    pub(crate) hypotheses: usize,
-    pub(crate) pending_checks: usize,
-}
-
 impl Editor {
     pub(in crate::state) fn restart_watcher(&mut self) {
         self.watching.watcher = None;
         self.watching.generation = self.watching.generation.wrapping_add(1);
         self.watching.deferred.clear();
-        self.voice_review = VoiceReviewCounts::default();
+        self.studio = Default::default();
         self.external_compare = None;
         self.notifications = Default::default();
         let Some(wake) = self.watching.wake.clone() else {
@@ -119,7 +108,7 @@ impl Editor {
             if let Some(voice) = &self.voice_project {
                 self.sessions = workspace_tree::scan_sessions(voice, &self.store.session_links);
             }
-            self.refresh_voice_review_counts();
+            self.refresh_voice_review();
         }
 
         for path in batch.modified_files {
@@ -331,55 +320,8 @@ impl Editor {
         external_sides(doc)
     }
 
-    pub(in crate::state) fn refresh_voice_review_counts(&mut self) {
-        let Some(project) = self.voice_project.clone() else {
-            return;
-        };
-        self.voice_review.rules_request = self
-            .bridge
-            .request(
-                None,
-                self.watching.generation,
-                BridgeOp::RulesList {
-                    project: project.clone(),
-                },
-            )
-            .ok();
-        self.voice_review.checks_request = self
-            .bridge
-            .request(
-                None,
-                self.watching.generation,
-                BridgeOp::ChecksList { project },
-            )
-            .ok();
-    }
-
-    pub(in crate::state) fn apply_voice_review_count(
-        &mut self,
-        rules: bool,
-        id: u64,
-        result: Result<Value, EditorError>,
-    ) {
-        let (request, count, key) = if rules {
-            (
-                &mut self.voice_review.rules_request,
-                &mut self.voice_review.hypotheses,
-                "hypotheses",
-            )
-        } else {
-            (
-                &mut self.voice_review.checks_request,
-                &mut self.voice_review.pending_checks,
-                "pending",
-            )
-        };
-        if *request == Some(id) {
-            *request = None;
-            if let Ok(list) = result {
-                *count = list[key].as_array().map_or(0, Vec::len);
-            }
-        }
+    pub(in crate::state) fn workspace_generation(&self) -> u64 {
+        self.watching.generation
     }
 }
 

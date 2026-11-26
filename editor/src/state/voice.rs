@@ -306,23 +306,6 @@ impl Editor {
             self.active_working_edit_mut().replace_text(&before);
         }
     }
-    pub(crate) fn request_voice_build(&mut self) {
-        let Some(project) = self.voice_project.clone() else {
-            self.status = "Open a voice project before building".into();
-            return;
-        };
-        let doc_id = self.active_doc_ref().map(|doc| doc.id.clone());
-        let generation = self.active_doc_ref().map(|doc| doc.generation).unwrap_or(0);
-        if let Err(error) = self.bridge.request(
-            doc_id,
-            generation,
-            crate::bridge::BridgeOp::Build { project },
-        ) {
-            self.status = error.to_string();
-            return;
-        }
-        self.status = "Building voice guide…".into();
-    }
     pub(crate) fn save_durable_rule(&mut self, kind: &str) {
         let text = self.rule_draft.text.trim().to_owned();
         if text.is_empty() {
@@ -658,12 +641,9 @@ impl Editor {
                     report: result,
                 });
             }
-            BridgeReply::Build { result, .. } => match result {
-                Ok(_) => {
-                    self.invalidate_voice_analysis();
-                }
-                Err(error) => self.status = format!("Build failed: {error}"),
-            },
+            BridgeReply::Build { request_id, result } => {
+                self.apply_voice_build(request_id, result);
+            }
             BridgeReply::SaveNote { result, .. } => match result {
                 Ok(saved) => {
                     self.status = format!("Saved note to {}", saved.path);
@@ -714,14 +694,16 @@ impl Editor {
                 }
             }
             BridgeReply::RulesList { request_id, result } => {
-                self.apply_voice_review_count(true, request_id, result);
+                self.apply_rules_list(request_id, result);
             }
             BridgeReply::ChecksList { request_id, result } => {
-                self.apply_voice_review_count(false, request_id, result);
+                self.apply_checks_list(request_id, result);
             }
-            BridgeReply::RulesDecide { result }
-            | BridgeReply::ChecksDecide { result }
-            | BridgeReply::Promote { result } => {
+            BridgeReply::RulesDecide { request_id, result }
+            | BridgeReply::ChecksDecide { request_id, result } => {
+                self.apply_voice_decision(request_id, result);
+            }
+            BridgeReply::Promote { result } => {
                 if let Err(error) = result {
                     self.status = error.to_string();
                 }

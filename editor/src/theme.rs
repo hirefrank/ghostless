@@ -1,5 +1,5 @@
 use crate::prefs::{FontChoice, MeasurePreset, ThemeMode, UiPrefs};
-use rune::{TextStyle, color::hex};
+use rune::{TextStyle, Tx, color::hex};
 use rune_kit::Kit;
 
 pub(crate) fn build_kit(mode: ThemeMode, system_dark: bool) -> Kit {
@@ -22,6 +22,15 @@ pub(crate) fn build_kit(mode: ThemeMode, system_dark: bool) -> Kit {
     }
     kit
 }
+pub(crate) fn apply_font_choice(font: FontChoice, tx: &mut Tx) {
+    let sans = if font == FontChoice::Serif {
+        "Georgia, Noto Serif, Liberation Serif, Times New Roman, Inter"
+    } else {
+        "Inter, sans-serif"
+    };
+    tx.set_font_families(sans, "IBM Plex Mono, monospace");
+}
+
 pub(crate) fn prose_text_style(prefs: &UiPrefs) -> TextStyle {
     let size = prefs.font_size.clamp(13.0, 24.0);
     let style = TextStyle::new(size, 400.0).lh((size * 1.65).round());
