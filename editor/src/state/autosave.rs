@@ -5,7 +5,6 @@ use crate::{
     documents::{DocId, DocumentBuffer},
     fs_io, prefs,
     worker::{InFlight, WorkerReply, WorkerRequest, WriteOutcome},
-    workspace_tree,
 };
 use rune::Tx;
 use std::{collections::HashSet, path::PathBuf, time::Duration};
@@ -109,7 +108,7 @@ impl Editor {
         doc.pending_recovery = false;
         self.dispatch_next();
     }
-    pub(crate) fn finish(&mut self) {
+    pub(in crate::state) fn queue_finish(&mut self) {
         let Some(idx) = self.active_doc else {
             return;
         };
@@ -221,6 +220,7 @@ impl Editor {
                 session_id,
                 before_sha256: doc.before_sha256.clone(),
                 snapshot,
+                options: self.finish_options.take().unwrap_or_default(),
                 mirror_path: doc.mirror_path.clone(),
                 mirror_expected_sha256: Self::mirror_sync_hash(&self.store, doc),
                 mirror_force,
@@ -233,6 +233,7 @@ impl Editor {
                     doc.finish_requested = false;
                     doc.save_error = Some(error.to_string());
                     self.status = format!("Finish stopped: {error}");
+                    self.finish_failed(&doc_id, error);
                 }
             }
             return;
@@ -427,60 +428,7 @@ impl Editor {
                 generation,
                 snapshot,
                 result,
-            } => {
-                let mut finished_ok = false;
-                if let Some(doc) = self.documents.iter_mut().find(|d| d.id == doc_id) {
-                    let warning = snapshot.and_then(|(sha, outcome)| {
-                        Self::saved_snapshot(&mut self.store, doc, generation, sha, outcome)
-                    });
-                    doc.finish_requested = false;
-                    match result {
-                        Ok(()) => {
-                            doc.finished = true;
-                            doc.read_only = true;
-                            doc.pending_save = false;
-                            doc.autosave_due = None;
-                            doc.save_error = None;
-                            doc.mirror_path = None;
-                            if matches!(doc.id, DocId::File(_))
-                                && let (Some(project), Some(session_id)) =
-                                    (doc.voice_project.clone(), doc.session_id.clone())
-                            {
-                                doc.id = DocId::Session {
-                                    project: project.clone(),
-                                    id: session_id.clone(),
-                                };
-                                doc.path =
-                                    project.join("sessions").join(&session_id).join("after.md");
-                                if self
-                                    .judge_inflight
-                                    .as_ref()
-                                    .is_some_and(|inflight| inflight.doc_id == doc_id)
-                                {
-                                    self.judge_inflight = None;
-                                }
-                            }
-                            doc.last_saved_label = Some("Finished".into());
-                            self.status = warning.map_or_else(
-                                || "Finished. Final and receipt saved locally.".into(),
-                                |reason| format!("Finished locally. {reason}"),
-                            );
-                            if let Some(voice) = &self.voice_project {
-                                self.sessions =
-                                    workspace_tree::scan_sessions(voice, &self.store.session_links);
-                            }
-                            finished_ok = true;
-                        }
-                        Err(error) => {
-                            doc.pending_save = false;
-                            doc.finish_error = Some(error.to_string());
-                            doc.save_error = Some(error.to_string());
-                            self.status = format!("Finish stopped: {error}");
-                        }
-                    }
-                }
-                finished_ok
-            }
+            } => self.apply_finished_reply(doc_id, generation, snapshot, result, tx),
         };
         self.dispatch_next();
         ok
@@ -757,6 +705,7 @@ pub(crate) fn poll(editor: &mut Editor, clock: f64, tx: &mut Tx) -> bool {
     }
 
     editor.dispatch_next();
+    changed |= editor.poll_finish(clock, tx);
     if editor.worker_busy.is_none()
         && let Some(due) = next_wake
     {

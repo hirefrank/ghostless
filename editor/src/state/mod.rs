@@ -22,6 +22,7 @@ use std::{
 
 mod autosave;
 mod dialogs;
+mod finish;
 mod keybindings;
 mod search_state;
 mod voice;
@@ -32,6 +33,7 @@ mod tests;
 
 pub(crate) use autosave::poll;
 pub(crate) use dialogs::DialogKind;
+pub(crate) use finish::FinishModal;
 pub(crate) use keybindings::on_key;
 #[cfg(test)]
 pub(in crate::state) use voice::judge_target;
@@ -81,6 +83,8 @@ pub(crate) struct WorkspaceChrome {
     pub(crate) active_dialog: Option<DialogKind>,
     pub(crate) dialog_input: TextEdit,
     pub(crate) dialog_error: Option<String>,
+    pub(crate) finish: Option<FinishModal>,
+    pub(in crate::state) finish_wait: Option<DocId>,
 }
 
 pub(crate) struct Editor {
@@ -118,6 +122,8 @@ pub(crate) struct Editor {
     pub(crate) section_menu_open: bool,
     pub(crate) rule_draft: TextEdit,
     pub(crate) toast: Option<String>,
+    pub(crate) toasts: rune_kit::ToastStack<String>,
+    finish_options: Option<crate::bridge::FinishOptions>,
     pub(crate) pending_document_focus: bool,
     pub(crate) compare_unified: bool,
     pub(crate) conflict_compare: bool,
@@ -260,6 +266,8 @@ impl Editor {
             section_menu_open: false,
             rule_draft: TextEdit::new(""),
             toast: None,
+            toasts: Default::default(),
+            finish_options: None,
             pending_document_focus: false,
             compare_unified: false,
             conflict_compare: false,
@@ -327,6 +335,8 @@ impl Editor {
             section_menu_open: false,
             rule_draft: TextEdit::new(""),
             toast: None,
+            toasts: Default::default(),
+            finish_options: None,
             pending_document_focus: false,
             compare_unified: false,
             conflict_compare: false,

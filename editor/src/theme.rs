@@ -9,16 +9,16 @@ pub(crate) fn build_kit(mode: ThemeMode, system_dark: bool) -> Kit {
         _ => false,
     });
     if mode == ThemeMode::Paper {
-        kit.c.bg_base = hex("#FAF6EE").unwrap();
-        kit.c.page = hex("#F4EFE6").unwrap();
-        kit.c.bg_deep = hex("#EFE9DD").unwrap();
-        kit.c.layer_01 = hex("#F7F2E8").unwrap();
-        kit.c.layer_02 = hex("#ECE5D8").unwrap();
-        kit.c.text_base = hex("#2B251F").unwrap();
-        kit.c.text_muted = hex("#6A6055").unwrap();
-        kit.c.text_faint = hex("#9A8F82").unwrap();
-        kit.c.border_muted = hex("#E3DACB").unwrap();
-        kit.c.border_base = hex("#D5CABB").unwrap();
+        kit.c.bg_base = hex("#FAF6EE").unwrap_or(kit.c.bg_base);
+        kit.c.page = hex("#F4EFE6").unwrap_or(kit.c.page);
+        kit.c.bg_deep = hex("#EFE9DD").unwrap_or(kit.c.bg_deep);
+        kit.c.layer_01 = hex("#F7F2E8").unwrap_or(kit.c.layer_01);
+        kit.c.layer_02 = hex("#ECE5D8").unwrap_or(kit.c.layer_02);
+        kit.c.text_base = hex("#2B251F").unwrap_or(kit.c.text_base);
+        kit.c.text_muted = hex("#6A6055").unwrap_or(kit.c.text_muted);
+        kit.c.text_faint = hex("#9A8F82").unwrap_or(kit.c.text_faint);
+        kit.c.border_muted = hex("#E3DACB").unwrap_or(kit.c.border_muted);
+        kit.c.border_base = hex("#D5CABB").unwrap_or(kit.c.border_base);
     }
     kit
 }

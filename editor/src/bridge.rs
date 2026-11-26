@@ -22,7 +22,11 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{cli, documents::DocId, worker::WakeFn};
+use crate::{
+    cli,
+    documents::DocId,
+    worker::{CliFn, WakeFn},
+};
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -399,7 +403,13 @@ impl BridgeClient {
 
     pub(crate) fn shutdown(&mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
-        if let Some(mut child) = self.shared.child.lock().unwrap().take() {
+        if let Some(mut child) = self
+            .shared
+            .child
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -552,7 +562,10 @@ fn spawn_process(
             let _ = std::io::Read::read_to_string(&mut BufReader::new(stderr), &mut sink);
         });
     }
-    *shared.child.lock().unwrap() = Some(child);
+    *shared
+        .child
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(child);
     Ok(LiveProcess {
         stdin,
         stdout: BufReader::new(stdout),
@@ -578,7 +591,12 @@ fn write_and_read(live: &mut LiveProcess, payload: &str) -> Result<String, Edito
 
 fn shutdown_live(live: Option<LiveProcess>, shared: &Shared) {
     drop(live);
-    if let Some(mut child) = shared.child.lock().unwrap().take() {
+    if let Some(mut child) = shared
+        .child
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    {
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -788,6 +806,60 @@ impl BridgeOp {
             ),
         })
     }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct FinishOptions {
+    pub note: Option<String>,
+    pub check: Option<String>,
+    pub rebuild: bool,
+    pub promote: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FinishReceipt {
+    pub learned_path: Option<String>,
+    #[serde(default)]
+    pub rebuilt: bool,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+/// Run a single bridge request on the critical write worker's own lane.
+pub(crate) fn session_finish(
+    project: PathBuf,
+    session: String,
+    options: FinishOptions,
+    runner: &CliFn,
+) -> Result<FinishReceipt, EditorError> {
+    let request = Job {
+        id: 1,
+        doc_id: None,
+        generation: 0,
+        section_label: String::new(),
+        op: BridgeOp::SessionFinish {
+            project,
+            session,
+            note: options.note,
+            checks: options.check.into_iter().collect(),
+            rebuild: options.rebuild,
+            promote: options.promote,
+            final_path: None,
+        },
+    };
+    let line = runner(&["bridge"], Some(&format!("{}\n", request.payload()?)))?;
+    let envelope: Envelope = serde_json::from_str(&line).map_err(|error| EditorError::Json {
+        context: format!("Invalid bridge response: {error}"),
+    })?;
+    if envelope.id != Some(request.id) || !envelope.ok {
+        return Err(EditorError::Bridge(
+            envelope
+                .error
+                .unwrap_or_else(|| "Finish request failed".into()),
+        ));
+    }
+    parse_value(envelope.result.unwrap_or(Value::Null))
 }
 
 #[derive(Deserialize)]

@@ -72,7 +72,7 @@ pub(crate) fn build(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> Toolb
             .trailing(
                 Button::new("Finish")
                     .variant(ButtonVariant::Submit)
-                    .disabled(locked)
+                    .disabled(!editor.can_open_finish())
                     .on_press(|e: &mut Editor| e.finish())
                     .build(kit),
             );

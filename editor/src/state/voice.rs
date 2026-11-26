@@ -545,6 +545,16 @@ impl Editor {
             self.status = "This file changed on disk outside the edit session.".into();
         }
     }
+    pub(in crate::state) fn invalidate_voice_analysis(&mut self) {
+        for doc in &mut self.documents {
+            doc.judge_epoch += 1;
+            doc.latest_judge_request = None;
+            doc.cached_judge = None;
+        }
+        self.judge_inflight = None;
+        self.judge_armed = true;
+    }
+
     pub(in crate::state) fn request_judge(&mut self, clock: f64) {
         let ready = self.voice_project.is_some() && self.active_doc_ref().is_some_and(judge_target);
         if !ready {
@@ -637,13 +647,7 @@ impl Editor {
             }
             BridgeReply::Build { result, .. } => match result {
                 Ok(_) => {
-                    for doc in &mut self.documents {
-                        doc.judge_epoch += 1;
-                        doc.latest_judge_request = None;
-                        doc.cached_judge = None;
-                    }
-                    self.judge_inflight = None;
-                    self.judge_armed = true;
+                    self.invalidate_voice_analysis();
                 }
                 Err(error) => self.status = format!("Build failed: {error}"),
             },

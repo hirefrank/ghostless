@@ -1,5 +1,6 @@
 use crate::error::EditorError;
 use crate::{
+    bridge::{self, FinishOptions, FinishReceipt},
     documents::DocId,
     fs_io,
     quick_open::{FolderMatch, search_workspace_files},
@@ -89,6 +90,7 @@ pub(crate) enum WorkerRequest {
         session_id: String,
         before_sha256: Option<String>,
         snapshot: Option<(String, String)>,
+        options: FinishOptions,
         mirror_path: Option<PathBuf>,
         mirror_expected_sha256: Option<String>,
         mirror_force: bool,
@@ -117,7 +119,7 @@ pub(crate) enum WorkerReply {
         doc_id: DocId,
         generation: u64,
         snapshot: Option<(String, WriteOutcome)>,
-        result: Result<(), EditorError>,
+        result: Result<FinishReceipt, EditorError>,
     },
 }
 
@@ -355,6 +357,7 @@ impl Worker {
                         session_id,
                         before_sha256,
                         snapshot,
+                        options,
                         mirror_path,
                         mirror_expected_sha256,
                         mirror_force,
@@ -374,12 +377,12 @@ impl Worker {
                             }) {
                                 Ok(outcome) => {
                                     saved_snapshot = Some((sha, outcome));
-                                    run_finish(&project, &session_id, &*runner)
+                                    bridge::session_finish(project, session_id, options, &*runner)
                                 }
                                 Err(error) => Err(error),
                             }
                         } else {
-                            run_finish(&project, &session_id, &*runner)
+                            bridge::session_finish(project, session_id, options, &*runner)
                         };
                         WorkerReply::Finished {
                             doc_id,
@@ -597,26 +600,6 @@ fn write_workspace_file(path: &Path, content: &str) -> Result<(), EditorError> {
     fs_io::atomic_write_text(path, content)
 }
 
-pub(crate) fn run_finish(
-    project: &Path,
-    session_id: &str,
-    runner: &CliFn,
-) -> Result<(), EditorError> {
-    let project = project.to_str().ok_or("Project path is not UTF-8")?;
-    runner(
-        &[
-            "finish",
-            "--session",
-            session_id,
-            "--project",
-            project,
-            "--json",
-        ],
-        None,
-    )?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -630,7 +613,7 @@ mod tests {
         let (started, searches) = mpsc::channel();
         let (release, blocked) = mpsc::channel();
         let mut worker = Worker::spawn_with_handlers(
-            Box::new(|_, _| Ok(String::new())),
+            Box::new(|_, _| Ok(r#"{"id":1,"ok":true,"result":{}}"#.into())),
             Box::new(|_| Ok(WriteOutcome::Local)),
             Box::new(|| {}),
         );
@@ -680,6 +663,7 @@ mod tests {
                 session_id: "session".into(),
                 before_sha256: None,
                 snapshot: None,
+                options: FinishOptions::default(),
                 mirror_path: None,
                 mirror_expected_sha256: None,
                 mirror_force: false,
@@ -698,7 +682,7 @@ mod tests {
         ));
         assert!(matches!(
             finish,
-            Ok(WorkerReply::Finished { result: Ok(()), .. })
+            Ok(WorkerReply::Finished { result: Ok(_), .. })
         ));
         assert_eq!(searches.recv_timeout(wait).unwrap(), "latest");
         assert_eq!(worker.search.rx.recv_timeout(wait).unwrap().id, latest);

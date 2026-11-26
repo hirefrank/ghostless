@@ -12,7 +12,7 @@ pub(crate) fn on_key(editor: &mut Editor, key: &KeyEvent, tx: &mut Tx) -> bool {
         }
         return true;
     }
-    if editor.chrome.active_dialog.is_some() {
+    if editor.chrome.active_dialog.is_some() || editor.chrome.finish.is_some() {
         return false;
     }
     if key.is_command('o') {

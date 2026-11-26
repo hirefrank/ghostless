@@ -741,7 +741,14 @@ fn ok_writer() -> WriteRunner {
 }
 
 fn ok_runner() -> CliRunner {
-    Box::new(|_, _| Ok("{}".into()))
+    Box::new(|args, _| {
+        Ok(if args == ["bridge"] {
+            r#"{"id":1,"ok":true,"result":{}}"#
+        } else {
+            "{}"
+        }
+        .into())
+    })
 }
 
 fn drain_until_idle(editor: &mut Editor) {
@@ -1681,10 +1688,10 @@ fn finish_waits_for_in_flight_save_then_finishes_once() {
         Ok(WriteOutcome::Local)
     });
     let runner: CliRunner = Box::new(move |args, _| {
-        if args[0] == "finish" {
+        if args[0] == "bridge" {
             cli_events.lock().unwrap().push("finish");
         }
-        Ok("{}".into())
+        Ok(r#"{"id":1,"ok":true,"result":{}}"#.into())
     });
 
     let mut editor = Editor::with_handlers(
@@ -1702,8 +1709,8 @@ fn finish_waits_for_in_flight_save_then_finishes_once() {
         .recv_timeout(Duration::from_secs(2))
         .expect("snapshot started");
 
-    editor.finish();
-    editor.finish();
+    editor.queue_finish();
+    editor.queue_finish();
     assert!(editor.active_is_locked());
 
     release_tx.send(()).unwrap();
@@ -3905,7 +3912,7 @@ fn linked_session_files_skips_finished_sessions_and_picks_newest_deterministical
             doc_id: DocId::File(draft.clone()),
             generation: 0,
             snapshot: None,
-            result: Ok(()),
+            result: Ok(crate::bridge::FinishReceipt::default()),
         },
         None,
     );
@@ -4317,7 +4324,7 @@ fn keep_session_then_finish_mirrors_and_reconcile_refreshes_the_sync_hash() {
         });
         doc.force_mirror = true;
     }
-    editor.finish();
+    editor.queue_finish();
     drain_until_idle(&mut editor);
     assert_eq!(fs::read_to_string(&draft).unwrap(), body);
 
@@ -4432,7 +4439,7 @@ fn finish_after_an_inflight_save_still_mirrors_a_kept_session() {
     editor.save_clicked();
     started.recv_timeout(Duration::from_secs(2)).unwrap();
     editor.active_doc_mut().unwrap().force_mirror = true;
-    editor.finish();
+    editor.queue_finish();
     release.send(()).unwrap();
     drain_until_idle(&mut editor);
     assert_eq!(fs::read_to_string(&draft).unwrap(), body);
