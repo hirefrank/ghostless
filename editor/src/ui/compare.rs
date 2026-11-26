@@ -9,17 +9,26 @@ pub(crate) fn build(editor: &Editor, kit: &Kit) -> El {
     let Some(original) = editor.compare_left_text().map(str::to_owned) else {
         return col().key("compare-body");
     };
-    let Some(current) = editor.active_doc_ref().map(|doc| doc.edit.text.clone()) else {
+    let Some(current) = editor.compare_right_text() else {
         return col().key("compare-body");
     };
-    let heading = if editor.is_conflict_compare() {
+    let heading = if editor.is_external_compare() {
+        if editor
+            .active_doc_ref()
+            .is_some_and(|doc| doc.external_conflict.is_some())
+        {
+            "Your edits vs disk"
+        } else {
+            "Previous draft vs disk"
+        }
+    } else if editor.is_conflict_compare() {
         "Disk vs session"
     } else {
         "Baseline vs draft"
     };
-    let hunks = hunks::diff_hunks(&original, &current);
+    let hunks = hunks::diff_hunks(&original, current);
     let before_words = count_words(&original);
-    let after_words = count_words(&current);
+    let after_words = count_words(current);
     let delta = after_words as i64 - before_words as i64;
     let signed = if delta > 0 {
         format!("+{delta}")
@@ -32,7 +41,7 @@ pub(crate) fn build(editor: &Editor, kit: &Kit) -> El {
     );
     let mode = if editor.compare_unified() { 1 } else { 0 };
     let editable = editor.can_revert();
-    let show_revert = !editor.is_conflict_compare();
+    let show_revert = !editor.is_conflict_compare() && !editor.is_external_compare();
     let mut column = col().gap(8.0).grow(1.0).w_full().min_h(0.0).child(
         row()
             .w_full()
@@ -77,7 +86,7 @@ pub(crate) fn build(editor: &Editor, kit: &Kit) -> El {
         );
         for (index, hunk) in hunks.iter().enumerate() {
             let removed = preview(&original, hunk.before_bytes.clone());
-            let added = preview(&current, hunk.after_bytes.clone());
+            let added = preview(current, hunk.after_bytes.clone());
             let mut line = row().w_full().center_y().gap(8.0).child(
                 text(format!("− {removed} / + {added}"))
                     .font(kit.ty.small)

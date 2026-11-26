@@ -684,7 +684,11 @@ impl Editor {
             self.status = format!("Session started, but the link was not saved: {error}");
         } else {
             self.status = format!("Tracking edit session {}", started.id);
-            self.toast = Some(format!("Edit session {} is tracking this file", started.id));
+            self.notify(
+                "track-session".into(),
+                format!("Edit session {} is tracking this file", started.id),
+                None,
+            );
         }
         self.sessions = workspace_tree::scan_sessions(&project, &self.store.session_links);
         self.refresh_diff();

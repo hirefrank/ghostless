@@ -8,6 +8,9 @@ pub(super) fn mount(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
         return;
     };
     let busy = modal.submitted;
+    let disk_changed = editor
+        .active_doc_ref()
+        .is_some_and(|doc| doc.external_conflict.is_some());
     let mut body = col()
         .w_full()
         .gap(9.0)
@@ -85,6 +88,12 @@ pub(super) fn mount(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
             "Quote the phrase you cut or added. The check stays pending until confirmed.",
             kit,
         ));
+    if disk_changed {
+        body = body.child(caption(
+            "The draft changed on disk. Close this dialog to review the change.",
+            kit,
+        ));
+    }
     if let Some(error) = &modal.error {
         body = body.child(
             text(error.to_string())
@@ -142,7 +151,7 @@ pub(super) fn mount(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
                     },
                     ButtonVariant::Submit,
                 )
-                .disabled(!modal.can_confirm())
+                .disabled(!modal.can_confirm() || disk_changed)
                 .on_press(Editor::confirm_finish)
                 .build(kit)
                 .key("confirm-finish"),

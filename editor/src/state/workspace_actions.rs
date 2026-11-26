@@ -53,6 +53,7 @@ impl Editor {
             self.status = "Workspace not changed: save or discard unsaved documents first".into();
             return;
         }
+        self.stop_watcher();
         let folder = folder.canonicalize().unwrap_or(folder);
         self.voice_project =
             voice_project.or_else(|| crate::cli::discover_voice_project(&folder, None));
@@ -105,6 +106,7 @@ impl Editor {
         self.pending_track = None;
         self.session_start_inflight = None;
         self.judge_armed = self.active_doc.is_some();
+        self.restart_watcher();
         if let Err(error) = prefs::save_store(&self.store) {
             self.status = error.to_string();
         } else {

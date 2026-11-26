@@ -260,12 +260,14 @@ pub(crate) enum BridgeReply {
         result: Result<Value, EditorError>,
     },
     RulesList {
+        request_id: u64,
         result: Result<Value, EditorError>,
     },
     RulesDecide {
         result: Result<Value, EditorError>,
     },
     ChecksList {
+        request_id: u64,
         result: Result<Value, EditorError>,
     },
     ChecksDecide {
@@ -655,9 +657,15 @@ impl Job {
                 doc_id: self.doc_id,
                 result: Ok(result),
             },
-            BridgeOp::RulesList { .. } => BridgeReply::RulesList { result: Ok(result) },
+            BridgeOp::RulesList { .. } => BridgeReply::RulesList {
+                request_id: self.id,
+                result: Ok(result),
+            },
             BridgeOp::RulesDecide { .. } => BridgeReply::RulesDecide { result: Ok(result) },
-            BridgeOp::ChecksList { .. } => BridgeReply::ChecksList { result: Ok(result) },
+            BridgeOp::ChecksList { .. } => BridgeReply::ChecksList {
+                request_id: self.id,
+                result: Ok(result),
+            },
             BridgeOp::ChecksDecide { .. } => BridgeReply::ChecksDecide { result: Ok(result) },
             BridgeOp::SaveNote { .. } => BridgeReply::SaveNote {
                 result: parse_value(result),
@@ -690,9 +698,15 @@ impl Job {
                 doc_id: self.doc_id,
                 result: Err(error),
             },
-            BridgeOp::RulesList { .. } => BridgeReply::RulesList { result: Err(error) },
+            BridgeOp::RulesList { .. } => BridgeReply::RulesList {
+                request_id: self.id,
+                result: Err(error),
+            },
             BridgeOp::RulesDecide { .. } => BridgeReply::RulesDecide { result: Err(error) },
-            BridgeOp::ChecksList { .. } => BridgeReply::ChecksList { result: Err(error) },
+            BridgeOp::ChecksList { .. } => BridgeReply::ChecksList {
+                request_id: self.id,
+                result: Err(error),
+            },
             BridgeOp::ChecksDecide { .. } => BridgeReply::ChecksDecide { result: Err(error) },
             BridgeOp::SaveNote { .. } => BridgeReply::SaveNote { result: Err(error) },
             BridgeOp::Promote { .. } => BridgeReply::Promote { result: Err(error) },

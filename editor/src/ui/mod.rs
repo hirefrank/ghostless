@@ -7,10 +7,12 @@ use rune_kit::{
 
 mod canvas;
 mod compare;
+mod external_conflict;
 mod find_bar;
 mod finish_modal;
 pub(crate) mod folder_search;
 mod inspector;
+mod notifications;
 mod preview;
 pub(crate) mod quick_switcher;
 pub(crate) use preview::{PREVIEW_BODY, reveal_find_position};
@@ -129,35 +131,7 @@ pub(crate) fn view(editor: &Editor, cx: &mut Cx<Editor>) -> El {
         .build(&kit);
 
     mount_dialogs(editor, &kit, &mut overlays);
-    if let Some(message) = editor.toast.clone() {
-        overlays.push(
-            rune_kit::ToastRegion::new()
-                .toast(
-                    rune_kit::Toast::new("note-toast", "Voice note")
-                        .description(message)
-                        .on_close(|editor: &mut Editor| editor.toast = None)
-                        .build(&kit),
-                )
-                .build(&kit),
-        );
-    }
-    if let Some(entry) = editor.toasts.front() {
-        let id = entry.id;
-        overlays.push(
-            rune_kit::ToastRegion::new()
-                .toast(
-                    rune_kit::Toast::new(format!("toast-{id}"), &entry.options)
-                        .on_close(move |editor: &mut Editor| {
-                            editor.toasts.step(rune_kit::ToastEvent::Dismissed {
-                                id: Some(id),
-                                now: 0.0,
-                            });
-                        })
-                        .build(&kit),
-                )
-                .build(&kit),
-        );
-    }
+    notifications::mount(editor, &kit, &mut overlays);
     finish_modal::mount(editor, &kit, &mut overlays);
     quick_switcher::mount(editor, &kit, &mut overlays);
     folder_search::mount(editor, &kit, &mut overlays);
@@ -201,11 +175,8 @@ fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
     };
 
     if editor.active_uses_rendered_preview() {
-        return with_conflict_banner(
-            editor,
-            kit,
-            preview::build(&doc.edit.text, &editor.store.ui, kit, Some(&editor.find)),
-        );
+        let preview = preview::build(&doc.edit.text, &editor.store.ui, kit, Some(&editor.find));
+        return with_conflict_banner(editor, kit, preview);
     }
 
     let stage = match editor.view_mode {
@@ -266,6 +237,7 @@ fn build_stage(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
 }
 
 fn with_conflict_banner(editor: &Editor, kit: &Kit, body: El) -> El {
+    let body = external_conflict::wrap(editor, kit, body);
     if editor
         .active_doc_ref()
         .and_then(|doc| doc.conflict.as_ref())

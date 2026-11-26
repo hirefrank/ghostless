@@ -8,9 +8,8 @@ use crate::{
     workspace_tree,
 };
 use rune::{FileDialogOptions, TextEdit, Tx};
-use rune_kit::ToastEvent;
 use serde::Deserialize;
-use std::{ops::Range, time::Duration};
+use std::ops::Range;
 
 #[derive(Default, Deserialize)]
 struct Provenance {
@@ -115,6 +114,9 @@ impl Editor {
     pub(crate) fn can_open_finish(&self) -> bool {
         self.active_is_session()
             && !self.active_is_locked()
+            && self
+                .active_doc_ref()
+                .is_some_and(|doc| doc.external_conflict.is_none())
             && self.chrome.finish.is_none()
             && self.chrome.finish_wait.is_none()
     }
@@ -130,15 +132,16 @@ impl Editor {
         self.save_clicked();
     }
 
-    pub(in crate::state) fn poll_finish(&mut self, clock: f64, tx: &mut Tx) -> bool {
-        let before = self.toasts.entries().len();
-        self.toasts.step(ToastEvent::Tick { now: clock });
-        if let Some(due) = self.toasts.next_due() {
-            tx.wake_after(Duration::from_secs_f64((due - clock).max(0.0)));
-        }
-        let changed = self.toasts.entries().len() != before;
+    pub(in crate::state) fn finish_modal_for(&self, id: &DocId) -> bool {
+        self.chrome
+            .finish
+            .as_ref()
+            .is_some_and(|modal| &modal.doc_id == id)
+    }
+
+    pub(in crate::state) fn poll_finish(&mut self) -> bool {
         let Some(id) = &self.chrome.finish_wait else {
-            return changed;
+            return false;
         };
         let Some(doc) = self.active_doc_ref().filter(|doc| &doc.id == id) else {
             self.chrome.finish_wait = None;
@@ -150,7 +153,7 @@ impl Editor {
             .is_some_and(|(busy, _)| busy == id)
             || doc.pending_save
         {
-            return changed;
+            return false;
         }
         if !doc.is_dirty() {
             self.chrome.finish = Some(FinishModal::new(
@@ -172,8 +175,19 @@ impl Editor {
         {
             return;
         }
-        self.chrome.finish = None;
+        if let Some(modal) = self.chrome.finish.take()
+            && let Some(doc) = self.documents.iter_mut().find(|doc| doc.id == modal.doc_id)
+            && doc
+                .notes
+                .as_ref()
+                .is_some_and(|notes| notes.text != modal.notes.text)
+        {
+            doc.notes = Some(modal.notes);
+            doc.generation += 1;
+            doc.pending_save = true;
+        }
         self.close_dialog();
+        self.dispatch_next();
     }
 
     pub(crate) fn jump_to_finish_placeholder(&mut self, tx: &mut Tx) {
@@ -191,7 +205,11 @@ impl Editor {
     }
 
     pub(crate) fn confirm_finish(&mut self) {
-        if self.active_is_locked() {
+        if self.active_is_locked()
+            || self
+                .active_doc_ref()
+                .is_some_and(|doc| doc.external_conflict.is_some())
+        {
             return;
         }
         let Some(id) = self.active_doc_ref().map(|doc| doc.id.clone()) else {
@@ -281,7 +299,6 @@ impl Editor {
         generation: u64,
         snapshot: Option<(String, WriteOutcome)>,
         result: Result<FinishReceipt, EditorError>,
-        tx: Option<&mut Tx>,
     ) -> bool {
         let mut finished_ok = false;
         let mut receipt = None;
@@ -345,7 +362,7 @@ impl Editor {
             }
         }
         if let Some(receipt) = receipt {
-            self.finish_succeeded(&doc_id, receipt, tx);
+            self.finish_succeeded(&doc_id, receipt);
         }
         if let Some(error) = error_out {
             self.finish_failed(&doc_id, error);
@@ -365,12 +382,7 @@ impl Editor {
         }
     }
 
-    pub(in crate::state) fn finish_succeeded(
-        &mut self,
-        id: &DocId,
-        receipt: FinishReceipt,
-        tx: Option<&mut Tx>,
-    ) {
+    pub(in crate::state) fn finish_succeeded(&mut self, id: &DocId, receipt: FinishReceipt) {
         if self
             .chrome
             .finish
@@ -390,16 +402,11 @@ impl Editor {
             self.status = format!("Finished. {}", receipt.warnings.join(" "));
         }
         if let Some(path) = receipt.learned_path {
-            let now = tx.as_ref().map_or(0.0, |tx| tx.clock());
-            self.toasts.step(ToastEvent::Shown {
-                key: format!("finished-{path}"),
-                options: format!("Finished · Learned to {path}"),
-                secs: tx.as_ref().map(|_| 8.0),
-                now,
-            });
-            if let Some(tx) = tx {
-                tx.wake_after(Duration::from_secs(8));
-            }
+            self.notify(
+                format!("finished-{path}"),
+                format!("Finished · Learned to {path}"),
+                None,
+            );
         }
     }
 }
@@ -450,7 +457,7 @@ mod tests {
         let mut editor = editor(&root, "Café original.\n");
         let mut tx = Tx::default();
         editor.finish();
-        assert!(editor.poll_finish(0.0, &mut tx));
+        assert!(editor.poll_finish());
         assert!(!editor.chrome.finish.as_ref().unwrap().can_confirm());
         editor.dismiss_finish();
 
@@ -465,9 +472,9 @@ mod tests {
             rune::Env::new(false, 1.0),
         );
         rt.frame(0.0);
-        rt.update(|editor, tx| {
+        rt.update(|editor, _| {
             editor.finish();
-            editor.poll_finish(0.0, tx);
+            editor.poll_finish();
         });
         rt.frame(0.1);
         assert!(rt.elements().iter().any(|element| element.text.as_deref() == Some("⚠ 1 placeholder(s) still in draft")));
@@ -493,9 +500,8 @@ mod tests {
     fn rejected_check_keeps_modal_then_success_locks_and_refreshes() {
         let root = TestDir::new("finish-retry");
         let mut editor = editor(&root, "Café final.");
-        let mut tx = Tx::default();
         editor.finish();
-        editor.poll_finish(0.0, &mut tx);
+        editor.poll_finish();
         let modal = editor.chrome.finish.as_mut().unwrap();
         assert!(modal.rebuild && modal.ai_first && !modal.promote);
         modal.notes.replace_text("Keep this modal note");
@@ -528,7 +534,7 @@ mod tests {
                 .any(|item| item.status == crate::workspace_tree::SessionStatus::Finished)
         );
         assert_eq!(
-            editor.toasts.front().unwrap().options,
+            editor.notifications.stack.front().unwrap().options.text,
             "Finished · Learned to gold/2026-01-02-notes"
         );
     }

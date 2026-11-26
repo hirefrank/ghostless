@@ -87,6 +87,10 @@ impl Editor {
             return;
         };
         let doc = &mut self.documents[idx];
+        if doc.blocks_file_save() {
+            self.status = "Resolve the disk change before saving.".into();
+            return;
+        }
         if !doc.can_save() {
             return;
         }
@@ -129,7 +133,7 @@ impl Editor {
         let autosave_files = self.store.ui.autosave_workspace_files;
         for doc in &mut self.documents {
             if doc.can_save() && doc.is_dirty() {
-                if doc.is_session() || autosave_files {
+                if doc.is_session() || (autosave_files && !doc.blocks_file_save()) {
                     doc.pending_save = true;
                     doc.autosave_due = None;
                 } else {
@@ -243,7 +247,7 @@ impl Editor {
         if let Some(doc) = self
             .documents
             .iter_mut()
-            .find(|d| d.pending_save && !d.finished)
+            .find(|d| d.pending_save && !d.finished && !d.blocks_file_save())
         {
             doc.pending_save = false;
             doc.autosave_due = None;
@@ -428,7 +432,7 @@ impl Editor {
                 generation,
                 snapshot,
                 result,
-            } => self.apply_finished_reply(doc_id, generation, snapshot, result, tx),
+            } => self.apply_finished_reply(doc_id, generation, snapshot, result),
         };
         self.dispatch_next();
         ok
@@ -524,6 +528,7 @@ impl Editor {
             if let Some(doc) = self.documents.iter_mut().find(|d| {
                 d.can_save()
                     && d.is_dirty()
+                    && !d.blocks_file_save()
                     && (d.is_session() || autosave)
                     && !attempted_save.contains(&d.id)
             }) {
@@ -554,11 +559,10 @@ impl Editor {
 
             break;
         }
-        if self
-            .documents
-            .iter()
-            .any(|doc| doc.save_error.is_some() || (doc.read_only && doc.is_dirty()))
-        {
+        if self.documents.iter().any(|doc| {
+            doc.save_error.is_some()
+                || ((doc.read_only || doc.blocks_file_save()) && doc.is_dirty())
+        }) {
             success = false;
         }
         if !success {
@@ -640,7 +644,7 @@ pub(crate) fn poll(editor: &mut Editor, clock: f64, tx: &mut Tx) -> bool {
         tx.set_font_families(sans, "IBM Plex Mono, monospace");
         editor.fonts_initialized = true;
     }
-    let mut changed = false;
+    let mut changed = editor.notifications.tick(clock, tx);
     while let Ok(reply) = editor.worker.try_recv() {
         editor.apply_reply(reply, Some(tx));
         changed = true;
@@ -653,6 +657,7 @@ pub(crate) fn poll(editor: &mut Editor, clock: f64, tx: &mut Tx) -> bool {
         editor.apply_bridge_reply(reply);
         changed = true;
     }
+    changed |= editor.poll_watcher(tx);
     if editor.judge_armed {
         editor.judge_armed = false;
         if editor.judge_due.is_none() {
@@ -680,7 +685,7 @@ pub(crate) fn poll(editor: &mut Editor, clock: f64, tx: &mut Tx) -> bool {
     let autosave = editor.store.ui.autosave_workspace_files;
     let mut next_wake: Option<f64> = None;
     for doc in &mut editor.documents {
-        if !doc.can_save() || !doc.is_dirty() {
+        if !doc.can_save() || !doc.is_dirty() || (autosave && doc.blocks_file_save()) {
             continue;
         }
         if doc.is_session() || autosave {
@@ -705,7 +710,8 @@ pub(crate) fn poll(editor: &mut Editor, clock: f64, tx: &mut Tx) -> bool {
     }
 
     editor.dispatch_next();
-    changed |= editor.poll_finish(clock, tx);
+    changed |= editor.poll_finish();
+    changed |= editor.notifications.tick(clock, tx);
     if editor.worker_busy.is_none()
         && let Some(due) = next_wake
     {
