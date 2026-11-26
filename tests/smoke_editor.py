@@ -340,6 +340,7 @@ def main() -> None:  # noqa: C901  # linear GUI smoke scenario, not a library fu
                 "mark:end",
                 "--size",
                 "1120x800",
+                "--realtime",
             ],
             cwd=base,
             env=env,
