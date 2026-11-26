@@ -36,6 +36,8 @@ jobs:
       - name: Install pinned dev tools
         run: python -m pip install ".[dev]"
       - name: Run tests
+        env:
+          GHOSTLESS_REQUIRE_DEV_TESTS: "1"
         run: bash tests/run.sh
       - name: Check CLI syntax
         run: bash -n bin/ghostless setup tests/run.sh

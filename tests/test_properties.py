@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,6 +26,8 @@ try:
     from hypothesis import strategies as st
     from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, rule
 except ModuleNotFoundError as exc:
+    if os.environ.get("GHOSTLESS_REQUIRE_DEV_TESTS") == "1":
+        raise
     raise unittest.SkipTest("Install the dev extra to run property tests") from exc
 
 QUICK = settings(max_examples=64, deadline=None, derandomize=True, print_blob=True)

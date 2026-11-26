@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from collections.abc import Callable
@@ -21,6 +22,8 @@ from ghostless.sessions import SESSION_ID_RE, finish_session, snapshot_session, 
 try:
     from jsonschema import Draft202012Validator
 except ModuleNotFoundError as exc:
+    if os.environ.get("GHOSTLESS_REQUIRE_DEV_TESTS") == "1":
+        raise
     raise unittest.SkipTest("Install the dev extra to validate JSON contracts") from exc
 
 CONTRACTS = Path(__file__).resolve().parents[1] / "fixtures" / "contracts"
