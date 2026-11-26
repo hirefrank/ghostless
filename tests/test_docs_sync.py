@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import re
 import sys
 import unittest
@@ -150,6 +151,100 @@ class DocsSyncTests(unittest.TestCase):
         self.assertIn("finish", all_skills)
         self.assertIn("rules", all_skills)
         self.assertIn("placeholder token", all_skills.lower())
+
+    def test_agents_schema_and_release_stay_in_sync(self) -> None:
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertLessEqual(len(agents.splitlines()), 150)
+        self.assertGreaterEqual(len(agents.splitlines()), 80)
+        self.assertIn("## Determinism Hierarchy", agents)
+        editor_agents = (ROOT / "editor" / "AGENTS.md").read_text(encoding="utf-8")
+        schema = (ROOT / "SCHEMA.md").read_text(encoding="utf-8")
+        release = (ROOT / "docs" / "RELEASE.md").read_text(encoding="utf-8")
+        for needle in (
+            "package.json",
+            "pyproject.toml",
+            "ghostless.__version__",
+            "editor/Cargo.toml",
+            "skills/*/SKILL.md",
+        ):
+            self.assertIn(needle, release)
+
+        commands = _cli_top_level_commands()
+        for name, text in (
+            ("AGENTS.md", agents),
+            ("editor/AGENTS.md", editor_agents),
+            ("SCHEMA.md", schema),
+        ):
+            mentioned = set(re.findall(r"`ghostless\s+([a-z][a-z0-9-]*)", text))
+            unknown = sorted(mentioned - commands)
+            self.assertEqual(unknown, [], f"{name} names unknown CLI commands: {unknown}")
+            missing_paths = [token for token in _repo_paths(text) if not (ROOT / token).exists()]
+            self.assertEqual(missing_paths, [], f"{name} names missing paths: {missing_paths}")
+
+        documented = _bridge_methods_in_schema(schema)
+        implemented = _bridge_methods_in_source()
+        self.assertEqual(documented, implemented)
+        bridge = schema.split("## ghostless bridge", 1)[1]
+        self.assertIn("`global`", bridge)
+        self.assertIn("rules_decide", bridge)
+        self.assertIn("checks_decide", bridge)
+        package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        files = package["files"]
+        assert isinstance(files, list)
+        self.assertNotIn("CONTRIBUTING.md", files)
+        self.assertTrue((ROOT / "CONTRIBUTING.md").is_file())
+        self.assertTrue((ROOT / "scripts" / "check").is_file())
+
+
+_REPO_PREFIXES = ("lib/", "editor/", "tests/", "scripts/", "docs/", "skills/", "bin/", ".github/")
+_ROOT_FILES = {
+    "AGENTS.md",
+    "SCHEMA.md",
+    "CONTRIBUTING.md",
+    "package.json",
+    "pyproject.toml",
+    "CHANGELOG.md",
+    "README.md",
+}
+
+
+def _repo_paths(text: str) -> list[str]:
+    found: list[str] = []
+    raw_tokens = re.findall(r"`([^`\n]+)`", text)
+    raw_tokens += re.findall(
+        r"(?:^|(?<=\s))(?:\./)?((?:lib|editor|tests|scripts|docs|skills|bin|\.github)/[A-Za-z0-9_.*+/-]+)",
+        text,
+        flags=re.MULTILINE,
+    )
+    seen: set[str] = set()
+    for raw in raw_tokens:
+        token = raw.strip().strip("`'\".,);").lstrip("./")
+        if not token or " " in token:
+            continue
+        if "*" in token:
+            prefix = token.split("*", 1)[0].rstrip("/")
+            token = prefix
+        elif token.endswith("/"):
+            token = token.rstrip("/")
+        if token not in seen and (token in _ROOT_FILES or token.startswith(_REPO_PREFIXES)):
+            seen.add(token)
+            found.append(token)
+    return found
+
+
+def _bridge_methods_in_schema(schema: str) -> set[str]:
+    section = schema.split("## ghostless bridge", 1)[1]
+    match = re.search(r"```text\n(.*?)```", section, re.DOTALL)
+    if match is None:
+        raise AssertionError("SCHEMA.md bridge section is missing its method list")
+    return {line.strip() for line in match.group(1).splitlines() if line.strip()}
+
+
+def _bridge_methods_in_source() -> set[str]:
+    source = (ROOT / "lib" / "ghostless" / "bridge.py").read_text(encoding="utf-8")
+    start = source.index("def _dispatch")
+    end = source.index("def _build", start)
+    return set(re.findall(r'case "([a-z_]+)":', source[start:end]))
 
 
 if __name__ == "__main__":

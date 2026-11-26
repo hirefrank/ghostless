@@ -1,6 +1,6 @@
+use crate::state::Editor;
 use rune::{El, col, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, Divider, Kit};
-use crate::state::Editor;
 
 pub(crate) fn build(editor: &Editor, kit: &Kit) -> El {
     let active = editor.active_doc_ref();
@@ -16,7 +16,10 @@ pub(crate) fn build(editor: &Editor, kit: &Kit) -> El {
         Some(doc) if doc.read_only && !doc.finished => "Read-only".to_owned(),
         Some(doc) if doc.user_locked => "Locked".to_owned(),
         Some(doc) if doc.save_error.is_some() => {
-            format!("Save failed: {}", doc.save_error.as_deref().unwrap_or("error"))
+            format!(
+                "Save failed: {}",
+                doc.save_error.as_deref().unwrap_or("error")
+            )
         }
         Some(doc) if doc.conflict.is_some() => "Disk conflict — resolve above".to_owned(),
         Some(doc) if doc.last_saved_label.is_some() => {
@@ -67,16 +70,8 @@ pub(crate) fn build(editor: &Editor, kit: &Kit) -> El {
         };
         let read_text = format!("~{} min read", doc.reading_minutes());
         bar = bar
-            .child(
-                text(word_text)
-                    .font(kit.ty.small)
-                    .color(kit.c.text_muted),
-            )
-            .child(
-                text(read_text)
-                    .font(kit.ty.small)
-                    .color(kit.c.text_faint),
-            );
+            .child(text(word_text).font(kit.ty.small).color(kit.c.text_muted))
+            .child(text(read_text).font(kit.ty.small).color(kit.c.text_faint));
     }
 
     if let Some(label) = editor.voice_pill_label() {

@@ -31,11 +31,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev mesa-vulkan-drivers xvfb
       - name: Install Rust
-        run: rustup toolchain install 1.99.1 --profile minimal --component clippy
+        run: rustup toolchain install 1.99.1 --profile minimal --component clippy,rustfmt
       - name: Select Rust
         run: rustup default 1.99.1
+      - name: Check formatting
+        run: cargo fmt --manifest-path editor/Cargo.toml -- --check
       - name: Lint Rune editor
-        run: cargo clippy --manifest-path editor/Cargo.toml --locked -- -D warnings
+        run: cargo clippy --manifest-path editor/Cargo.toml --all-targets --locked -- -D warnings
+      # Vulnerabilities fail the build. Unmaintained warnings for zbus_names,
+      # zvariant, and zvariant_derive (RUSTSEC-2026-0371, RUSTSEC-2026-0370,
+      # RUSTSEC-2026-0372) come from the pinned anomalyco/rune accesskit stack.
+      # Leave editor/Cargo.lock and the rune revision unchanged.
+      - name: Audit Rust dependencies
+        run: cargo install cargo-audit --locked --version 0.22.2 && cargo audit --file editor/Cargo.lock
       - name: Test editor project resolution
         run: cargo test --manifest-path editor/Cargo.toml --locked
       - name: Install the CLI

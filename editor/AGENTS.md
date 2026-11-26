@@ -32,13 +32,14 @@
   `workspace_tree::is_protected_voice_path` / `is_protected_voice_relative` and
   `fs_io::is_contained_in`—never duplicate file/folder protection rules per UI
   menu or command.
-- Enforce those checks at **both** UI/command entry and the `worker.rs` I/O
-  boundary, including files opened outside the scanned sidebar tree (Quick
-  Switcher, session links, CLI `--draft`, or symlinks).
+- Enforce those checks at **both** UI/command entry and the
+  `editor/src/worker.rs` I/O boundary, including files opened outside the
+  scanned sidebar tree (Quick Switcher, session links, CLI `--draft`, or
+  symlinks).
 
 ## Mode and editability guards in state, not only UI
-- Enforce view-mode and editability invariants inside `state.rs` action methods
-  rather than relying only on disabled/hidden UI buttons.
+- Enforce view-mode and editability invariants inside `editor/src/state/`
+  action methods rather than relying only on disabled/hidden UI buttons.
 - Test buttons, `on_key` shortcuts, and command dispatch across `(Write |
   Preview | Compare) × (editable | read-only | locked | voice-guide.md)` so
   shortcuts cannot mutate protected/non-editable buffers or strand overlays.
@@ -55,7 +56,7 @@
 ## Fail-safe dirty-buffer and mirror lifecycle transitions
 - Every transition (`close tab`, `switch workspace`, `rename/delete`, window
   close, quit/`Drop`) must preserve dirty buffers on write failure, surface the
-  error visibly in `ui/status_bar.rs`, and keep retry enabled until a write
+  error visibly in `editor/src/ui/status_bar.rs`, and keep retry enabled until a write
   succeeds.
 - Linked session mirroring must fail safe to the local session copy whenever
   workspace containment or baseline SHA-256 hashes are missing or divergent,

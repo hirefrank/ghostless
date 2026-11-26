@@ -53,13 +53,17 @@ fn word_ranges(text: &str, word: &str, excluded: &[Range<usize>]) -> Vec<Range<u
     let mut out = Vec::new();
     let mut index = 0;
     while index + needle.len() <= chars.len() {
-        let matched = needle.iter().zip(chars[index..].iter()).all(|(want, (_, got))| {
-            got.to_lowercase().eq(want.to_lowercase())
-        });
+        let matched = needle
+            .iter()
+            .zip(chars[index..].iter())
+            .all(|(want, (_, got))| got.to_lowercase().eq(want.to_lowercase()));
         if matched {
             let start = chars[index].0;
             let end_index = index + needle.len();
-            let end = chars.get(end_index).map(|(offset, _)| *offset).unwrap_or(text.len());
+            let end = chars
+                .get(end_index)
+                .map(|(offset, _)| *offset)
+                .unwrap_or(text.len());
             let range = start..end;
             let before = index.checked_sub(1).map(|at| chars[at].1);
             let after = chars.get(end_index).map(|(_, ch)| *ch);
@@ -99,7 +103,10 @@ mod tests {
 
     fn report() -> JudgeReport {
         JudgeReport {
-            banned: vec![BannedHit { tell: "delve".into(), count: 1 }],
+            banned: vec![BannedHit {
+                tell: "delve".into(),
+                count: 1,
+            }],
             confirmed_rules: vec![ConfirmedRuleHit {
                 id: "cut-1".into(),
                 word: "elevate".into(),
@@ -107,8 +114,14 @@ mod tests {
                 count: 1,
             }],
             structure: vec![
-                StructureHit { kind: "not-x-its-y".into(), excerpt: "not a draft, it's a letter".into() },
-                StructureHit { kind: "em-dash".into(), excerpt: "1.5 per 1k vs target 2".into() },
+                StructureHit {
+                    kind: "not-x-its-y".into(),
+                    excerpt: "not a draft, it's a letter".into(),
+                },
+                StructureHit {
+                    kind: "em-dash".into(),
+                    excerpt: "1.5 per 1k vs target 2".into(),
+                },
             ],
             ..JudgeReport::default()
         }
@@ -133,7 +146,9 @@ The rate is 1.5 per 1k vs target 2.
         let kit = rune_kit::Kit::neutral(false);
         let marks = spans(text, &report(), &kit);
         let marked = |start: usize, needle: &str| {
-            marks.iter().any(|span| span.start as usize == start && span.end as usize == start + needle.len())
+            marks.iter().any(|span| {
+                span.start as usize == start && span.end as usize == start + needle.len()
+            })
         };
         let prose = text.find("Please delve").unwrap() + "Please ".len();
         assert!(marked(prose, "delve"));
@@ -141,8 +156,17 @@ The rate is 1.5 per 1k vs target 2.
         assert!(marked(elevate, "elevate"));
         let letter = text.find("not a draft, it's a letter").unwrap();
         assert!(marked(letter, "not a draft, it's a letter"));
-        assert!(!marks.iter().any(|span| span.start as usize == text.find("delved").unwrap()));
-        assert!(!marks.iter().any(|span| span.start as usize == text.find("tell: delve").unwrap() + "tell: ".len()));
+        assert!(
+            !marks
+                .iter()
+                .any(|span| span.start as usize == text.find("delved").unwrap())
+        );
+        assert!(
+            !marks
+                .iter()
+                .any(|span| span.start as usize
+                    == text.find("tell: delve").unwrap() + "tell: ".len())
+        );
         let fenced = text.find("```\ndelve").unwrap() + 4;
         assert!(!marks.iter().any(|span| span.start as usize == fenced));
         let coded = text.find("`elevate`").unwrap() + 1;

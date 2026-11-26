@@ -6,7 +6,7 @@ v0.1.0 is ready to publish and is not published. npm and PyPI both need the main
 
 The npm package includes a portable Node launcher under `bin/`, the voice logic under `lib/ghostless/`, and agent skills under `skills/`. Its installed artifact is smoke-tested on macOS, Windows, and Linux by `.github/workflows/package.yml`. The desktop editor in `editor/` is not in the tarball: `docs/EDITOR.md` builds it from a checkout ([#35](https://github.com/hirefrank/ghostless/issues/35)).
 
-1. Bump `version` in `package.json`, `pyproject.toml`, and `ghostless.__version__` together. `npm test` fails when they disagree.
+1. Bump the version together in `package.json`, `pyproject.toml`, `ghostless.__version__` (`lib/ghostless/__init__.py`), `editor/Cargo.toml`, and `metadata.version` in `skills/*/SKILL.md`. `npm test` fails when they disagree.
 2. Add a `CHANGELOG.md` section `## vX.Y.Z — YYYY-MM-DD` and move everything out of `## Unreleased` (`publish.yml` fails fast if `## Unreleased` still has bullet entries or if the `## vX.Y.Z` section is missing or empty).
 3. Run `npm test` and `python tests/smoke_package.py`.
 4. Tag and push when you want the workflow to run:

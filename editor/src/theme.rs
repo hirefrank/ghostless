@@ -1,9 +1,13 @@
+use crate::prefs::{FontChoice, MeasurePreset, ThemeMode, UiPrefs};
 use rune::{TextStyle, color::hex};
 use rune_kit::Kit;
-use crate::prefs::{FontChoice, MeasurePreset, ThemeMode, UiPrefs};
 
 pub(crate) fn build_kit(mode: ThemeMode, system_dark: bool) -> Kit {
-    let mut kit = Kit::neutral(match mode { ThemeMode::System => system_dark, ThemeMode::Dark => true, _ => false });
+    let mut kit = Kit::neutral(match mode {
+        ThemeMode::System => system_dark,
+        ThemeMode::Dark => true,
+        _ => false,
+    });
     if mode == ThemeMode::Paper {
         kit.c.bg_base = hex("#FAF6EE").unwrap();
         kit.c.page = hex("#F4EFE6").unwrap();
@@ -21,17 +25,29 @@ pub(crate) fn build_kit(mode: ThemeMode, system_dark: bool) -> Kit {
 pub(crate) fn prose_text_style(prefs: &UiPrefs) -> TextStyle {
     let size = prefs.font_size.clamp(13.0, 24.0);
     let style = TextStyle::new(size, 400.0).lh((size * 1.65).round());
-    if prefs.font_family == FontChoice::Mono { style.mono() } else { style }
+    if prefs.font_family == FontChoice::Mono {
+        style.mono()
+    } else {
+        style
+    }
 }
 pub(crate) fn measure_max_width(preset: MeasurePreset) -> Option<f32> {
-    match preset { MeasurePreset::Narrow => Some(620.0), MeasurePreset::Medium => Some(720.0), MeasurePreset::Wide => Some(860.0), MeasurePreset::Full => None }
+    match preset {
+        MeasurePreset::Narrow => Some(620.0),
+        MeasurePreset::Medium => Some(720.0),
+        MeasurePreset::Wide => Some(860.0),
+        MeasurePreset::Full => None,
+    }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test] fn preferences_produce_valid_styles() {
-        let mut prefs = UiPrefs::default();
-        prefs.font_size = 99.0;
+    #[test]
+    fn preferences_produce_valid_styles() {
+        let prefs = UiPrefs {
+            font_size: 99.0,
+            ..UiPrefs::default()
+        };
         assert_eq!(prose_text_style(&prefs).size, 24.0);
         assert_eq!(measure_max_width(MeasurePreset::Medium), Some(720.0));
         assert_eq!(measure_max_width(MeasurePreset::Full), None);

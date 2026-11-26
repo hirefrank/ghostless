@@ -129,15 +129,24 @@ pub(crate) fn find_placeholder_ranges(
     let excluded = non_prose_ranges(text);
     let mut pos = 0;
     while let Some(start) = text[pos..].find('[').map(|n| pos + n) {
-        let Some(end) = text[start + 1..].find(']').map(|n| start + 1 + n) else { break; };
+        let Some(end) = text[start + 1..].find(']').map(|n| start + 1 + n) else {
+            break;
+        };
         let candidate = start..end + 1;
-        if !excluded.iter().any(|r| r.start < candidate.end && r.end > candidate.start)
-            && let Some((name, _)) = text[start + 1..end].split_once(':') {
+        if !excluded
+            .iter()
+            .any(|r| r.start < candidate.end && r.end > candidate.start)
+            && let Some((name, _)) = text[start + 1..end].split_once(':')
+        {
             let mut chars = name.bytes();
             let generic = name.len() >= 2
                 && chars.next().is_some_and(|b| b.is_ascii_uppercase())
-                && chars.all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b" _-".contains(&b));
-            if generic || placeholder_token.is_some_and(|token| name.to_lowercase() == token.to_lowercase()) {
+                && chars
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b" _-".contains(&b));
+            if generic
+                || placeholder_token
+                    .is_some_and(|token| name.to_lowercase() == token.to_lowercase())
+            {
                 ranges.push(candidate);
                 pos = end + 1;
                 continue;
@@ -230,17 +239,15 @@ pub(crate) fn compute_markdown_spans(
             let tail = &line[pos..];
             if tail.starts_with('[')
                 && let Some(close) = tail.find("](")
-                && let Some(end_link) = tail[close + 2..].find(')') {
-                        let finish = close + 2 + end_link + 1;
-                        spans.push(
-                            Span::new(offset + pos, offset + pos + finish).color(kit.c.text_faint),
-                        );
-                        spans.push(
-                            Span::new(offset + pos + 1, offset + pos + close)
-                                .color(kit.c.text_accent),
-                        );
-                        pos += finish;
-                        continue;
+                && let Some(end_link) = tail[close + 2..].find(')')
+            {
+                let finish = close + 2 + end_link + 1;
+                spans.push(Span::new(offset + pos, offset + pos + finish).color(kit.c.text_faint));
+                spans.push(
+                    Span::new(offset + pos + 1, offset + pos + close).color(kit.c.text_accent),
+                );
+                pos += finish;
+                continue;
             }
             let marker = ["**", "__", "*", "_"]
                 .into_iter()
@@ -253,27 +260,31 @@ pub(crate) fn compute_markdown_spans(
                         .is_some_and(char::is_alphanumeric);
                 if !(m == "_" && before_word)
                     && let Some(close) = tail[m.len()..].find(m).map(|n| n + m.len())
-                    && !(m == "_" && tail[close + m.len()..].chars().next().is_some_and(char::is_alphanumeric)) {
-                        let finish = close + m.len();
-                        if !codes.iter().any(|r| r.start < pos + finish && r.end > pos) {
-                            spans.push(
-                                Span::new(offset + pos, offset + pos + m.len())
-                                    .color(kit.c.text_faint),
-                            );
-                            let inner = Span::new(offset + pos + m.len(), offset + pos + close);
-                            spans.push(if m.len() == 2 {
-                                inner.bold()
-                            } else {
-                                inner.italic()
-                            });
-                            spans.push(
-                                Span::new(offset + pos + close, offset + pos + finish)
-                                    .color(kit.c.text_faint),
-                            );
-                            pos += finish;
-                            continue;
-                        }
+                    && !(m == "_"
+                        && tail[close + m.len()..]
+                            .chars()
+                            .next()
+                            .is_some_and(char::is_alphanumeric))
+                {
+                    let finish = close + m.len();
+                    if !codes.iter().any(|r| r.start < pos + finish && r.end > pos) {
+                        spans.push(
+                            Span::new(offset + pos, offset + pos + m.len()).color(kit.c.text_faint),
+                        );
+                        let inner = Span::new(offset + pos + m.len(), offset + pos + close);
+                        spans.push(if m.len() == 2 {
+                            inner.bold()
+                        } else {
+                            inner.italic()
+                        });
+                        spans.push(
+                            Span::new(offset + pos + close, offset + pos + finish)
+                                .color(kit.c.text_faint),
+                        );
+                        pos += finish;
+                        continue;
                     }
+                }
             }
             pos += tail.chars().next().unwrap().len_utf8();
         }
@@ -336,5 +347,4 @@ mod tests {
         }
         assert_eq!(text, before);
     }
-
 }

@@ -508,3 +508,45 @@ Skill links, from `lib/ghostless/harness.py`:
 | muse, agents | `~/.agents/skills` |
 
 Detection is the harness home directory, plus a `muse` binary for Muse. `auto` falls back to Claude Code when nothing is detected.
+
+## ghostless bridge
+
+`ghostless bridge` reads one UTF-8 JSON object per line and writes one UTF-8 JSON object per line. `NaN` and `Infinity` are rejected. A request is `{"id","method","params"}`. A success is `{"id","ok":true,"result"}`. A failure is `{"id","ok":false,"error"}` and echoes `id` when the line parsed. Types live in `lib/ghostless/schema.py`; dispatch lives in `lib/ghostless/bridge.py`.
+
+The long-lived worker caches `voice-stats.json` by mtime for `judge_text`. A one-shot `handle_request` does not keep that cache. `build` drops the cache and rebuilds. `ProjectError`, `OSError`, and `ValueError` become `ok: false`. A missing stats file is still `ok: true` with `needsBuild: true`.
+
+```text
+ping
+resolve_project
+judge_text
+sessions_list
+session_start
+session_snapshot
+session_finish
+build
+rules_list
+rules_decide
+checks_list
+checks_decide
+save_note
+promote
+```
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `ping` | none | `{version}` |
+| `resolve_project` | optional `path` | `{project, source}`, either null |
+| `judge_text` | `project`, `text`, optional `section` | judge report plus `stale`, `staleSources`, `availableSections`, `confirmedChecks`; or `{needsBuild, error}` |
+| `sessions_list` | `project` | session rows, plus `section`, `origin`, and receipt `editRate` / `learnedPath` when readable |
+| `session_start` | `project`, `draft`, optional `section`, `origin` (default `ai-first`), `sources` | session metadata plus `path` |
+| `session_snapshot` | `project`, `session`, `after`, `notes` | `{id, path, savedAt}` |
+| `session_finish` | `project`, `session`, optional `final`, `note`, `checks`, `promote`, `rebuild` | receipt; `promote` and `rebuild` add `promotion` and `rebuilt` |
+| `build` | `project` | `{goldPieces, counts, bronzeFormatOnly, warnings, generatedAt}` |
+| `rules_list` | `project` | confirmed, hypotheses, rejected, retired |
+| `rules_decide` | `project`, `action` (`confirm`, `reject`, `retire`), `ruleId`; `confirm` takes `section` or `global` | decision record |
+| `checks_list` | `project` | confirmed, pending, rejected |
+| `checks_decide` | `project`, `action` (`confirm`, `reject`, `add`), `target`; `confirm` takes `section` or `global`; `add` takes `text` | decision record, or the written pair check |
+| `save_note` | `project`, `kind`, `text` | `{path, created, appended}` with `path` as a string |
+| `promote` | `project`, `slug`, optional `demote` | promotion result; `demote` sends it to edited instead of gold |
+
+`global` is a boolean and applies only to `confirm`. It cannot be combined with `section`. On `rules_decide`, `global` confirms the rule with no section. On `checks_decide`, `global` clears a previous section. `section` and `global` on `reject`, `retire`, or `add` are errors. `receipt.json` still wins: snapshot and finish refuse a session that already has one, and finish checks `beforeSha256` before it writes.

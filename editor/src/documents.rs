@@ -1,11 +1,12 @@
+use crate::error::EditorError;
+use crate::{fs_io, prefs, session::Session};
+use rune::TextEdit;
+use serde::{Deserialize, Serialize};
 use std::{
     cell::{Cell, RefCell},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
-use rune::TextEdit;
-use serde::{Deserialize, Serialize};
-use crate::{fs_io, prefs, session::Session};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum DocId {
@@ -71,7 +72,10 @@ pub(crate) struct DocumentBuffer {
     pub recovery_due: Option<f64>,
     pub pending_save: bool,
     pub pending_recovery: bool,
+    pub close_after_save: bool,
     pub finish_requested: bool,
+    pub finish_error: Option<String>,
+    pub recovery_error: Option<String>,
     pub last_saved_label: Option<String>,
     pub save_error: Option<String>,
     pub last_disk_sha256: String,
@@ -121,8 +125,15 @@ impl DocumentBuffer {
             recovery_due: None,
             pending_save: false,
             pending_recovery: false,
+            close_after_save: false,
             finish_requested: false,
-            last_saved_label: if read_only { Some("Read-only".into()) } else { None },
+            finish_error: None,
+            recovery_error: None,
+            last_saved_label: if read_only {
+                Some("Read-only".into())
+            } else {
+                None
+            },
             save_error: None,
             last_disk_sha256: sha,
             section_override: None,
@@ -172,7 +183,10 @@ impl DocumentBuffer {
             recovery_due: None,
             pending_save: false,
             pending_recovery: false,
+            close_after_save: false,
             finish_requested: false,
+            finish_error: None,
+            recovery_error: None,
             last_saved_label: session.finished.then(|| "Finished".into()),
             save_error: None,
             last_disk_sha256: sha,
@@ -241,8 +255,16 @@ impl DocumentBuffer {
             self.cached_words.set((self.generation, count));
             count
         };
-        let lo = self.edit.anchor.min(self.edit.focus).min(self.edit.text.len());
-        let hi = self.edit.anchor.max(self.edit.focus).min(self.edit.text.len());
+        let lo = self
+            .edit
+            .anchor
+            .min(self.edit.focus)
+            .min(self.edit.text.len());
+        let hi = self
+            .edit
+            .anchor
+            .max(self.edit.focus)
+            .min(self.edit.text.len());
         let selected = if lo < hi
             && self.edit.text.is_char_boundary(lo)
             && self.edit.text.is_char_boundary(hi)
@@ -267,22 +289,30 @@ impl DocumentBuffer {
         }
     }
 
-    pub(crate) fn recovery_contents(&self) -> Result<String, String> {
+    pub(crate) fn recovery_contents(&self) -> Result<String, EditorError> {
         match &self.notes {
             Some(notes) => serde_json::to_string(&SessionRecovery {
                 text: self.edit.text.clone(),
                 notes: notes.text.clone(),
-            }).map_err(|error| error.to_string()),
+            })
+            .map_err(|error| EditorError::Json {
+                context: error.to_string(),
+            }),
             None => Ok(self.edit.text.clone()),
         }
     }
 
-    pub(crate) fn read_recovery(&self) -> Result<SessionRecovery, String> {
+    pub(crate) fn read_recovery(&self) -> Result<SessionRecovery, EditorError> {
         let text = fs_io::read_utf8(&self.recovery_path())?;
         if self.is_session() {
-            serde_json::from_str(&text).map_err(|error| format!("Invalid session recovery copy: {error}"))
+            serde_json::from_str(&text).map_err(|error| EditorError::Json {
+                context: format!("Invalid session recovery copy: {error}"),
+            })
         } else {
-            Ok(SessionRecovery { text, notes: String::new() })
+            Ok(SessionRecovery {
+                text,
+                notes: String::new(),
+            })
         }
     }
 
@@ -355,7 +385,10 @@ mod tests {
         assert_eq!(doc.word_counts(), (4, Some(2)));
 
         // Memoized cache updates when generation bumps
-        doc.edit.text = (0..451).map(|i| format!("w{i}")).collect::<Vec<_>>().join(" ");
+        doc.edit.text = (0..451)
+            .map(|i| format!("w{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
         doc.edit.anchor = 0;
         doc.edit.focus = 0;
         doc.generation += 1;
