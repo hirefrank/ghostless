@@ -10,6 +10,8 @@ mod hunks;
 mod markdown_decor;
 mod markdown_edit;
 mod prefs;
+#[cfg(test)]
+mod properties;
 mod quick_open;
 mod search;
 mod session;
