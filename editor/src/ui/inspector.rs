@@ -22,7 +22,8 @@ pub(crate) fn build(editor: &Editor, cx: &Cx<Editor>, kit: &Kit, overlays: &mut 
         .width(Some(280.0))
         .label("Inspector")
         .on_pick(|editor: &mut Editor, index, _tx: &mut Tx| editor.inspector_tab = index)
-        .build(kit);
+        .build(kit)
+        .key("inspector-tabs");
     let body = match tab {
         0 => voice_tab(editor, kit, overlays),
         1 => notes_tab(editor, cx, kit),
@@ -394,7 +395,8 @@ fn notes_tab(editor: &Editor, cx: &Cx<Editor>, kit: &Kit) -> El {
                 .disabled(editor.active_is_locked())
                 .on_edit(|editor: &mut Editor| editor.active_notes_edit_mut())
                 .on_change(|editor: &mut Editor, tx: &mut Tx| editor.changed_active(tx))
-                .build(kit),
+                .build(kit)
+                .key("session-edit-notes"),
         );
     } else {
         column = column.child(

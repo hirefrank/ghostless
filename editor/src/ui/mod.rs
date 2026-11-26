@@ -573,7 +573,8 @@ fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
                         }
                         .into();
                     })
-                    .build(kit),
+                    .build(kit)
+                    .key("session-origin"),
             );
             body = body.child(
                 TextInput::new(&editor.session_section)
@@ -614,7 +615,8 @@ fn mount_dialogs(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) {
                         Button::new("Start")
                             .variant(ButtonVariant::Submit)
                             .on_press_tx(|editor: &mut Editor, tx| editor.submit_dialog(tx))
-                            .build(kit),
+                            .build(kit)
+                            .key("confirm-start-session"),
                     ),
             );
             Dialog::new("start-session", "Start Edit Session")

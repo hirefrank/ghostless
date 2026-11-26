@@ -1,8 +1,9 @@
 {
   "events": [
+    {"t": 0.12, "type": "mark", "name": "welcome"},
     {"t": 0.20, "type": "key", "name": "o", "cmd": true},
     {"t": 0.50, "type": "file-dialog", "path": "$WORKSPACE"},
-    {"t": 0.72, "type": "tap", "x": 74, "y": 148},
+    {"t": 0.72, "type": "tap", "key": "workspace-files/viewport/rows/seeds/demo/label"},
     {"t": 0.90, "type": "key", "name": "p", "cmd": true},
     {"t": 1.10, "type": "type", "text": "draft.md", "every": 0.02},
     {"t": 1.45, "type": "key", "name": "Enter"},

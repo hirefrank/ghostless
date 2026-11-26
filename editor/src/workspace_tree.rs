@@ -748,6 +748,55 @@ mod tests {
     }
 
     #[test]
+    fn scan_workspace_scales_across_a_writing_project() {
+        use crate::test_util::TestDir;
+        use std::time::{Duration, Instant};
+
+        let area = TestDir::new("workspace-scale");
+        let mut times = Vec::new();
+        for pieces in [50, 200] {
+            let root = area.join(pieces.to_string());
+            let voice = root.join("voice");
+            let paragraph = "The station clock ran slow. I put the ticket in my pocket.\n";
+            for index in 0..pieces {
+                let piece = root.join(format!("work/series-{}/piece-{index}", index % 5));
+                fs::create_dir_all(&piece).unwrap();
+                fs::write(piece.join("draft.md"), paragraph.repeat(20)).unwrap();
+                fs::write(piece.join("questions.md"), "What changed?\n").unwrap();
+            }
+            for index in 0..pieces / 10 {
+                let pair = voice.join("gold").join(format!("2026-01-02-note-{index}"));
+                fs::create_dir_all(&pair).unwrap();
+                fs::write(pair.join("before.md"), "Could we delve into the plan?\n").unwrap();
+                fs::write(pair.join("after.md"), "Here is the plan.\n").unwrap();
+                fs::write(pair.join("meta.json"), "{}").unwrap();
+            }
+            fs::write(voice.join("manifest.json"), r#"{"kind":"ghostless"}"#).unwrap();
+            let tree = scan_workspace(&root, Some(&voice), false);
+            assert!(tree.contains("work/series-0/piece-0/draft.md"));
+            assert!(tree.contains(&format!(
+                "work/series-{}/piece-{}/questions.md",
+                (pieces - 1) % 5,
+                pieces - 1
+            )));
+            let mut elapsed = [Duration::ZERO; 5];
+            for sample in &mut elapsed {
+                let start = Instant::now();
+                std::hint::black_box(scan_workspace(&root, Some(&voice), false));
+                *sample = start.elapsed();
+            }
+            elapsed.sort_unstable();
+            times.push(elapsed[2]);
+        }
+        let small = times[0];
+        let large = times[1];
+        assert!(
+            large < Duration::from_secs(2) && large < 8 * small + Duration::from_millis(60),
+            "scan_workspace grew from {small:?} to {large:?} for 4× as many pieces",
+        );
+    }
+
+    #[test]
     fn scans_writing_and_keeps_workspace_folders() {
         let workspace = Workspace::fixture();
         let voice = workspace.0.join("voice");

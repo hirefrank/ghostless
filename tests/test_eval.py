@@ -8,6 +8,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -321,6 +322,36 @@ class SplitTests(unittest.TestCase):
 
 
 class EvalTests(unittest.TestCase):
+    def test_eval_cli_matches_golden_edit_and_prose_holdouts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = init_project(Path(tmp), git=False)
+            _make_corpus(root)
+            for date, before in (
+                ("2026-01-01", WRITER.replace("messy", "plain")),
+                ("2026-01-02", AI_DRAFT),
+                ("2026-01-03", "It's not a note, it's a framework. We inspire, empower, and transform."),
+            ):
+                _make_pair(root, date, before)
+            (root / "holdouts/clinic.md").write_text(
+                "Dr. Chen filed the U.S. paperwork. She printed a copy.", encoding="utf-8"
+            )
+            result = subprocess.run(
+                [sys.executable, "-m", "ghostless", "eval", "--project", str(root), "--cv", "--seed", "27", "--json"],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "PYTHONUTF8": "1",
+                    "PYTHONPATH": str(ROOT / "lib"),
+                    "GHOSTLESS_NO_UPDATE": "1",
+                },
+                encoding="utf-8",
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        golden = json.loads((ROOT / "tests/fixtures/eval-golden.json").read_text(encoding="utf-8"))
+        self.assertEqual(json.loads(result.stdout), golden)
+
     def test_pairs_use_the_10_edit_rate_even_when_meta_is_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "voice"
