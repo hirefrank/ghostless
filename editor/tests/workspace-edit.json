@@ -1,0 +1,21 @@
+{
+  "events": [
+    {"t": 0.20, "type": "key", "name": "p", "cmd": true},
+    {"t": 0.40, "type": "type", "text": "draft.md", "every": 0.02},
+    {"t": 0.75, "type": "key", "name": "Enter"},
+    {"t": 1.00, "type": "key", "name": "a", "cmd": true},
+    {"t": 1.15, "type": "paste", "text": "A new line for the late train."},
+    {"t": 1.32, "focus": false},
+    {"t": 2.30, "type": "mark", "name": "blurred"},
+    {"t": 2.45, "focus": true},
+    {"t": 2.60, "type": "key", "name": "p", "cmd": true},
+    {"t": 2.78, "type": "type", "text": "questions.md", "every": 0.02},
+    {"t": 3.18, "type": "key", "name": "Enter"},
+    {"t": 3.50, "type": "key", "name": "p", "cmd": true},
+    {"t": 3.70, "type": "type", "text": "draft.md", "every": 0.02},
+    {"t": 4.02, "type": "key", "name": "Enter"},
+    {"t": 4.28, "type": "key", "name": "z", "cmd": true},
+    {"t": 4.60, "type": "key", "name": "s", "cmd": true},
+    {"t": 5.20, "type": "mark", "name": "end"}
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "events": [
+    {"t": 0.2, "type": "key", "name": "p", "cmd": true},
+    {"t": 0.4, "type": "type", "text": "draft.md", "every": 0.02},
+    {"t": 0.75, "type": "key", "name": "Enter"},
+    {"t": 1.2, "type": "key", "name": "d", "cmd": true},
+    {"t": 1.45, "type": "tap", "x": 407, "y": 96},
+    {"t": 1.65, "type": "tap", "x": 320, "y": 96},
+    {"t": 1.88, "type": "mark", "name": "split"},
+    {"t": 2.05, "type": "key", "name": "p", "cmd": true, "shift": true},
+    {"t": 2.25, "type": "type", "text": "Finish Edit Session", "every": 0.02},
+    {"t": 2.75, "type": "key", "name": "Enter"},
+    {"t": 3.25, "type": "tap", "x": 530, "y": 380},
+    {"t": 3.45, "type": "type", "text": "I kept the line about the café and cut the opening.", "every": 0.015},
+    {"t": 4.45, "type": "tap", "x": 834, "y": 545},
+    {"t": 8.40, "type": "mark", "name": "end"}
+  ]
+}

@@ -339,7 +339,8 @@ fn structure_list(report: &JudgeReport, kit: &Kit) -> El {
                 .control_size(ControlSize::Small)
                 .on_press_tx(move |editor: &mut Editor, tx| editor.jump_to_excerpt(&excerpt, tx))
                 .build(kit)
-                .key(format!("jump-structure-{index}")),
+                .key(format!("jump-structure-{index}"))
+                .help(format!("Structural tell: {}", hit.kind)),
         );
     }
     column

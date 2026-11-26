@@ -1,52 +1,82 @@
-# Local desktop editor
+# Ghostless Writing Studio
 
-This editor is not part of the npm package. `npm i -g ghostless` installs the CLI and the skills, not `editor/`. Every command below runs from a Git checkout, not from the installed package.
+The native Rune editor opens a writing folder as a workspace. It uses the local Ghostless CLI and the same [edit-session files](../SCHEMA.md#edit-sessions) as the terminal workflow. This editor is not part of the npm package. Build the editor from a checkout or download the binary for your OS from a successful [Rune editor workflow](../.github/workflows/editor.yml) run.
 
-Prerequisites:
+![Ghostless Writing Studio with the workspace sidebar, Markdown draft, and Voice Inspector](editor-preview.png)
 
-- A checkout of this repository (`git clone https://github.com/hirefrank/ghostless`)
-- Rust 1.99+
-- Node 18+ and Python 3.11+, because the editor calls the `ghostless` CLI
-- The native graphics libraries Rune requires for the host OS
-- A voice project with a non-empty draft. `ghostless init` creates a project. `ghostless start` rejects an empty file with `Draft is empty`, and the editor exits before it opens a window
+## Launch the editor
+
+Build with Rust 1.99+ and the native graphics libraries required by Rune. The CLI uses Node 18+ and Python 3.11+. The editor pins Rune to `fa07f485dd52d8f66db317460566ef4dc4784821`. It finds the checkout's `bin/ghostless` launcher on Unix or an installed CLI on `PATH`. Set `GHOSTLESS_CLI` to choose an executable explicitly.
 
 ```bash
-git clone https://github.com/hirefrank/ghostless ~/Projects/ghostless
-ghostless init /path/to/voice
-ghostless build --project /path/to/voice
+cargo build --manifest-path editor/Cargo.toml --locked --release
+editor/target/release/ghostless-editor
+editor/target/release/ghostless-editor --folder /path/to/writing
 ```
 
-The editor in `editor/` is a native [Rune](https://github.com/anomalyco/rune) app. `editor/Cargo.toml` pins Rune to commit `fa07f485dd52d8f66db317460566ef4dc4784821`. The UI has a read-only original, an editable working copy, notes, and a split word-level diff. It uses the same session files and Finish command as the CLI (see [SCHEMA.md](../SCHEMA.md#edit-sessions)).
+Run `ghostless init /path/to/writing/voice` to create a voice project for a new writing workspace.
 
-![Rune editor showing the sample draft's split word diff and notes](editor-preview.png)
+On first launch, choose **Open Folder** or **Open File** from Welcome. Later launches restore the last workspace when it still exists. A workspace can be any writing directory. The editor searches it and its ancestors for `manifest.json` or `voice/manifest.json` and attaches the first Ghostless project it finds. Use `--project /path/to/voice` to attach a specific project. A folder with no match opens in plain Markdown mode.
 
-A writer using a packaged editor should not need Rust. That packaged build is not shipped: the [Rune editor workflow](../.github/workflows/editor.yml) uploads a per-OS binary on every push, and those binaries are not release assets. The editor calls the installed `ghostless` CLI; set `GHOSTLESS_CLI` to its executable path if it is not on `PATH`. From a checkout it uses `bin/ghostless` automatically.
-
-## Start from a draft
+For a standalone session, start from a non-empty draft or reopen an existing session ID.
 
 ```bash
-cargo run --release --manifest-path editor/Cargo.toml -- --project /path/to/voice --draft /path/to/draft.md
+ghostless edit draft.md
+ghostless sessions --open <id>
+editor/target/release/ghostless-editor --project /path/to/voice --draft /path/to/draft.md
+editor/target/release/ghostless-editor --project /path/to/voice --session <id>
 ```
 
-Build once with `cargo build --release --manifest-path editor/Cargo.toml` and run `editor/target/release/ghostless-editor` directly if you would rather not go through `cargo run`. From a checkout where that binary exists, `ghostless edit /path/to/draft.md` does the same start-and-open step. Pass exactly one of `--draft` or `--session`.
+For `--draft` and `--session`, project resolution checks `--project`, `GHOSTLESS_PROJECT`, the current directory, then the default set by `ghostless use`. `ghostless edit` links the draft when it starts the session. A standalone `--draft` edits the session copy and accepts `--link-draft` to opt into a workspace link. The editor stores workspace links, preferences, and recovery copies under `GHOSTLESS_HOME` or `~/.ghostless/`.
 
-For `--draft` and `--session`, `--project` is optional. The editor uses the same resolution as the CLI: `--project`, then `GHOSTLESS_PROJECT`, then a voice project in the current directory, then `defaultProject` from `ghostless use`. A missing project or draft path names that path. When the directory is not a voice project yet, the message points at `ghostless init`.
+## Write and review
 
-This starts a new session (`ghostless start` under the hood). `ghostless edit` records the link automatically, so later saves update that draft and the session together. A bare `--draft` stays unlinked unless you add `--link-draft`. The editor stores the link in its local state. If it cannot safely update the linked draft, it still saves the session and shows why it skipped the mirror.
+- **Sidebar** shows the folder tree, open edit sessions, and voice files. Use the quick switcher to open a file or session. Use workspace search for text across files.
+- **Canvas** edits styled Markdown source in **Write**. **Preview** renders it. The **Reference Split** can hold another file or the session original beside the draft. **Compare** shows a session's changes in Split or Unified layout, with individual hunk reverts for editable sessions.
+- **Voice Inspector** shows a live mechanical score, tells, checks, notes, references, and outline. **Voice Lens** underlines flagged passages in Write. The inspector and the placeholder shortcut can jump to the source. The reference files `STYLE.md` and `AUDIENCE.md` hold editorial guidance and reader context.
 
-To open a workspace, launch with `--folder /path/to/writing` or use Open Folder. The editor searches the folder and its ancestors for a voice project or a nested `voice/` project. An unrelated folder opens without a voice project, even if `GHOSTLESS_PROJECT` or `defaultProject` is set; pass `--project /path/to/voice` to attach one explicitly. The welcome screen can show the global default before a folder is opened.
+Workspace files save automatically after about 1.5 seconds. Session edits and notes save after about 800 ms. Switching tabs, losing window focus, or closing flushes pending automatic saves. Use Save Now to flush immediately. Turn off **Auto-save files** in View Settings for manual workspace saves. Each tab keeps its own undo history. Protected corpus, learned examples, immutable session metadata, and generated guides open read-only.
 
-Files in the voice project's corpus, transcripts, holdouts, and learned examples open read-only. Use the Sessions sidebar to edit a session's working copy and notes.
+The editor watches the workspace and the attached voice project. External changes refresh the tree and voice data. A clean open file reloads and offers **Compare** in a notification. If you have unsaved edits, the canvas offers **Keep Mine**, **Reload from Disk**, or **Compare**. Keep Mine acknowledges the observed change so the next save can replace that copy. Reload from Disk takes the external version. Compare leaves both versions available for review.
 
-## Resume a saved session
+## Track and finish an edit session
 
-```bash
-ghostless sessions --project /path/to/voice
-cargo run --release --manifest-path editor/Cargo.toml -- --project /path/to/voice --session <id>
-```
+Open a workspace draft and choose **Track Session**, or use **Start Edit Session** in the Command Palette. Tracking freezes the original as `before.md`. The draft stays in its folder, and saves mirror its content to `sessions/<id>/after.md`. When the linked file has changed externally or moved out of reach, the editor can keep saving into the local session copy while you resolve the link.
 
-Edits and notes save after an 800 ms pause. Ctrl/Cmd+S saves immediately; Ctrl/Cmd+D switches between Edit and Diff. Finish writes an immutable final and receipt and adds the pair to gold once. The editor then becomes read-only. The original draft (`before.md`) is never overwritten. If the app closes before Finish, reopen the session by ID and continue from `after.md`. If system quit forces the editor to exit after a failed save, it attempts to preserve the draft and notes in its local recovery directory and offers to restore them when the session reopens.
+**Finish** first saves pending work, then opens **Finish & Learn**. Review the edit summary, jump to any remaining `[WRITER: ...]` placeholders, edit session notes, and optionally enter a yes/no check that quotes a changed phrase. The guide rebuild is on by default. A writer-first final lands in gold. An AI-first final lands in the edited tier unless you select **Promote to gold**. Standalone sessions can use **Save Final Copy As…** to export the working text. If the CLI rejects the check, revise it in the modal and retry.
 
-All text stays on the local filesystem. The editor invokes only the local CLI, with release checks disabled. Its session metadata uses UTF-8 and relative filenames, so copying a project between macOS, Windows, and Linux preserves the session. The exact file format is in [SCHEMA.md](../SCHEMA.md).
+Finishing writes a receipt and archives the session as read-only. Use the Sessions sidebar or `ghostless sessions --open <id>` to resume an open session. The editor offers recovery from its local copy if a prior quit left changes unsaved.
 
-The separate distribution work still needs signed or otherwise straightforward desktop installers and a clean-machine test of the combined CLI and editor. Nothing open tracks that installer work: [issue #13](https://github.com/hirefrank/ghostless/issues/13) closed with the cross-platform CLI, and [issue #9](https://github.com/hirefrank/ghostless/issues/9) closed with the editor itself.
+## Review voice rules and checks
+
+Open **Rules & Checks** from the Voice section in the sidebar. Its badge counts rule hypotheses and pending checks. Review supporting edits, choose a section or **All sections**, and confirm, reject, or retire items as applicable. Rebuild the voice guide after a decision to apply it. Decisions are kept in the project's tracked `rules.json` and `checks.json` files.
+
+## Keyboard shortcuts
+
+Use Cmd on macOS and Ctrl on Linux or Windows. The **Command Palette** also lists contextual actions, voice files, themes, fonts, and font size controls.
+
+| Shortcut | Action |
+| --- | --- |
+| Cmd/Ctrl+O | Open Folder |
+| Cmd/Ctrl+Shift+O | Open File |
+| Cmd/Ctrl+N | New File |
+| Cmd/Ctrl+S | Save Now |
+| Cmd/Ctrl+W | Close the active tab |
+| Cmd/Ctrl+Tab / Cmd/Ctrl+Shift+Tab | Next / previous tab |
+| Cmd/Ctrl+P | Go to File or Session |
+| Cmd/Ctrl+Shift+P | Command Palette |
+| Cmd/Ctrl+Shift+B | Toggle sidebar |
+| Cmd/Ctrl+J | Toggle Voice Inspector |
+| Cmd/Ctrl+\ | Toggle Reference Split |
+| Cmd/Ctrl+Shift+V | Toggle Markdown Preview |
+| Cmd/Ctrl+D | Toggle Compare |
+| Cmd/Ctrl+L | Toggle Voice Lens |
+| F8 or Cmd/Ctrl+Shift+. | Jump to the next placeholder |
+| Cmd/Ctrl+F | Find in the active document |
+| Cmd/Ctrl+H | Find and replace |
+| Cmd/Ctrl+Shift+F | Search in Workspace |
+| F11 or Cmd/Ctrl+Shift+Enter | Toggle Focus Mode |
+| Cmd/Ctrl+B / Cmd/Ctrl+I / Cmd/Ctrl+K | Bold / italic / insert link in Write |
+| Cmd/Ctrl+= / Cmd/Ctrl+- / Cmd/Ctrl+0 | Increase / decrease / reset font size |
+
+Text, settings, and edit evidence stay on the local filesystem. The editor runs the local `ghostless bridge` with release checks disabled. A copied project keeps its UTF-8 session files and their relative paths.

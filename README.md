@@ -60,7 +60,7 @@ pnpm dlx ghostless@latest install-skills
 
 One-off runs copy the skills so clearing the package-manager cache cannot break them. They do not install a persistent `ghostless` command; use the global install for that.
 
-The native desktop editor is not part of the npm package. Build it from this checkout; see [docs/EDITOR.md](docs/EDITOR.md). `ghostless edit draft.md` opens it, and `ghostless sessions --open ID` reopens a session.
+Build the native Ghostless Writing Studio from this checkout. Run `ghostless-editor` to choose a workspace, or pass `--folder /path/to/writing` to open one directly. The editor discovers a nested `voice/` project and calls `ghostless bridge` for live voice feedback and review. `ghostless edit draft.md` starts an edit session, and `ghostless sessions --open ID` reopens one. [Editor setup and shortcuts](docs/EDITOR.md)
 See [desktop distribution](docs/CROSS_PLATFORM.md) for platform behavior, updates, and uninstall.
 
 ```bash
@@ -273,7 +273,7 @@ ghostless finish --session <id> --project voice
 ghostless build --project voice
 ```
 
-`start` copies the draft to `before.md` (immutable) and `after.md` (the working copy). It does not open a window. `ghostless edit` does the same capture and opens the desktop editor when that binary is built. `finish` writes a final, learns the pair into `gold/` once, and records an edit receipt with provenance, content hashes, and the measured shift. Repeating `finish` with the same final returns the same receipt; changing it after finish needs a new session. `ghostless sessions` lists them, and `ghostless sessions --open ID` reopens one in the editor. The native Rune desktop editor in [`editor/`](editor/) shows the original beside the working copy, a word-level diff, and notes over this same session format; see [docs/EDITOR.md](docs/EDITOR.md). It is not part of the npm package.
+`start` copies the draft to `before.md` (immutable) and `after.md` (the working copy). It does not open a window. `ghostless edit` does the same capture and opens the desktop editor when that binary is built. `finish` writes a final, learns the pair into `gold/` once, and records an edit receipt with provenance, content hashes, and the measured shift. Repeating `finish` with the same final returns the same receipt; changing it after finish needs a new session. `ghostless sessions` lists them, and `ghostless sessions --open ID` reopens one in the editor. Writing Studio uses this same session format for in-place editing, Split and Unified Compare, and Finish & Learn. [Writing Studio guide](docs/EDITOR.md)
 
 `learn --before --after` remains available for pairs captured outside a session.
 

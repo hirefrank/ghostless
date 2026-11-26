@@ -1,0 +1,11 @@
+{
+  "events": [
+    {"t": 0.20, "type": "key", "name": "p", "cmd": true},
+    {"t": 0.40, "type": "type", "text": "ai-ish.md", "every": 0.02},
+    {"t": 0.75, "type": "key", "name": "Enter"},
+    {"t": 0.92, "type": "tap", "x": 74, "y": 148},
+    {"t": 1.16, "type": "key", "name": "j", "cmd": true},
+    {"t": 1.42, "type": "key", "name": "l", "cmd": true},
+    {"t": 3.75, "type": "mark", "name": "end"}
+  ]
+}

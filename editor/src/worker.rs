@@ -149,13 +149,19 @@ struct SearchMailbox {
 }
 
 impl SearchMailbox {
+    fn lock_queue(&self) -> std::sync::MutexGuard<'_, SearchQueue> {
+        self.queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn receive(&self) -> Option<SearchRequest> {
         let mut queue = self
             .ready
-            .wait_while(self.queue.lock().unwrap(), |queue| {
+            .wait_while(self.lock_queue(), |queue| {
                 queue.pending.is_none() && !queue.closed
             })
-            .unwrap();
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         queue.pending.take()
     }
 }
@@ -213,7 +219,7 @@ impl SearchWorker {
         buffers: HashMap<PathBuf, Option<String>>,
         query: String,
     ) -> Result<u64, EditorError> {
-        let mut queue = self.mailbox.queue.lock().unwrap();
+        let mut queue = self.mailbox.lock_queue();
         if queue.closed {
             return Err("Workspace search is unavailable".into());
         }
@@ -233,7 +239,7 @@ impl SearchWorker {
     }
 
     pub(crate) fn cancel(&self) {
-        let mut queue = self.mailbox.queue.lock().unwrap();
+        let mut queue = self.mailbox.lock_queue();
         self.mailbox.generation.fetch_add(1, Ordering::Relaxed);
         queue.pending = None;
     }
@@ -245,7 +251,7 @@ impl SearchWorker {
     fn shutdown(&self) {
         // Closing also wakes an idle reader. A reader already in filesystem I/O
         // can exit once the read returns, independently of the save worker.
-        let mut queue = self.mailbox.queue.lock().unwrap();
+        let mut queue = self.mailbox.lock_queue();
         queue.closed = true;
         self.mailbox.generation.fetch_add(1, Ordering::Relaxed);
         queue.pending = None;

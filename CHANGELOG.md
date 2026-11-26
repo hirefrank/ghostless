@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Writing Studio opens folders with a sidebar, styled Markdown canvas, reference split, and live Voice Inspector. A nested `voice/` project attaches automatically.
+- Workspace drafts can auto-save, track edit sessions in place, and show external changes with Compare or conflict resolution without discarding unsaved edits.
+- Finish & Learn previews edits, flags placeholders, captures notes and optional checks, and can rebuild the guide or promote an AI-first final.
+- Rules & Checks brings voice review into the editor. The Command Palette opens with Cmd/Ctrl+Shift+P.
+
 ## v0.1.0 — 2026-11-23
 
 - The README leads with a checkout install while v0.1 is unpublished. `install-skills` writes a version-independent `ghostless` launcher that names a missing suite after a Node upgrade and will not replace a command it did not install.

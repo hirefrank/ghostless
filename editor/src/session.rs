@@ -89,9 +89,11 @@ pub(crate) fn parse_launch(args: Vec<String>) -> Result<LaunchTarget, EditorErro
                     args.next().ok_or("Missing value after --folder")?,
                 ))
             }
-            "--snap" | "--tree" | "--size" | "--theme" | "--scene" | "--at" | "--script" => {
+            "--snap" | "--tree" | "--size" | "--scale" | "--theme" | "--scene" | "--at"
+            | "--script" => {
                 args.next().ok_or(format!("Missing value after {arg}"))?;
             }
+            "--realtime" => {}
             "-h" | "--help" => {
                 println!(
                     "ghostless-editor [--folder DIR | FILE] [--project DIR] [--draft FILE [--link-draft] | --session ID [--link-draft FILE]]"

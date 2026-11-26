@@ -1,0 +1,11 @@
+{
+  "events": [
+    {"t": 0.20, "type": "tap", "x": 535, "y": 427},
+    {"t": 0.50, "type": "file-dialog", "path": "$WORKSPACE"},
+    {"t": 0.72, "type": "tap", "x": 74, "y": 148},
+    {"t": 0.90, "type": "key", "name": "p", "cmd": true},
+    {"t": 1.10, "type": "type", "text": "draft.md", "every": 0.02},
+    {"t": 1.45, "type": "key", "name": "Enter"},
+    {"t": 1.80, "type": "mark", "name": "end"}
+  ]
+}
