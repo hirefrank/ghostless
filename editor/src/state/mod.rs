@@ -109,7 +109,6 @@ pub(crate) struct Editor {
     pub(crate) worker_busy: Option<(DocId, InFlight)>,
     pub(crate) last_window_title: Option<String>,
     pub(crate) flushed: bool,
-    quit_recovery_needed: bool,
     pub(crate) reopen_window: Option<Box<dyn Fn()>>,
     pub(crate) status: String,
     pub(crate) judge_due: Option<f64>,
@@ -252,7 +251,6 @@ impl Editor {
             worker_busy: None,
             last_window_title: None,
             flushed: false,
-            quit_recovery_needed: false,
             reopen_window: None,
             status,
             judge_due: None,
@@ -320,7 +318,6 @@ impl Editor {
             worker_busy: None,
             last_window_title: None,
             flushed: false,
-            quit_recovery_needed: false,
             reopen_window: None,
             status: "Ready".into(),
             judge_due: None,
@@ -721,8 +718,7 @@ pub(crate) fn on_window_close(editor: &mut Editor, tx: &mut Tx) {
 impl Drop for Editor {
     fn drop(&mut self) {
         if !self.flush_on_exit() {
-            // A cancelled quit can clear quit_recovery_needed before later edits.
-            // Drop still has to keep every dirty buffer recoverable.
+            // Always recover every dirty buffer on drop, even after a cancelled quit and later edits.
             self.write_quit_recovery();
             self.worker.shutdown();
         }

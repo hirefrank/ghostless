@@ -637,7 +637,9 @@ impl Editor {
         if self.flushed {
             return;
         }
-        self.quit_recovery_needed = !self.drain_autosave_work() && !self.write_quit_recovery();
+        if !self.drain_autosave_work() {
+            self.write_quit_recovery();
+        }
         // The system can still cancel shutdown. Keep the worker available to the
         // live editor, or to the final flush if the editor is dropped.
         if self.workspace.is_some() {
