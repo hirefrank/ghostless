@@ -46,7 +46,7 @@ def main() -> int:
         forbidden = sorted(
             path
             for path in files
-            if path.startswith(("tests/", "scripts/", ".github/"))
+            if path.startswith(("tests/", "scripts/", ".github/", "fixtures/contracts/", "editor/", "tla/"))
             or ".egg-info" in path
             or "__pycache__" in path
             or ".ruff_cache" in path

@@ -8,14 +8,7 @@ use crate::{
     workspace_tree,
 };
 use rune::{FileDialogOptions, TextEdit, Tx};
-use serde::Deserialize;
 use std::ops::Range;
-
-#[derive(Default, Deserialize)]
-struct Provenance {
-    origin: Option<String>,
-    section: Option<String>,
-}
 
 pub(crate) struct FinishModal {
     doc_id: DocId,
@@ -41,15 +34,15 @@ impl FinishModal {
         let after = &doc.edit.text;
         let identical = before.trim_end_matches('\n') == after.trim_end_matches('\n');
         let placeholders = markdown_decor::find_placeholder_ranges(after, token);
-        let provenance: Provenance = doc
+        let metadata = doc
             .voice_project
             .as_ref()
             .zip(doc.session_id.as_ref())
             .and_then(|(project, id)| {
-                std::fs::read(project.join("sessions").join(id).join("session.json")).ok()
-            })
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+                crate::contracts::session_metadata(&project.join("sessions").join(id)).ok()
+            });
+        let origin = metadata.as_ref().and_then(|meta| meta.origin.as_deref());
+        let section = metadata.as_ref().and_then(|meta| meta.section.as_deref());
         let old_words = count_words(before);
         let new_words = count_words(after);
         let hunks = hunks::diff_hunks(before, after).len();
@@ -77,16 +70,16 @@ impl FinishModal {
             promote: false,
             error: None,
             submitted: false,
-            ai_first: provenance.origin.as_deref() == Some("ai-first"),
-            writer_first: provenance.origin.as_deref() == Some("writer-first"),
+            ai_first: origin == Some("ai-first"),
+            writer_first: origin == Some("writer-first"),
             preview: format!(
                 "Words {old_words} → {new_words} ({:+}) · {hunks} changed hunk(s)",
                 new_words as i64 - old_words as i64
             ),
             provenance: format!(
                 "{} · {}",
-                provenance.origin.as_deref().unwrap_or("Unknown origin"),
-                provenance.section.as_deref().unwrap_or("All sections")
+                origin.unwrap_or("Unknown origin"),
+                section.unwrap_or("All sections")
             ),
             sync_status,
             standalone: linked.is_none(),

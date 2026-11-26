@@ -699,9 +699,11 @@ impl Editor {
             BridgeReply::ChecksList { request_id, result } => {
                 self.apply_checks_list(request_id, result);
             }
-            BridgeReply::RulesDecide { request_id, result }
-            | BridgeReply::ChecksDecide { request_id, result } => {
-                self.apply_voice_decision(request_id, result);
+            BridgeReply::RulesDecide { request_id, result } => {
+                self.apply_voice_decision(request_id, result.map(|_| ()));
+            }
+            BridgeReply::ChecksDecide { request_id, result } => {
+                self.apply_voice_decision(request_id, result.map(|_| ()));
             }
             BridgeReply::Promote { result } => {
                 if let Err(error) = result {

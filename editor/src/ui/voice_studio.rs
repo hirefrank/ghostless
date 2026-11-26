@@ -271,7 +271,7 @@ fn check_card(
             format!(
                 "{span} “{}” · {} · {}",
                 check.span,
-                check.pair,
+                check.pair.as_deref().unwrap_or_default(),
                 check.section.as_deref().unwrap_or(ALL_SECTIONS)
             ),
             kit,

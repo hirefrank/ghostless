@@ -2,6 +2,7 @@
 use rune::{App, AppSpec};
 mod bridge;
 mod cli;
+mod contracts;
 mod documents;
 mod error;
 mod fs_io;

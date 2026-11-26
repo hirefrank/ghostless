@@ -1,0 +1,1939 @@
+{
+  "records": {
+    "Manifest": {
+      "kind": "ghostless",
+      "version": 1,
+      "weights": {
+        "gold": 3.0,
+        "silver": 1.0,
+        "bronze": 0.5,
+        "edited": 0.5
+      },
+      "goldVoiceMinimum": 10,
+      "updateCheck": true,
+      "failUnder": 70
+    },
+    "CompiledStats": {
+      "schemaVersion": 1,
+      "weights": {
+        "gold": 3.0,
+        "silver": 1.0,
+        "bronze": 0.5,
+        "edited": 0.5
+      },
+      "goldVoiceMinimum": 10,
+      "goldPieces": 1,
+      "bronzeFormatOnly": false,
+      "edited": {
+        "pieces": 0,
+        "configuredWeight": 0,
+        "countedWeight": 0,
+        "maxShare": 0.25
+      },
+      "counts": {
+        "prose": {
+          "gold": 1,
+          "silver": 0,
+          "bronze": 0,
+          "edited": 0
+        },
+        "spoken": {
+          "gold": 0,
+          "silver": 0,
+          "bronze": 0,
+          "edited": 0
+        },
+        "learned": 0,
+        "total": 1
+      },
+      "provenance": {
+        "unaided": 1,
+        "writer-first": 0,
+        "ai-first": 0,
+        "unknown": 0
+      },
+      "files": [
+        {
+          "path": "corpus/gold/notes.md",
+          "tier": "gold",
+          "kind": "prose",
+          "section": null,
+          "weight": 3.0,
+          "words": 8,
+          "learned": false,
+          "origin": "unaided",
+          "confirmation": "origin",
+          "model": null,
+          "tool": null
+        }
+      ],
+      "weighted": {
+        "metrics": {
+          "rhythmWords": 24.0,
+          "rhythmSentences": 6.0,
+          "dictionWords": 24.0,
+          "formatParagraphs": 3.0,
+          "medianSentenceLength": 3,
+          "sentenceLengthDistribution": {
+            "short": 1.0,
+            "medium": 0.0,
+            "long": 0.0
+          },
+          "contractionsPer1k": 0.0,
+          "iPer1k": 125.0,
+          "emDashesPer1k": 0.0,
+          "questionsPer1k": 0.0,
+          "medianParagraphLength": 8,
+          "openerShare": 0.0,
+          "openers": {
+            "and": 0.0,
+            "but": 0.0,
+            "so": 0.0
+          }
+        },
+        "signaturePhrases": [],
+        "banList": [
+          "a testament to",
+          "additionally",
+          "akin",
+          "at the end of the day",
+          "beacon",
+          "bolster",
+          "bustling",
+          "cannot be overstated",
+          "cutting-edge",
+          "deep dive",
+          "delve",
+          "delved",
+          "delves",
+          "delving",
+          "elevate",
+          "embark",
+          "ever-evolving",
+          "facilitate",
+          "foster",
+          "furthermore",
+          "game-changer",
+          "groundbreaking",
+          "harness",
+          "holistic",
+          "in conclusion",
+          "in the realm of",
+          "in today's world",
+          "interplay",
+          "intricate",
+          "it's important to note",
+          "it's worth noting",
+          "leverage",
+          "meticulous",
+          "moreover",
+          "multifaceted",
+          "myriad",
+          "nestled",
+          "overarching",
+          "paradigm",
+          "paving the way",
+          "pivotal",
+          "plays a crucial role",
+          "plethora",
+          "rapidly evolving",
+          "realm",
+          "rich tapestry",
+          "robust",
+          "seamless",
+          "shed light on",
+          "showcase",
+          "showcasing",
+          "streamline",
+          "synergy",
+          "tapestry",
+          "testament",
+          "the landscape of",
+          "transformative",
+          "underscore",
+          "unpack",
+          "utilize",
+          "vibrant",
+          "when it comes to"
+        ],
+        "tellsInUse": [],
+        "dictionEmpty": false
+      },
+      "unweighted": {
+        "metrics": {
+          "rhythmWords": 8.0,
+          "rhythmSentences": 2.0,
+          "dictionWords": 8.0,
+          "formatParagraphs": 1.0,
+          "medianSentenceLength": 3,
+          "sentenceLengthDistribution": {
+            "short": 1.0,
+            "medium": 0.0,
+            "long": 0.0
+          },
+          "contractionsPer1k": 0.0,
+          "iPer1k": 125.0,
+          "emDashesPer1k": 0.0,
+          "questionsPer1k": 0.0,
+          "medianParagraphLength": 8,
+          "openerShare": 0.0,
+          "openers": {
+            "and": 0.0,
+            "but": 0.0,
+            "so": 0.0
+          }
+        },
+        "signaturePhrases": [],
+        "banList": [
+          "a testament to",
+          "additionally",
+          "akin",
+          "at the end of the day",
+          "beacon",
+          "bolster",
+          "bustling",
+          "cannot be overstated",
+          "cutting-edge",
+          "deep dive",
+          "delve",
+          "delved",
+          "delves",
+          "delving",
+          "elevate",
+          "embark",
+          "ever-evolving",
+          "facilitate",
+          "foster",
+          "furthermore",
+          "game-changer",
+          "groundbreaking",
+          "harness",
+          "holistic",
+          "in conclusion",
+          "in the realm of",
+          "in today's world",
+          "interplay",
+          "intricate",
+          "it's important to note",
+          "it's worth noting",
+          "leverage",
+          "meticulous",
+          "moreover",
+          "multifaceted",
+          "myriad",
+          "nestled",
+          "overarching",
+          "paradigm",
+          "paving the way",
+          "pivotal",
+          "plays a crucial role",
+          "plethora",
+          "rapidly evolving",
+          "realm",
+          "rich tapestry",
+          "robust",
+          "seamless",
+          "shed light on",
+          "showcase",
+          "showcasing",
+          "streamline",
+          "synergy",
+          "tapestry",
+          "testament",
+          "the landscape of",
+          "transformative",
+          "underscore",
+          "unpack",
+          "utilize",
+          "vibrant",
+          "when it comes to"
+        ],
+        "tellsInUse": [],
+        "dictionEmpty": false
+      },
+      "byTier": {
+        "gold": {
+          "metrics": {
+            "rhythmWords": 8.0,
+            "rhythmSentences": 2.0,
+            "dictionWords": 8.0,
+            "formatParagraphs": 1.0,
+            "medianSentenceLength": 3,
+            "sentenceLengthDistribution": {
+              "short": 1.0,
+              "medium": 0.0,
+              "long": 0.0
+            },
+            "contractionsPer1k": 0.0,
+            "iPer1k": 125.0,
+            "emDashesPer1k": 0.0,
+            "questionsPer1k": 0.0,
+            "medianParagraphLength": 8,
+            "openerShare": 0.0,
+            "openers": {
+              "and": 0.0,
+              "but": 0.0,
+              "so": 0.0
+            }
+          },
+          "signaturePhrases": [],
+          "banList": [
+            "a testament to",
+            "additionally",
+            "akin",
+            "at the end of the day",
+            "beacon",
+            "bolster",
+            "bustling",
+            "cannot be overstated",
+            "cutting-edge",
+            "deep dive",
+            "delve",
+            "delved",
+            "delves",
+            "delving",
+            "elevate",
+            "embark",
+            "ever-evolving",
+            "facilitate",
+            "foster",
+            "furthermore",
+            "game-changer",
+            "groundbreaking",
+            "harness",
+            "holistic",
+            "in conclusion",
+            "in the realm of",
+            "in today's world",
+            "interplay",
+            "intricate",
+            "it's important to note",
+            "it's worth noting",
+            "leverage",
+            "meticulous",
+            "moreover",
+            "multifaceted",
+            "myriad",
+            "nestled",
+            "overarching",
+            "paradigm",
+            "paving the way",
+            "pivotal",
+            "plays a crucial role",
+            "plethora",
+            "rapidly evolving",
+            "realm",
+            "rich tapestry",
+            "robust",
+            "seamless",
+            "shed light on",
+            "showcase",
+            "showcasing",
+            "streamline",
+            "synergy",
+            "tapestry",
+            "testament",
+            "the landscape of",
+            "transformative",
+            "underscore",
+            "unpack",
+            "utilize",
+            "vibrant",
+            "when it comes to"
+          ],
+          "tellsInUse": [],
+          "dictionEmpty": false
+        },
+        "silver": {
+          "metrics": {
+            "rhythmWords": 0.0,
+            "rhythmSentences": 0,
+            "dictionWords": 0.0,
+            "formatParagraphs": 0,
+            "medianSentenceLength": null,
+            "sentenceLengthDistribution": {
+              "short": null,
+              "medium": null,
+              "long": null
+            },
+            "contractionsPer1k": null,
+            "iPer1k": null,
+            "emDashesPer1k": null,
+            "questionsPer1k": null,
+            "medianParagraphLength": null,
+            "openerShare": null,
+            "openers": {
+              "and": null,
+              "but": null,
+              "so": null
+            }
+          },
+          "signaturePhrases": [],
+          "banList": [],
+          "tellsInUse": [],
+          "dictionEmpty": true
+        },
+        "bronze": {
+          "metrics": {
+            "rhythmWords": 0.0,
+            "rhythmSentences": 0,
+            "dictionWords": 0.0,
+            "formatParagraphs": 0,
+            "medianSentenceLength": null,
+            "sentenceLengthDistribution": {
+              "short": null,
+              "medium": null,
+              "long": null
+            },
+            "contractionsPer1k": null,
+            "iPer1k": null,
+            "emDashesPer1k": null,
+            "questionsPer1k": null,
+            "medianParagraphLength": null,
+            "openerShare": null,
+            "openers": {
+              "and": null,
+              "but": null,
+              "so": null
+            }
+          },
+          "signaturePhrases": [],
+          "banList": [],
+          "tellsInUse": [],
+          "dictionEmpty": true
+        },
+        "edited": {
+          "metrics": {
+            "rhythmWords": 0.0,
+            "rhythmSentences": 0,
+            "dictionWords": 0.0,
+            "formatParagraphs": 0,
+            "medianSentenceLength": null,
+            "sentenceLengthDistribution": {
+              "short": null,
+              "medium": null,
+              "long": null
+            },
+            "contractionsPer1k": null,
+            "iPer1k": null,
+            "emDashesPer1k": null,
+            "questionsPer1k": null,
+            "medianParagraphLength": null,
+            "openerShare": null,
+            "openers": {
+              "and": null,
+              "but": null,
+              "so": null
+            }
+          },
+          "signaturePhrases": [],
+          "banList": [],
+          "tellsInUse": [],
+          "dictionEmpty": true
+        },
+        "spoken": {
+          "metrics": {
+            "rhythmWords": 0.0,
+            "rhythmSentences": 0,
+            "dictionWords": 0.0,
+            "formatParagraphs": 0,
+            "medianSentenceLength": null,
+            "sentenceLengthDistribution": {
+              "short": null,
+              "medium": null,
+              "long": null
+            },
+            "contractionsPer1k": null,
+            "iPer1k": null,
+            "emDashesPer1k": null,
+            "questionsPer1k": null,
+            "medianParagraphLength": null,
+            "openerShare": null,
+            "openers": {
+              "and": null,
+              "but": null,
+              "so": null
+            }
+          },
+          "signaturePhrases": [],
+          "banList": [],
+          "tellsInUse": [],
+          "dictionEmpty": true
+        }
+      },
+      "sections": {},
+      "warnings": [
+        "The written sample is under 1,500 words. The absent-tell list is provisional; review hits in context rather than treating absence as a firm rule."
+      ],
+      "edits": {
+        "learns": [],
+        "repeatedRemovals": {},
+        "repeatedAdditions": {}
+      },
+      "generatedAt": "2026-11-26T13:10:22Z",
+      "failUnder": 70,
+      "overrides": {},
+      "placeholder": "WRITER",
+      "rules": {
+        "minimumSupport": 3,
+        "confirmed": [],
+        "hypotheses": [],
+        "rejected": [],
+        "retired": []
+      },
+      "checks": {
+        "confirmed": [],
+        "pending": [],
+        "rejected": []
+      },
+      "style": null,
+      "audience": null
+    },
+    "SessionMeta": {
+      "kind": "ghostless-edit-session",
+      "version": 1,
+      "id": "2026-11-26-notes",
+      "date": "2026-11-26",
+      "createdAt": "2026-11-26T13:10:22Z",
+      "section": "notes",
+      "origin": "writer-first",
+      "sources": [],
+      "sourceDraftName": "draft.md",
+      "status": "open",
+      "beforeFile": "before.md",
+      "afterFile": "after.md",
+      "notesFile": "notes.md",
+      "receiptFile": "receipt.json",
+      "beforeSha256": "63ae275eee974651d9f03b67e0ee48d4e2354ac8dcc96727a49e01ff1aab721f"
+    },
+    "SessionReceipt": {
+      "kind": "ghostless-edit-receipt",
+      "version": 1,
+      "sessionId": "2026-11-26-notes",
+      "finishedAt": "2026-11-26T13:10:22Z",
+      "origin": "writer-first",
+      "section": "notes",
+      "sources": [],
+      "sourceDraftName": "draft.md",
+      "beforeSha256": "63ae275eee974651d9f03b67e0ee48d4e2354ac8dcc96727a49e01ff1aab721f",
+      "finalSha256": "3b17659a776da8f16741a0b3241fc7b61c05ca1f6c0a51a2a167f0997351c159",
+      "beforeFile": "before.md",
+      "finalFile": "after.md",
+      "notesFile": "notes.md",
+      "notesSha256": "053524429b79a3105bf88702d9ec9054c71f20849240ce090e184d03f3fa7e38",
+      "learnedPath": "gold/2026-11-26-notes",
+      "tier": "gold",
+      "confirmation": "origin",
+      "changes": {
+        "wordsBefore": 8,
+        "wordsAfter": 8,
+        "wordsRemoved": 2,
+        "wordsAdded": 2,
+        "medianSentenceLengthBefore": 3,
+        "medianSentenceLengthAfter": 3,
+        "contractionsPer1kBefore": 0.0,
+        "contractionsPer1kAfter": 0.0,
+        "removedWords": [
+          {
+            "word": "level",
+            "count": 1
+          }
+        ],
+        "addedWords": [
+          {
+            "word": "correction",
+            "count": 1
+          }
+        ],
+        "tokenEdits": 2,
+        "unchangedTokens": 6,
+        "deletions": 0,
+        "insertions": 0,
+        "replacements": 2,
+        "movedTokens": 0,
+        "movedSpans": [],
+        "editRate": 0.25,
+        "editRateDenominator": 8,
+        "paragraphsBefore": 1,
+        "paragraphsAfter": 1,
+        "sentencesBefore": 2,
+        "sentencesAfter": 2,
+        "structuralChanges": [
+          {
+            "kind": "punctuation",
+            "mark": ":",
+            "before": 1,
+            "after": 0,
+            "delta": -1
+          }
+        ],
+        "structuralChangeCount": 1
+      },
+      "checks": [
+        {
+          "id": "check:the-opening-avoids-level-9-114dec",
+          "text": "The opening avoids \"Level 9:\".",
+          "span": "Level 9:",
+          "polarity": "forbid",
+          "status": "pending",
+          "reused": false
+        }
+      ]
+    },
+    "EditMeta": {
+      "date": "2026-11-26",
+      "section": "notes",
+      "origin": "writer-first",
+      "provenance": {
+        "origin": "writer-first",
+        "confirmation": "origin",
+        "model": null,
+        "tool": null
+      },
+      "kind": "prose",
+      "beforeFile": "before.md",
+      "afterFile": "after.md",
+      "diffVersion": 2,
+      "beforeSha256": "63ae275eee974651d9f03b67e0ee48d4e2354ac8dcc96727a49e01ff1aab721f",
+      "afterSha256": "3b17659a776da8f16741a0b3241fc7b61c05ca1f6c0a51a2a167f0997351c159",
+      "checks": [
+        {
+          "id": "check:the-opening-avoids-level-9-114dec",
+          "text": "The opening avoids \"Level 9:\".",
+          "span": "Level 9:",
+          "polarity": "forbid"
+        }
+      ],
+      "wordsBefore": 8,
+      "wordsAfter": 8,
+      "wordsRemoved": 2,
+      "wordsAdded": 2,
+      "medianSentenceLengthBefore": 3,
+      "medianSentenceLengthAfter": 3,
+      "contractionsPer1kBefore": 0.0,
+      "contractionsPer1kAfter": 0.0,
+      "removedWords": [
+        {
+          "word": "level",
+          "count": 1
+        }
+      ],
+      "addedWords": [
+        {
+          "word": "correction",
+          "count": 1
+        }
+      ],
+      "tokenEdits": 2,
+      "unchangedTokens": 6,
+      "deletions": 0,
+      "insertions": 0,
+      "replacements": 2,
+      "movedTokens": 0,
+      "movedSpans": [],
+      "editRate": 0.25,
+      "editRateDenominator": 8,
+      "paragraphsBefore": 1,
+      "paragraphsAfter": 1,
+      "sentencesBefore": 2,
+      "sentencesAfter": 2,
+      "structuralChanges": [
+        {
+          "kind": "punctuation",
+          "mark": ":",
+          "before": 1,
+          "after": 0,
+          "delta": -1
+        }
+      ],
+      "structuralChangeCount": 1
+    },
+    "ChecksSummary": {
+      "confirmed": [],
+      "pending": [
+        {
+          "id": "check:the-opening-avoids-level-9-114dec",
+          "text": "The opening avoids \"Level 9:\".",
+          "span": "Level 9:",
+          "polarity": "forbid",
+          "pair": "2026-11-26-notes",
+          "section": "notes"
+        }
+      ],
+      "rejected": []
+    },
+    "RuleSummary": {
+      "minimumSupport": 3,
+      "confirmed": [
+        {
+          "id": "cut:delve",
+          "kind": "cut",
+          "word": "delve",
+          "support": 0,
+          "minimumSupport": 3,
+          "pieces": [],
+          "receipts": [],
+          "sections": [],
+          "origins": [],
+          "examples": [],
+          "counterexamples": [],
+          "scope": null,
+          "confirmedAt": "2026-11-26T13:10:22Z"
+        }
+      ],
+      "hypotheses": [],
+      "rejected": [],
+      "retired": []
+    },
+    "RulesState": {
+      "confirmed": {
+        "cut:delve": {
+          "at": "2026-11-26T13:10:22Z",
+          "pieces": [],
+          "receipts": []
+        }
+      },
+      "kind": "ghostless-rules",
+      "rejected": {
+        "cut:delve": {
+          "at": "2026-01-03"
+        }
+      },
+      "retired": {
+        "cut:delve": {
+          "at": "2026-01-02"
+        }
+      },
+      "scope": {},
+      "version": 1
+    },
+    "ChecksState": {
+      "confirmed": {
+        "check:the-opening-avoids-level-9-114dec": {
+          "at": "2026-11-26T13:10:22Z",
+          "pair": "2026-11-26-notes",
+          "polarity": "forbid",
+          "section": null,
+          "span": "Level 9:",
+          "text": "The opening avoids \"Level 9:\"."
+        }
+      },
+      "kind": "ghostless-checks",
+      "rejected": {
+        "check:the-opening-avoids-level-9-114dec": {
+          "at": "2026-01-03",
+          "text": "The opening avoids \"Level 9:\"."
+        }
+      },
+      "version": 1
+    }
+  },
+  "bridge": [
+    {
+      "request": {
+        "id": 1,
+        "method": "ping",
+        "params": {}
+      },
+      "response": {
+        "id": 1,
+        "ok": true,
+        "result": {
+          "version": "0.1.0"
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 2,
+        "method": "resolve_project",
+        "params": {
+          "path": "/writing"
+        }
+      },
+      "response": {
+        "id": 2,
+        "ok": true,
+        "result": {
+          "project": "/writing/voice",
+          "source": "--project"
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 3,
+        "method": "judge_text",
+        "params": {
+          "project": "/writing/voice",
+          "text": "The correction starts the note. Then we stop.\n",
+          "section": null
+        }
+      },
+      "response": {
+        "id": 3,
+        "ok": true,
+        "result": {
+          "needsBuild": true,
+          "error": "No voice-stats.json yet. Run build first."
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 4,
+        "method": "build",
+        "params": {
+          "project": "/writing/voice"
+        }
+      },
+      "response": {
+        "id": 4,
+        "ok": true,
+        "result": {
+          "goldPieces": 1,
+          "counts": {
+            "prose": {
+              "gold": 1,
+              "silver": 0,
+              "bronze": 0,
+              "edited": 0
+            },
+            "spoken": {
+              "gold": 0,
+              "silver": 0,
+              "bronze": 0,
+              "edited": 0
+            },
+            "learned": 0,
+            "total": 1
+          },
+          "bronzeFormatOnly": false,
+          "warnings": [
+            "The written sample is under 1,500 words. The absent-tell list is provisional; review hits in context rather than treating absence as a firm rule."
+          ],
+          "generatedAt": "2026-11-26T13:10:22Z"
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 5,
+        "method": "sessions_list",
+        "params": {
+          "project": "/writing/voice"
+        }
+      },
+      "response": {
+        "id": 5,
+        "ok": true,
+        "result": [
+          {
+            "id": "2026-11-26-notes",
+            "createdAt": "2026-11-26T13:10:22Z",
+            "sourceDraftName": "draft.md",
+            "status": "editing",
+            "path": "sessions/2026-11-26-notes",
+            "section": "notes",
+            "origin": "writer-first"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "id": 6,
+        "method": "sessions_list",
+        "params": {
+          "project": "/writing/voice"
+        }
+      },
+      "response": {
+        "id": 6,
+        "ok": true,
+        "result": [
+          {
+            "id": "2026-11-26-notes",
+            "createdAt": "2026-11-26T13:10:22Z",
+            "sourceDraftName": "draft.md",
+            "status": "finished",
+            "path": "sessions/2026-11-26-notes",
+            "section": "notes",
+            "origin": "writer-first",
+            "editRate": 0.25,
+            "learnedPath": "gold/2026-11-26-notes"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "id": 7,
+        "method": "session_start",
+        "params": {
+          "project": "/writing/voice",
+          "draft": "/writing/draft.md",
+          "section": "notes",
+          "origin": "ai-first",
+          "sources": []
+        }
+      },
+      "response": {
+        "id": 7,
+        "ok": true,
+        "result": {
+          "kind": "ghostless-edit-session",
+          "version": 1,
+          "id": "2026-11-26-notes-2",
+          "date": "2026-11-26",
+          "createdAt": "2026-11-26T13:10:22Z",
+          "section": "notes",
+          "origin": "ai-first",
+          "sources": [],
+          "sourceDraftName": "draft.md",
+          "status": "open",
+          "beforeFile": "before.md",
+          "afterFile": "after.md",
+          "notesFile": "notes.md",
+          "receiptFile": "receipt.json",
+          "beforeSha256": "63ae275eee974651d9f03b67e0ee48d4e2354ac8dcc96727a49e01ff1aab721f",
+          "path": "sessions/2026-11-26-notes-2"
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 8,
+        "method": "session_finish",
+        "params": {
+          "project": "/writing/voice",
+          "session": "2026-11-26-notes-2",
+          "rebuild": false,
+          "promote": false,
+          "checks": []
+        }
+      },
+      "response": {
+        "id": 8,
+        "ok": false,
+        "error": "The final is identical to the original draft. Make an edit before finishing."
+      }
+    },
+    {
+      "request": {
+        "id": 9,
+        "method": "session_snapshot",
+        "params": {
+          "project": "/writing/voice",
+          "session": "2026-11-26-notes-2",
+          "after": "Here is the correction. Then we stop.\n",
+          "notes": "Keep the last sentence."
+        }
+      },
+      "response": {
+        "id": 9,
+        "ok": true,
+        "result": {
+          "id": "2026-11-26-notes-2",
+          "path": "sessions/2026-11-26-notes-2",
+          "savedAt": "2026-11-26T13:10:22Z"
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 10,
+        "method": "session_finish",
+        "params": {
+          "project": "/writing/voice",
+          "session": "2026-11-26-notes-2",
+          "note": null,
+          "rebuild": true,
+          "promote": true,
+          "checks": []
+        }
+      },
+      "response": {
+        "id": 10,
+        "ok": true,
+        "result": {
+          "kind": "ghostless-edit-receipt",
+          "version": 1,
+          "sessionId": "2026-11-26-notes-2",
+          "finishedAt": "2026-11-26T13:10:22Z",
+          "origin": "ai-first",
+          "section": "notes",
+          "sources": [],
+          "sourceDraftName": "draft.md",
+          "beforeSha256": "63ae275eee974651d9f03b67e0ee48d4e2354ac8dcc96727a49e01ff1aab721f",
+          "finalSha256": "74cd37d933e0542212019be3e8ae9f2e89a4cba997c7b64882822eb4122aab3f",
+          "beforeFile": "before.md",
+          "finalFile": "after.md",
+          "notesFile": "notes.md",
+          "notesSha256": "1a3fc856f8b9579fc8e7b867cfe5c299abfbe65aba31a6870c36a67da1f582b3",
+          "learnedPath": "gold/2026-11-26-notes-2",
+          "tier": "edited",
+          "confirmation": "none",
+          "changes": {
+            "wordsBefore": 8,
+            "wordsAfter": 7,
+            "wordsRemoved": 4,
+            "wordsAdded": 3,
+            "medianSentenceLengthBefore": 3,
+            "medianSentenceLengthAfter": 3,
+            "contractionsPer1kBefore": 0.0,
+            "contractionsPer1kAfter": 0.0,
+            "removedWords": [
+              {
+                "word": "level",
+                "count": 1
+              },
+              {
+                "word": "note",
+                "count": 1
+              },
+              {
+                "word": "starts",
+                "count": 1
+              }
+            ],
+            "addedWords": [
+              {
+                "word": "correction",
+                "count": 1
+              }
+            ],
+            "tokenEdits": 4,
+            "unchangedTokens": 4,
+            "deletions": 1,
+            "insertions": 0,
+            "replacements": 3,
+            "movedTokens": 0,
+            "movedSpans": [],
+            "editRate": 0.5,
+            "editRateDenominator": 8,
+            "paragraphsBefore": 1,
+            "paragraphsAfter": 1,
+            "sentencesBefore": 2,
+            "sentencesAfter": 2,
+            "structuralChanges": [
+              {
+                "kind": "punctuation",
+                "mark": ":",
+                "before": 1,
+                "after": 0,
+                "delta": -1
+              }
+            ],
+            "structuralChangeCount": 1
+          },
+          "promotion": {
+            "slug": "2026-11-26-notes-2",
+            "previous": "edited",
+            "tier": "gold",
+            "changed": true,
+            "origin": "ai-first",
+            "confirmation": "promoted",
+            "model": null,
+            "tool": null,
+            "meta": {
+              "date": "2026-11-26",
+              "section": "notes",
+              "origin": "ai-first",
+              "provenance": {
+                "origin": "ai-first",
+                "confirmation": "promoted",
+                "model": null,
+                "tool": null
+              },
+              "kind": "prose",
+              "beforeFile": "before.md",
+              "afterFile": "after.md",
+              "diffVersion": 2,
+              "beforeSha256": "63ae275eee974651d9f03b67e0ee48d4e2354ac8dcc96727a49e01ff1aab721f",
+              "afterSha256": "74cd37d933e0542212019be3e8ae9f2e89a4cba997c7b64882822eb4122aab3f",
+              "wordsBefore": 8,
+              "wordsAfter": 7,
+              "wordsRemoved": 4,
+              "wordsAdded": 3,
+              "medianSentenceLengthBefore": 3,
+              "medianSentenceLengthAfter": 3,
+              "contractionsPer1kBefore": 0.0,
+              "contractionsPer1kAfter": 0.0,
+              "removedWords": [
+                {
+                  "word": "level",
+                  "count": 1
+                },
+                {
+                  "word": "note",
+                  "count": 1
+                },
+                {
+                  "word": "starts",
+                  "count": 1
+                }
+              ],
+              "addedWords": [
+                {
+                  "word": "correction",
+                  "count": 1
+                }
+              ],
+              "tokenEdits": 4,
+              "unchangedTokens": 4,
+              "deletions": 1,
+              "insertions": 0,
+              "replacements": 3,
+              "movedTokens": 0,
+              "movedSpans": [],
+              "editRate": 0.5,
+              "editRateDenominator": 8,
+              "paragraphsBefore": 1,
+              "paragraphsAfter": 1,
+              "sentencesBefore": 2,
+              "sentencesAfter": 2,
+              "structuralChanges": [
+                {
+                  "kind": "punctuation",
+                  "mark": ":",
+                  "before": 1,
+                  "after": 0,
+                  "delta": -1
+                }
+              ],
+              "structuralChangeCount": 1
+            },
+            "edits": {
+              "learns": [
+                {
+                  "slug": "2026-11-26-notes",
+                  "date": "2026-11-26",
+                  "section": "notes",
+                  "origin": "writer-first",
+                  "confirmation": "origin",
+                  "model": null,
+                  "tool": null,
+                  "tier": "gold",
+                  "wordsBefore": 8,
+                  "wordsAfter": 8,
+                  "wordsRemoved": 2,
+                  "wordsAdded": 2,
+                  "medianSentenceLengthBefore": 3,
+                  "medianSentenceLengthAfter": 3,
+                  "contractionsPer1kBefore": 0.0,
+                  "contractionsPer1kAfter": 0.0,
+                  "removedWords": [
+                    {
+                      "word": "level",
+                      "count": 1
+                    }
+                  ],
+                  "addedWords": [
+                    {
+                      "word": "correction",
+                      "count": 1
+                    }
+                  ],
+                  "tokenEdits": 2,
+                  "unchangedTokens": 6,
+                  "deletions": 0,
+                  "insertions": 0,
+                  "replacements": 2,
+                  "movedTokens": 0,
+                  "movedSpans": [],
+                  "editRate": 0.25,
+                  "editRateDenominator": 8,
+                  "paragraphsBefore": 1,
+                  "paragraphsAfter": 1,
+                  "sentencesBefore": 2,
+                  "sentencesAfter": 2,
+                  "structuralChanges": [
+                    {
+                      "kind": "punctuation",
+                      "mark": ":",
+                      "before": 1,
+                      "after": 0,
+                      "delta": -1
+                    }
+                  ],
+                  "structuralChangeCount": 1
+                },
+                {
+                  "slug": "2026-11-26-notes-2",
+                  "date": "2026-11-26",
+                  "section": "notes",
+                  "origin": "ai-first",
+                  "confirmation": "promoted",
+                  "model": null,
+                  "tool": null,
+                  "tier": "gold",
+                  "wordsBefore": 8,
+                  "wordsAfter": 7,
+                  "wordsRemoved": 4,
+                  "wordsAdded": 3,
+                  "medianSentenceLengthBefore": 3,
+                  "medianSentenceLengthAfter": 3,
+                  "contractionsPer1kBefore": 0.0,
+                  "contractionsPer1kAfter": 0.0,
+                  "removedWords": [
+                    {
+                      "word": "level",
+                      "count": 1
+                    },
+                    {
+                      "word": "note",
+                      "count": 1
+                    },
+                    {
+                      "word": "starts",
+                      "count": 1
+                    }
+                  ],
+                  "addedWords": [
+                    {
+                      "word": "correction",
+                      "count": 1
+                    }
+                  ],
+                  "tokenEdits": 4,
+                  "unchangedTokens": 4,
+                  "deletions": 1,
+                  "insertions": 0,
+                  "replacements": 3,
+                  "movedTokens": 0,
+                  "movedSpans": [],
+                  "editRate": 0.5,
+                  "editRateDenominator": 8,
+                  "paragraphsBefore": 1,
+                  "paragraphsAfter": 1,
+                  "sentencesBefore": 2,
+                  "sentencesAfter": 2,
+                  "structuralChanges": [
+                    {
+                      "kind": "punctuation",
+                      "mark": ":",
+                      "before": 1,
+                      "after": 0,
+                      "delta": -1
+                    }
+                  ],
+                  "structuralChangeCount": 1
+                }
+              ],
+              "repeatedRemovals": {
+                "level": 2
+              },
+              "repeatedAdditions": {
+                "correction": 2
+              }
+            },
+            "warning": null
+          },
+          "rebuilt": true
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 11,
+        "method": "promote",
+        "params": {
+          "project": "/writing/voice",
+          "slug": "2026-11-26-notes-2",
+          "demote": false
+        }
+      },
+      "response": {
+        "id": 11,
+        "ok": true,
+        "result": {
+          "slug": "2026-11-26-notes-2",
+          "previous": "gold",
+          "tier": "gold",
+          "changed": false,
+          "origin": "ai-first",
+          "confirmation": "promoted",
+          "model": null,
+          "tool": null,
+          "meta": {
+            "date": "2026-11-26",
+            "section": "notes",
+            "origin": "ai-first",
+            "provenance": {
+              "origin": "ai-first",
+              "confirmation": "promoted",
+              "model": null,
+              "tool": null
+            },
+            "kind": "prose",
+            "beforeFile": "before.md",
+            "afterFile": "after.md",
+            "diffVersion": 2,
+            "beforeSha256": "63ae275eee974651d9f03b67e0ee48d4e2354ac8dcc96727a49e01ff1aab721f",
+            "afterSha256": "74cd37d933e0542212019be3e8ae9f2e89a4cba997c7b64882822eb4122aab3f",
+            "wordsBefore": 8,
+            "wordsAfter": 7,
+            "wordsRemoved": 4,
+            "wordsAdded": 3,
+            "medianSentenceLengthBefore": 3,
+            "medianSentenceLengthAfter": 3,
+            "contractionsPer1kBefore": 0.0,
+            "contractionsPer1kAfter": 0.0,
+            "removedWords": [
+              {
+                "word": "level",
+                "count": 1
+              },
+              {
+                "word": "note",
+                "count": 1
+              },
+              {
+                "word": "starts",
+                "count": 1
+              }
+            ],
+            "addedWords": [
+              {
+                "word": "correction",
+                "count": 1
+              }
+            ],
+            "tokenEdits": 4,
+            "unchangedTokens": 4,
+            "deletions": 1,
+            "insertions": 0,
+            "replacements": 3,
+            "movedTokens": 0,
+            "movedSpans": [],
+            "editRate": 0.5,
+            "editRateDenominator": 8,
+            "paragraphsBefore": 1,
+            "paragraphsAfter": 1,
+            "sentencesBefore": 2,
+            "sentencesAfter": 2,
+            "structuralChanges": [
+              {
+                "kind": "punctuation",
+                "mark": ":",
+                "before": 1,
+                "after": 0,
+                "delta": -1
+              }
+            ],
+            "structuralChangeCount": 1
+          },
+          "edits": {
+            "learns": [
+              {
+                "slug": "2026-11-26-notes",
+                "date": "2026-11-26",
+                "section": "notes",
+                "origin": "writer-first",
+                "confirmation": "origin",
+                "model": null,
+                "tool": null,
+                "tier": "gold",
+                "wordsBefore": 8,
+                "wordsAfter": 8,
+                "wordsRemoved": 2,
+                "wordsAdded": 2,
+                "medianSentenceLengthBefore": 3,
+                "medianSentenceLengthAfter": 3,
+                "contractionsPer1kBefore": 0.0,
+                "contractionsPer1kAfter": 0.0,
+                "removedWords": [
+                  {
+                    "word": "level",
+                    "count": 1
+                  }
+                ],
+                "addedWords": [
+                  {
+                    "word": "correction",
+                    "count": 1
+                  }
+                ],
+                "tokenEdits": 2,
+                "unchangedTokens": 6,
+                "deletions": 0,
+                "insertions": 0,
+                "replacements": 2,
+                "movedTokens": 0,
+                "movedSpans": [],
+                "editRate": 0.25,
+                "editRateDenominator": 8,
+                "paragraphsBefore": 1,
+                "paragraphsAfter": 1,
+                "sentencesBefore": 2,
+                "sentencesAfter": 2,
+                "structuralChanges": [
+                  {
+                    "kind": "punctuation",
+                    "mark": ":",
+                    "before": 1,
+                    "after": 0,
+                    "delta": -1
+                  }
+                ],
+                "structuralChangeCount": 1
+              },
+              {
+                "slug": "2026-11-26-notes-2",
+                "date": "2026-11-26",
+                "section": "notes",
+                "origin": "ai-first",
+                "confirmation": "promoted",
+                "model": null,
+                "tool": null,
+                "tier": "gold",
+                "wordsBefore": 8,
+                "wordsAfter": 7,
+                "wordsRemoved": 4,
+                "wordsAdded": 3,
+                "medianSentenceLengthBefore": 3,
+                "medianSentenceLengthAfter": 3,
+                "contractionsPer1kBefore": 0.0,
+                "contractionsPer1kAfter": 0.0,
+                "removedWords": [
+                  {
+                    "word": "level",
+                    "count": 1
+                  },
+                  {
+                    "word": "note",
+                    "count": 1
+                  },
+                  {
+                    "word": "starts",
+                    "count": 1
+                  }
+                ],
+                "addedWords": [
+                  {
+                    "word": "correction",
+                    "count": 1
+                  }
+                ],
+                "tokenEdits": 4,
+                "unchangedTokens": 4,
+                "deletions": 1,
+                "insertions": 0,
+                "replacements": 3,
+                "movedTokens": 0,
+                "movedSpans": [],
+                "editRate": 0.5,
+                "editRateDenominator": 8,
+                "paragraphsBefore": 1,
+                "paragraphsAfter": 1,
+                "sentencesBefore": 2,
+                "sentencesAfter": 2,
+                "structuralChanges": [
+                  {
+                    "kind": "punctuation",
+                    "mark": ":",
+                    "before": 1,
+                    "after": 0,
+                    "delta": -1
+                  }
+                ],
+                "structuralChangeCount": 1
+              }
+            ],
+            "repeatedRemovals": {
+              "level": 2
+            },
+            "repeatedAdditions": {
+              "correction": 2
+            }
+          },
+          "warning": null
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 12,
+        "method": "session_finish",
+        "params": {
+          "project": "/writing/voice",
+          "session": "2026-11-26-notes-2",
+          "rebuild": true
+        }
+      },
+      "response": {
+        "id": 12,
+        "ok": true,
+        "result": {
+          "kind": "ghostless-edit-receipt",
+          "version": 1,
+          "sessionId": "2026-11-26-notes-2",
+          "finishedAt": "2026-11-26T13:10:22Z",
+          "origin": "ai-first",
+          "section": "notes",
+          "sources": [],
+          "sourceDraftName": "draft.md",
+          "beforeSha256": "63ae275eee974651d9f03b67e0ee48d4e2354ac8dcc96727a49e01ff1aab721f",
+          "finalSha256": "74cd37d933e0542212019be3e8ae9f2e89a4cba997c7b64882822eb4122aab3f",
+          "beforeFile": "before.md",
+          "finalFile": "after.md",
+          "notesFile": "notes.md",
+          "notesSha256": "1a3fc856f8b9579fc8e7b867cfe5c299abfbe65aba31a6870c36a67da1f582b3",
+          "learnedPath": "gold/2026-11-26-notes-2",
+          "tier": "edited",
+          "confirmation": "none",
+          "changes": {
+            "wordsBefore": 8,
+            "wordsAfter": 7,
+            "wordsRemoved": 4,
+            "wordsAdded": 3,
+            "medianSentenceLengthBefore": 3,
+            "medianSentenceLengthAfter": 3,
+            "contractionsPer1kBefore": 0.0,
+            "contractionsPer1kAfter": 0.0,
+            "removedWords": [
+              {
+                "word": "level",
+                "count": 1
+              },
+              {
+                "word": "note",
+                "count": 1
+              },
+              {
+                "word": "starts",
+                "count": 1
+              }
+            ],
+            "addedWords": [
+              {
+                "word": "correction",
+                "count": 1
+              }
+            ],
+            "tokenEdits": 4,
+            "unchangedTokens": 4,
+            "deletions": 1,
+            "insertions": 0,
+            "replacements": 3,
+            "movedTokens": 0,
+            "movedSpans": [],
+            "editRate": 0.5,
+            "editRateDenominator": 8,
+            "paragraphsBefore": 1,
+            "paragraphsAfter": 1,
+            "sentencesBefore": 2,
+            "sentencesAfter": 2,
+            "structuralChanges": [
+              {
+                "kind": "punctuation",
+                "mark": ":",
+                "before": 1,
+                "after": 0,
+                "delta": -1
+              }
+            ],
+            "structuralChangeCount": 1
+          },
+          "warnings": [
+            "Rebuild failed: fixture rebuild error"
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 13,
+        "method": "checks_list",
+        "params": {
+          "project": "/writing/voice"
+        }
+      },
+      "response": {
+        "id": 13,
+        "ok": true,
+        "result": {
+          "confirmed": [],
+          "pending": [
+            {
+              "id": "check:the-opening-avoids-level-9-114dec",
+              "text": "The opening avoids \"Level 9:\".",
+              "span": "Level 9:",
+              "polarity": "forbid",
+              "pair": "2026-11-26-notes",
+              "section": "notes"
+            }
+          ],
+          "rejected": []
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 14,
+        "method": "checks_decide",
+        "params": {
+          "project": "/writing/voice",
+          "target": "check:the-opening-avoids-level-9-114dec",
+          "action": "confirm",
+          "section": "notes",
+          "text": null,
+          "global": false
+        }
+      },
+      "response": {
+        "id": 14,
+        "ok": true,
+        "result": {
+          "id": "check:the-opening-avoids-level-9-114dec",
+          "status": "confirmed",
+          "at": "2026-11-26T13:10:22Z",
+          "text": "The opening avoids \"Level 9:\".",
+          "span": "Level 9:",
+          "polarity": "forbid",
+          "pair": "2026-11-26-notes",
+          "section": "notes"
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 15,
+        "method": "checks_decide",
+        "params": {
+          "project": "/writing/voice",
+          "target": "check:the-opening-avoids-level-9-114dec",
+          "action": "confirm",
+          "section": null,
+          "text": null,
+          "global": true
+        }
+      },
+      "response": {
+        "id": 15,
+        "ok": true,
+        "result": {
+          "id": "check:the-opening-avoids-level-9-114dec",
+          "status": "confirmed",
+          "at": "2026-11-26T13:10:22Z",
+          "text": "The opening avoids \"Level 9:\".",
+          "span": "Level 9:",
+          "polarity": "forbid",
+          "pair": "2026-11-26-notes",
+          "section": null
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 16,
+        "method": "judge_text",
+        "params": {
+          "project": "/writing/voice",
+          "text": "The correction starts the note. Then we stop.\n",
+          "section": "notes"
+        }
+      },
+      "response": {
+        "id": 16,
+        "ok": true,
+        "result": {
+          "ok": true,
+          "score": 100,
+          "failUnder": 70,
+          "reviewRequired": false,
+          "assessment": "mechanical-only",
+          "section": "notes",
+          "checks": [
+            {
+              "metric": "medianSentenceLength",
+              "label": "median sentence length",
+              "target": 3,
+              "actual": 3,
+              "low": 0.0,
+              "high": 7.0,
+              "status": "ok",
+              "penalty": 0
+            },
+            {
+              "metric": "contractionsPer1k",
+              "label": "contractions per 1k",
+              "target": 0,
+              "actual": 0,
+              "low": 0.0,
+              "high": 8.0,
+              "status": "ok",
+              "penalty": 0
+            },
+            {
+              "metric": "iPer1k",
+              "label": "first-person I per 1k",
+              "target": 0,
+              "actual": 0,
+              "low": 0.0,
+              "high": 8.0,
+              "status": "ok",
+              "penalty": 0
+            },
+            {
+              "metric": "questionsPer1k",
+              "label": "questions per 1k",
+              "target": 0,
+              "actual": 0,
+              "low": 0.0,
+              "high": 3.0,
+              "status": "ok",
+              "penalty": 0
+            },
+            {
+              "metric": "openerShare",
+              "label": "And/But/So opener share",
+              "target": 0,
+              "actual": 0,
+              "low": 0.0,
+              "high": 0.12,
+              "status": "ok",
+              "penalty": 0
+            },
+            {
+              "metric": "medianParagraphLength",
+              "label": "median paragraph length",
+              "target": 7,
+              "actual": 8,
+              "low": 0.0,
+              "high": 27.0,
+              "status": "ok",
+              "penalty": 0
+            },
+            {
+              "metric": "emDashesPer1k",
+              "label": "em dashes per 1k",
+              "target": 0,
+              "actual": 0,
+              "low": 0.0,
+              "high": 0.0,
+              "status": "ok",
+              "penalty": 0
+            }
+          ],
+          "banned": [],
+          "confirmedRules": [],
+          "structure": [],
+          "placeholders": [],
+          "draft": {
+            "rhythmWords": 8.0,
+            "rhythmSentences": 2.0,
+            "dictionWords": 8.0,
+            "formatParagraphs": 1.0,
+            "medianSentenceLength": 3,
+            "sentenceLengthDistribution": {
+              "short": 1.0,
+              "medium": 0.0,
+              "long": 0.0
+            },
+            "contractionsPer1k": 0.0,
+            "iPer1k": 0.0,
+            "emDashesPer1k": 0.0,
+            "questionsPer1k": 0.0,
+            "medianParagraphLength": 8,
+            "openerShare": 0.0,
+            "openers": {
+              "and": 0.0,
+              "but": 0.0,
+              "so": 0.0
+            }
+          },
+          "targets": {
+            "rhythmWords": 45.0,
+            "rhythmSentences": 12.0,
+            "dictionWords": 45.0,
+            "formatParagraphs": 6.0,
+            "medianSentenceLength": 3,
+            "sentenceLengthDistribution": {
+              "short": 1.0,
+              "medium": 0.0,
+              "long": 0.0
+            },
+            "contractionsPer1k": 0.0,
+            "iPer1k": 0.0,
+            "emDashesPer1k": 0.0,
+            "questionsPer1k": 0.0,
+            "medianParagraphLength": 7,
+            "openerShare": 0.0,
+            "openers": {
+              "and": 0.0,
+              "but": 0.0,
+              "so": 0.0
+            }
+          },
+          "confidence": {
+            "level": "low",
+            "trustworthy": false,
+            "pieces": 2,
+            "words": 15,
+            "writtenWords": 15,
+            "sentences": 4,
+            "minimums": {
+              "words": 1500,
+              "pieces": 3
+            },
+            "note": "Small sample: 15 measured words in 2 piece(s). Below 1500 words or 3 pieces, treat the score as a smoke test, not a verdict."
+          },
+          "lowConfidence": true,
+          "stale": true,
+          "staleSources": [
+            "checks.json",
+            "gold/2026-11-26-notes-2/meta.json"
+          ],
+          "availableSections": [
+            "notes"
+          ],
+          "confirmedChecks": [
+            {
+              "id": "check:the-opening-avoids-level-9-114dec",
+              "text": "The opening avoids \"Level 9:\".",
+              "span": "Level 9:",
+              "polarity": "forbid",
+              "section": null,
+              "pass": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 17,
+        "method": "rules_decide",
+        "params": {
+          "project": "/writing/voice",
+          "ruleId": "cut:delve",
+          "action": "confirm",
+          "section": null,
+          "global": true
+        }
+      },
+      "response": {
+        "id": 17,
+        "ok": true,
+        "result": {
+          "id": "cut:delve",
+          "status": "confirmed",
+          "scope": null,
+          "receipts": [],
+          "pieces": []
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 18,
+        "method": "rules_list",
+        "params": {
+          "project": "/writing/voice"
+        }
+      },
+      "response": {
+        "id": 18,
+        "ok": true,
+        "result": {
+          "minimumSupport": 3,
+          "confirmed": [
+            {
+              "id": "cut:delve",
+              "kind": "cut",
+              "word": "delve",
+              "support": 0,
+              "minimumSupport": 3,
+              "pieces": [],
+              "receipts": [],
+              "sections": [],
+              "origins": [],
+              "examples": [],
+              "counterexamples": [],
+              "scope": null,
+              "confirmedAt": "2026-11-26T13:10:22Z"
+            }
+          ],
+          "hypotheses": [],
+          "rejected": [],
+          "retired": []
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 19,
+        "method": "save_note",
+        "params": {
+          "project": "/writing/voice",
+          "kind": "style",
+          "text": "Keep the opening short."
+        }
+      },
+      "response": {
+        "id": 19,
+        "ok": true,
+        "result": {
+          "path": "/writing/voice/STYLE.md",
+          "created": true,
+          "appended": true
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 20,
+        "method": "rules_list",
+        "params": {
+          "project": "/writing/voice"
+        }
+      },
+      "response": {
+        "id": 20,
+        "ok": true,
+        "result": {
+          "minimumSupport": 3,
+          "confirmed": [],
+          "hypotheses": [],
+          "rejected": [
+            {
+              "id": "cut:delve",
+              "kind": "cut",
+              "word": "delve",
+              "status": "rejected",
+              "at": "2026-01-03"
+            }
+          ],
+          "retired": []
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 21,
+        "method": "checks_list",
+        "params": {
+          "project": "/writing/voice"
+        }
+      },
+      "response": {
+        "id": 21,
+        "ok": true,
+        "result": {
+          "confirmed": [],
+          "pending": [],
+          "rejected": [
+            {
+              "id": "check:the-opening-avoids-level-9-114dec",
+              "status": "rejected",
+              "at": "2026-01-03",
+              "text": "The opening avoids \"Level 9:\"."
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

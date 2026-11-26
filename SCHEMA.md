@@ -4,6 +4,8 @@ A voice project is a directory with `manifest.json` whose `"kind"` is `"ghostles
 
 The voice directory is also a Git data repository. It is self-contained: no remote is required, and `build` works offline.
 
+The development checkout contains [machine-readable JSON Schemas and contract fixtures](fixtures/contracts/README.md) for these files and the bridge protocol.
+
 ## Layout
 
 ```text
@@ -540,7 +542,7 @@ promote
 | `sessions_list` | `project` | session rows, plus `section`, `origin`, and receipt `editRate` / `learnedPath` when readable |
 | `session_start` | `project`, `draft`, optional `section`, `origin` (default `ai-first`), `sources` | session metadata plus `path` |
 | `session_snapshot` | `project`, `session`, `after`, `notes` | `{id, path, savedAt}` |
-| `session_finish` | `project`, `session`, optional `final`, `note`, `checks`, `promote`, `rebuild` | receipt; `promote` and `rebuild` add `promotion` and `rebuilt` |
+| `session_finish` | `project`, `session`, optional `final`, `note`, `checks`, `promote`, `rebuild` | receipt; `promote` and `rebuild` add `promotion` and `rebuilt` on success, or messages in `warnings` if either follow-up fails |
 | `build` | `project` | `{goldPieces, counts, bronzeFormatOnly, warnings, generatedAt}` |
 | `rules_list` | `project` | confirmed, hypotheses, rejected, retired |
 | `rules_decide` | `project`, `action` (`confirm`, `reject`, `retire`), `ruleId`; `confirm` takes `section` or `global` | decision record |

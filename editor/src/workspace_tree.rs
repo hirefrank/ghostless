@@ -5,7 +5,6 @@ use crate::{
     session::valid_session_id,
 };
 use rune_kit::{FileNode, FileTree, TreeModel, natural_cmp};
-use serde::Deserialize;
 use std::{
     collections::HashMap,
     ffi::OsStr,
@@ -31,7 +30,8 @@ pub(crate) struct WorkspaceEntry {
     pub read_only: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum SessionStatus {
     Editing,
     Finished,
@@ -384,15 +384,6 @@ pub(crate) fn preserve_open_folders(
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SessionMetadata {
-    kind: String,
-    id: String,
-    source_draft_name: String,
-    created_at: String,
-}
-
 pub(crate) fn scan_sessions(
     voice_project: &Path,
     links: &HashMap<String, SessionLink>,
@@ -415,11 +406,9 @@ pub(crate) fn scan_sessions(
             if !is_regular_file(&path) {
                 return None;
             }
-            let metadata: SessionMetadata = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
-            if metadata.kind != "ghostless-edit-session"
-                || !valid_session_id(&metadata.id)
-                || folder.file_name() != OsStr::new(&metadata.id)
-            {
+            let metadata = crate::contracts::session_metadata(&session_dir).ok()?;
+            let id = metadata.id?;
+            if !valid_session_id(&id) || folder.file_name() != OsStr::new(&id) {
                 return None;
             }
             let status = if session_dir.join("receipt.json").exists() {
@@ -428,15 +417,12 @@ pub(crate) fn scan_sessions(
                 SessionStatus::Editing
             };
             let linked_workspace_file = links
-                .get(&EditorStateStore::session_link_key(
-                    voice_project,
-                    &metadata.id,
-                ))
+                .get(&EditorStateStore::session_link_key(voice_project, &id))
                 .map(|link| link.workspace_file.clone());
             Some(SessionSummary {
-                id: metadata.id,
-                source_name: metadata.source_draft_name,
-                created_at: metadata.created_at,
+                id,
+                source_name: metadata.source_draft_name?,
+                created_at: metadata.created_at?,
                 status,
                 session_dir,
                 linked_workspace_file,

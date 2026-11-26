@@ -1,12 +1,45 @@
 use super::{BridgeOp, BridgeReply, Envelope, Job, JudgeReport, parse_value};
 use crate::{documents::DocId, error::EditorError};
-use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
+use serde::Serialize;
+use std::path::PathBuf;
 
 impl Job {
     pub(super) fn payload(&self) -> Result<String, EditorError> {
-        let (method, params) = self.op.params()?;
-        Ok(json!({"id": self.id, "method": method, "params": params}).to_string())
+        match &self.op {
+            BridgeOp::SessionFinish { session, .. }
+                if !crate::session::valid_session_id(session) =>
+            {
+                return Err(EditorError::InvalidSessionId(session.clone()));
+            }
+            BridgeOp::RulesDecide {
+                global: true,
+                section: Some(_),
+                ..
+            }
+            | BridgeOp::ChecksDecide {
+                global: true,
+                section: Some(_),
+                ..
+            } => {
+                return Err(EditorError::Bridge(
+                    "A global decision cannot also have a section".into(),
+                ));
+            }
+            _ => {}
+        }
+        #[derive(Serialize)]
+        struct Request<'a> {
+            id: u64,
+            #[serde(flatten)]
+            op: &'a BridgeOp,
+        }
+        serde_json::to_string(&Request {
+            id: self.id,
+            op: &self.op,
+        })
+        .map_err(|error| EditorError::Json {
+            context: format!("Cannot encode bridge request: {error}"),
+        })
     }
 
     pub(super) fn decode(self, line: &str) -> BridgeReply {
@@ -14,17 +47,10 @@ impl Job {
             Ok(envelope) => envelope,
             Err(error) => return self.fail(format!("Invalid bridge response: {error}")),
         };
-        if envelope.id != Some(self.id) {
-            return self.fail("Bridge response did not match the request".to_owned());
-        }
-        if !envelope.ok {
-            return self.fail(
-                envelope
-                    .error
-                    .unwrap_or_else(|| "Bridge request failed".into()),
-            );
-        }
-        let result = envelope.result.unwrap_or(Value::Null);
+        let result = match envelope.into_payload(self.id) {
+            Ok(result) => result,
+            Err(error) => return self.fail(error),
+        };
         match self.op {
             BridgeOp::JudgeText { .. } => {
                 let doc_id = self.doc_id.clone().unwrap_or(DocId::File(PathBuf::new()));
@@ -54,7 +80,7 @@ impl Job {
             },
             BridgeOp::SessionFinish { .. } => BridgeReply::SessionFinish {
                 doc_id: self.doc_id,
-                result: Ok(result),
+                result: parse_value(result),
             },
             BridgeOp::RulesList { .. } => BridgeReply::RulesList {
                 request_id: self.id,
@@ -62,7 +88,7 @@ impl Job {
             },
             BridgeOp::RulesDecide { .. } => BridgeReply::RulesDecide {
                 request_id: self.id,
-                result: Ok(result),
+                result: parse_value(result),
             },
             BridgeOp::ChecksList { .. } => BridgeReply::ChecksList {
                 request_id: self.id,
@@ -70,12 +96,14 @@ impl Job {
             },
             BridgeOp::ChecksDecide { .. } => BridgeReply::ChecksDecide {
                 request_id: self.id,
-                result: Ok(result),
+                result: parse_value(result),
             },
             BridgeOp::SaveNote { .. } => BridgeReply::SaveNote {
                 result: parse_value(result),
             },
-            BridgeOp::Promote { .. } => BridgeReply::Promote { result: Ok(result) },
+            BridgeOp::Promote { .. } => BridgeReply::Promote {
+                result: parse_value(result),
+            },
         }
     }
 
@@ -122,117 +150,5 @@ impl Job {
             BridgeOp::SaveNote { .. } => BridgeReply::SaveNote { result: Err(error) },
             BridgeOp::Promote { .. } => BridgeReply::Promote { result: Err(error) },
         }
-    }
-}
-
-impl BridgeOp {
-    pub(super) fn params(&self) -> Result<(&'static str, Value), EditorError> {
-        let path = |value: &Path| -> Result<String, EditorError> {
-            value.to_str().map(str::to_owned).ok_or_else(|| {
-                EditorError::message(format!("Path is not UTF-8: {}", value.display()))
-            })
-        };
-        Ok(match self {
-            BridgeOp::JudgeText {
-                project,
-                text,
-                section,
-            } => (
-                "judge_text",
-                json!({"project": path(project)?, "text": text, "section": section}),
-            ),
-            BridgeOp::Build { project } => ("build", json!({"project": path(project)?})),
-            BridgeOp::SessionsList { project } => {
-                ("sessions_list", json!({"project": path(project)?}))
-            }
-            BridgeOp::SessionStart {
-                project,
-                draft,
-                section,
-                origin,
-                sources,
-            } => (
-                "session_start",
-                json!({
-                    "project": path(project)?,
-                    "draft": path(draft)?,
-                    "section": section,
-                    "origin": origin,
-                    "sources": sources,
-                }),
-            ),
-            BridgeOp::SessionFinish {
-                project,
-                session,
-                note,
-                checks,
-                rebuild,
-                promote,
-                final_path,
-            } => (
-                "session_finish",
-                json!({
-                    "project": path(project)?,
-                    "session": session,
-                    "note": note,
-                    "checks": checks,
-                    "rebuild": rebuild,
-                    "promote": promote,
-                    "final": final_path.as_ref().map(|item| path(item)).transpose()?,
-                }),
-            ),
-            BridgeOp::RulesList { project } => ("rules_list", json!({"project": path(project)?})),
-            BridgeOp::RulesDecide {
-                project,
-                action,
-                rule_id,
-                section,
-                global,
-            } => (
-                "rules_decide",
-                json!({
-                    "project": path(project)?,
-                    "action": action,
-                    "ruleId": rule_id,
-                    "section": section,
-                    "global": global,
-                }),
-            ),
-            BridgeOp::ChecksList { project } => ("checks_list", json!({"project": path(project)?})),
-            BridgeOp::ChecksDecide {
-                project,
-                action,
-                target,
-                section,
-                global,
-                text,
-            } => (
-                "checks_decide",
-                json!({
-                    "project": path(project)?,
-                    "action": action,
-                    "target": target,
-                    "section": section,
-                    "global": global,
-                    "text": text,
-                }),
-            ),
-            BridgeOp::SaveNote {
-                project,
-                kind,
-                text,
-            } => (
-                "save_note",
-                json!({"project": path(project)?, "kind": kind, "text": text}),
-            ),
-            BridgeOp::Promote {
-                project,
-                slug,
-                demote,
-            } => (
-                "promote",
-                json!({"project": path(project)?, "slug": slug, "demote": demote}),
-            ),
-        })
     }
 }

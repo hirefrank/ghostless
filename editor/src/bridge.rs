@@ -3,9 +3,11 @@
 //! Analysis calls stay on this thread. Saves and finishes stay on
 //! [`crate::worker::Worker`] so a slow judge cannot block a write.
 
+#[cfg(test)]
+mod contract_tests;
 mod hygiene;
 mod protocol;
-pub(crate) use hygiene::{Check, ChecksSummary, Rule, RulesSummary};
+pub(crate) use hygiene::{Check, CheckDecision, ChecksSummary, Rule, RuleDecision, RulesSummary};
 
 use crate::error::EditorError;
 use std::{
@@ -23,7 +25,7 @@ use std::{
 #[cfg(test)]
 use std::{path::Path, time::Duration};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
@@ -92,7 +94,7 @@ pub(crate) struct LiveCheckResult {
 pub(crate) struct JudgeReport {
     #[serde(default)]
     pub ok: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_score")]
     pub score: i32,
     #[serde(default)]
     pub fail_under: i32,
@@ -124,6 +126,17 @@ pub(crate) struct JudgeReport {
     pub error: Option<String>,
 }
 
+fn deserialize_score<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<i32, D::Error> {
+    let score = i32::deserialize(deserializer)?;
+    if (0..=100).contains(&score) {
+        Ok(score)
+    } else {
+        Err(serde::de::Error::custom(
+            "judge score must be between 0 and 100",
+        ))
+    }
+}
+
 impl JudgeReport {
     pub(crate) fn from_error(error: impl Into<String>) -> Self {
         Self {
@@ -141,12 +154,12 @@ impl JudgeReport {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BuildSummary {
     pub gold_pieces: i64,
     #[serde(default)]
-    pub counts: Value,
+    pub counts: Option<crate::contracts::PieceCounts>,
     #[serde(default)]
     pub bronze_format_only: bool,
     #[serde(default)]
@@ -155,7 +168,7 @@ pub(crate) struct BuildSummary {
     pub generated_at: String,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SessionStartResult {
     pub id: String,
@@ -176,7 +189,13 @@ pub(crate) struct SaveNoteResult {
     pub appended: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(
+    tag = "method",
+    content = "params",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 #[allow(dead_code)]
 pub(crate) enum BridgeOp {
     JudgeText {
@@ -201,9 +220,13 @@ pub(crate) enum BridgeOp {
         project: PathBuf,
         session: String,
         note: Option<String>,
+        #[serde(default)]
         checks: Vec<String>,
+        #[serde(default)]
         rebuild: bool,
+        #[serde(default)]
         promote: bool,
+        #[serde(rename = "final")]
         final_path: Option<PathBuf>,
     },
     RulesList {
@@ -214,6 +237,7 @@ pub(crate) enum BridgeOp {
         action: String,
         rule_id: String,
         section: Option<String>,
+        #[serde(default)]
         global: bool,
     },
     ChecksList {
@@ -224,6 +248,7 @@ pub(crate) enum BridgeOp {
         action: String,
         target: String,
         section: Option<String>,
+        #[serde(default)]
         global: bool,
         text: Option<String>,
     },
@@ -235,6 +260,7 @@ pub(crate) enum BridgeOp {
     Promote {
         project: PathBuf,
         slug: String,
+        #[serde(default)]
         demote: bool,
     },
 }
@@ -253,7 +279,7 @@ pub(crate) enum BridgeReply {
         result: Result<BuildSummary, EditorError>,
     },
     SessionsList {
-        result: Result<Vec<Value>, EditorError>,
+        result: Result<Vec<SessionListItem>, EditorError>,
     },
     SessionStart {
         doc_id: Option<DocId>,
@@ -262,7 +288,7 @@ pub(crate) enum BridgeReply {
     },
     SessionFinish {
         doc_id: Option<DocId>,
-        result: Result<Value, EditorError>,
+        result: Result<FinishReceipt, EditorError>,
     },
     RulesList {
         request_id: u64,
@@ -270,7 +296,7 @@ pub(crate) enum BridgeReply {
     },
     RulesDecide {
         request_id: u64,
-        result: Result<Value, EditorError>,
+        result: Result<RuleDecision, EditorError>,
     },
     ChecksList {
         request_id: u64,
@@ -278,14 +304,35 @@ pub(crate) enum BridgeReply {
     },
     ChecksDecide {
         request_id: u64,
-        result: Result<Value, EditorError>,
+        result: Result<CheckDecision, EditorError>,
     },
     SaveNote {
         result: Result<SaveNoteResult, EditorError>,
     },
     Promote {
-        result: Result<Value, EditorError>,
+        result: Result<PromotionResult, EditorError>,
     },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SessionListItem {
+    pub id: Option<String>,
+    pub created_at: Option<String>,
+    pub source_draft_name: Option<String>,
+    pub status: crate::workspace_tree::SessionStatus,
+    pub path: String,
+    pub section: Option<String>,
+    pub origin: Option<String>,
+    pub edit_rate: Option<f64>,
+    pub learned_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct PromotionResult {
+    pub slug: String,
+    pub tier: String,
+    pub confirmation: String,
 }
 
 pub(crate) trait BridgeBackend: Send {
@@ -524,16 +571,17 @@ impl Transport {
 }
 
 fn mock_exchange(backend: &mut dyn BridgeBackend, payload: &str) -> Result<String, EditorError> {
-    let value: Value = serde_json::from_str(payload).map_err(|error| EditorError::Json {
-        context: error.to_string(),
-    })?;
-    let id = value.get("id").cloned().unwrap_or(Value::Null);
-    let method = value
-        .get("method")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let params = value.get("params").cloned().unwrap_or_else(|| json!({}));
-    let body = match backend.call(method, &params) {
+    #[derive(Deserialize)]
+    struct MockRequest {
+        id: u64,
+        method: String,
+        params: Value,
+    }
+    let MockRequest { id, method, params } =
+        serde_json::from_str(payload).map_err(|error| EditorError::Json {
+            context: format!("Invalid bridge request: {error}"),
+        })?;
+    let body = match backend.call(&method, &params) {
         Ok(result) => json!({"id": id, "ok": true, "result": result}),
         Err(error) => json!({"id": id, "ok": false, "error": error.to_string()}),
     };
@@ -619,12 +667,13 @@ pub(crate) struct FinishOptions {
     pub promote: bool,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FinishReceipt {
     pub learned_path: Option<String>,
     #[serde(default)]
     pub rebuilt: bool,
+    pub promotion: Option<PromotionResult>,
     #[serde(default)]
     pub warnings: Vec<String>,
 }
@@ -655,23 +704,32 @@ pub(crate) fn session_finish(
     let envelope: Envelope = serde_json::from_str(&line).map_err(|error| EditorError::Json {
         context: format!("Invalid bridge response: {error}"),
     })?;
-    if envelope.id != Some(request.id) || !envelope.ok {
-        return Err(EditorError::Bridge(
-            envelope
-                .error
-                .unwrap_or_else(|| "Finish request failed".into()),
-        ));
-    }
-    parse_value(envelope.result.unwrap_or(Value::Null))
+    parse_value(envelope.into_payload(request.id)?)
 }
 
 #[derive(Deserialize)]
 struct Envelope {
     id: Option<u64>,
-    #[serde(default)]
     ok: bool,
     result: Option<Value>,
     error: Option<String>,
+}
+
+impl Envelope {
+    fn into_payload(self, id: u64) -> Result<Value, EditorError> {
+        if self.id != Some(id) {
+            return Err(EditorError::Bridge(
+                "Bridge response did not match the request".into(),
+            ));
+        }
+        match (self.ok, self.result, self.error) {
+            (true, Some(result), None) => Ok(result),
+            (false, None, Some(error)) => Err(EditorError::Bridge(error)),
+            _ => Err(EditorError::Json {
+                context: "Invalid bridge response envelope".into(),
+            }),
+        }
+    }
 }
 
 fn parse_value<T: for<'de> Deserialize<'de>>(value: Value) -> Result<T, EditorError> {
@@ -850,7 +908,6 @@ mod tests {
             "promote",
         ];
         for (op, method) in ops.into_iter().zip(methods) {
-            let (_name, params) = op.params().unwrap();
             let job = Job {
                 id: 7,
                 doc_id: None,
@@ -861,7 +918,7 @@ mod tests {
             let line = job.payload().unwrap();
             let value: Value = serde_json::from_str(&line).unwrap();
             assert_eq!(value["method"], method);
-            assert!(params.is_object());
+            assert!(value["params"].is_object());
             assert_eq!(value["id"], 7);
         }
     }

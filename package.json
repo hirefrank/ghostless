@@ -18,6 +18,7 @@
     "skills/",
     "docs/",
     "fixtures/",
+    "!fixtures/contracts/**",
     "setup",
     "SCHEMA.md",
     "README.md",

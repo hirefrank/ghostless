@@ -1,9 +1,9 @@
+use crate::contracts::{StartedSession, session_metadata};
 use crate::error::EditorError;
 use crate::{
     cli::{discover_voice_project, require_draft, require_project, resolve_project, run_cli},
     prefs,
 };
-use serde_json::Value;
 use std::{env, path::PathBuf};
 
 #[derive(Clone)]
@@ -173,12 +173,11 @@ pub(crate) fn parse_launch(args: Vec<String>) -> Result<LaunchTarget, EditorErro
             ],
             None,
         )?;
-        serde_json::from_str::<Value>(&output)
-            .map_err(|error| error.to_string())?
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or("CLI did not return a session ID")?
-            .to_owned()
+        serde_json::from_str::<StartedSession>(&output)
+            .map_err(|error| EditorError::Json {
+                context: format!("Invalid start response: {error}"),
+            })?
+            .id
     } else {
         session.expect("one session supplied")
     };
@@ -218,23 +217,7 @@ pub(crate) fn load_session(project: PathBuf, id: String) -> Result<Session, Edit
             folder.display()
         )));
     }
-    let metadata: Value = serde_json::from_slice(
-        &std::fs::read(folder.join("session.json")).map_err(|error| {
-            format!(
-                "Cannot read {}: {error}",
-                folder.join("session.json").display()
-            )
-        })?,
-    )
-    .map_err(|error| {
-        format!(
-            "Cannot read session metadata in {}: {error}",
-            folder.display()
-        )
-    })?;
-    if metadata.get("kind").and_then(Value::as_str) != Some("ghostless-edit-session") {
-        return Err("Unsupported session format".into());
-    }
+    let metadata = session_metadata(&folder)?;
     let read = |file: &str| {
         let path = folder.join(file);
         std::fs::read_to_string(&path)
@@ -242,18 +225,14 @@ pub(crate) fn load_session(project: PathBuf, id: String) -> Result<Session, Edit
     };
     let original = read("before.md")?;
     let before_sha256 = metadata
-        .get("beforeSha256")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
+        .before_sha256
         .unwrap_or_else(|| crate::fs_io::sha256_text(&original));
     Ok(Session {
         project,
         id,
         source_name: metadata
-            .get("sourceDraftName")
-            .and_then(Value::as_str)
-            .unwrap_or("draft.md")
-            .into(),
+            .source_draft_name
+            .unwrap_or_else(|| "draft.md".into()),
         original,
         after: read("after.md")?,
         notes: if folder.join("notes.md").exists() {

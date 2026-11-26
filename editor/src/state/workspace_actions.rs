@@ -615,27 +615,16 @@ impl Editor {
                 continue;
             };
             let notes = fs_io::read_utf8(&folder.join("notes.md")).unwrap_or_default();
-            let Ok(meta) = fs_io::read_utf8(&folder.join("session.json")) else {
+            let Ok(meta) = crate::contracts::session_metadata(&folder) else {
                 continue;
             };
-            let Ok(meta_json) = serde_json::from_str::<serde_json::Value>(&meta) else {
-                continue;
-            };
-            let Some(before_sha) = meta_json
-                .get("beforeSha256")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-            else {
+            let Some(before_sha) = meta.before_sha256 else {
                 continue;
             };
             if fs_io::sha256_text(&before) != before_sha {
                 continue;
             }
-            let created_at = meta_json
-                .get("createdAt")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("")
-                .to_owned();
+            let created_at = meta.created_at.unwrap_or_default();
             valid.push(LinkedCandidate {
                 created_at,
                 key: key.clone(),
