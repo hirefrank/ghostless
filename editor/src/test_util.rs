@@ -40,3 +40,25 @@ impl Drop for TestDir {
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }
+
+/// Small deterministic generator for invariant tests. Include the initial seed
+/// and action index in assertions so a failing sequence can be rerun directly.
+pub(crate) struct Seeded(u64);
+
+impl Seeded {
+    pub(crate) fn new(seed: u64) -> Self {
+        assert_ne!(seed, 0);
+        Self(seed)
+    }
+
+    pub(crate) fn index(&mut self, bound: usize) -> usize {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 % bound as u64) as usize
+    }
+
+    pub(crate) fn pick<'a, T>(&mut self, choices: &'a [T]) -> &'a T {
+        &choices[self.index(choices.len())]
+    }
+}

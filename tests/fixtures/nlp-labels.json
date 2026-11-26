@@ -1,0 +1,86 @@
+[
+  {
+    "id": "abbreviations",
+    "text": "Dr. Chen filed the U.S. paperwork. She attached a note, e.g. the one we saw yesterday.",
+    "sentences": 2,
+    "tells": []
+  },
+  {
+    "id": "bare-url",
+    "text": "The draft lives at https://example.test/delve/first/second/third today. I printed it.",
+    "sentences": 2,
+    "tells": []
+  },
+  {
+    "id": "link-and-inline-code",
+    "text": "Read [the copy](https://example.test/delve/contrast). The command was `delve`.",
+    "sentences": 2,
+    "tells": []
+  },
+  {
+    "id": "code-and-table",
+    "text": "The log follows.\n\n~~~\nFirst, delve, second, unpack, third, elevate.\n~~~\n\n| Person | Gate |\n| --- | --- |\n| Chen | B |",
+    "tells": []
+  },
+  {
+    "id": "literal-checklist",
+    "text": "Pack these for the move:\n- Books\n- Plates\n- Towels",
+    "tells": []
+  },
+  {
+    "id": "literal-prose-list",
+    "text": "I bought flour, butter, and apples for the pie.",
+    "tells": []
+  },
+  {
+    "id": "literal-order",
+    "text": "First train at eight, second at noon and third at five.",
+    "tells": []
+  },
+  {
+    "id": "literal-quoted-correction",
+    "text": "“It’s not a leak, it’s the drain,” Dr. Shah said.",
+    "sentences": 1,
+    "tells": []
+  },
+  {
+    "id": "contrast-claim",
+    "text": "It's not a note, it's a framework for transformation.",
+    "tells": ["not-x-its-y"]
+  },
+  {
+    "id": "contrast-insistence",
+    "text": "This isn't merely a routine update; it is a new paradigm.",
+    "tells": ["not-x-its-y"]
+  },
+  {
+    "id": "contrast-framing",
+    "text": "It's not a handoff, it's an invitation to rethink collaboration.",
+    "tells": ["not-x-its-y"]
+  },
+  {
+    "id": "abstract-triplet",
+    "text": "The program unlocks clarity, momentum, and alignment.",
+    "tells": ["triplet"]
+  },
+  {
+    "id": "abstract-triplet-verbs",
+    "text": "Together we inspire, empower, and transform.",
+    "tells": ["triplet"]
+  },
+  {
+    "id": "abstract-ordinal",
+    "text": "Firstly, it unifies, secondly, it empowers, thirdly, it transforms.",
+    "tells": ["triplet"]
+  },
+  {
+    "id": "abstract-ordinal-short",
+    "text": "First, rethink the process; second, unlock alignment; third, amplify results.",
+    "tells": ["triplet"]
+  },
+  {
+    "id": "stacked-tells",
+    "text": "It's not a road map, it's a framework. Delve into what drives focus, vision, and momentum.",
+    "tells": ["not-x-its-y", "triplet", "delve into"]
+  }
+]

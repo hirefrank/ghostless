@@ -716,8 +716,8 @@ impl Editor {
 
 pub(in crate::state) fn load_placeholder(project: Option<&Path>) -> Option<String> {
     let raw = fs::read_to_string(project?.join("manifest.json")).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let token = value.get("placeholder")?.as_str()?.trim();
+    let manifest: crate::contracts::Manifest = serde_json::from_str(&raw).ok()?;
+    let token = manifest.placeholder.as_deref()?.trim();
     if token.is_empty() || token.contains(['[', ']', ':']) {
         None
     } else {

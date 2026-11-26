@@ -54,7 +54,8 @@ pub(crate) fn build(editor: &Editor, kit: &Kit) -> El {
                     .on_pick(|editor: &mut Editor, index, _tx: &mut Tx| {
                         editor.set_compare_unified(index == 1);
                     })
-                    .build(kit),
+                    .build(kit)
+                    .key("diff-layout"),
             )
             .child(
                 text(summary)

@@ -1,0 +1,4178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Ghostless JSON contracts",
+  "$defs": {
+    "CompiledStats": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "weights": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "goldVoiceMinimum": {
+          "type": "integer"
+        },
+        "goldPieces": {
+          "type": "integer"
+        },
+        "bronzeFormatOnly": {
+          "type": "boolean"
+        },
+        "edited": {
+          "$ref": "#/$defs/EditedPoolInfo"
+        },
+        "counts": {
+          "$ref": "#/$defs/PieceCounts"
+        },
+        "provenance": {
+          "$ref": "#/$defs/ProvenanceCounts"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FileRow"
+          }
+        },
+        "weighted": {
+          "$ref": "#/$defs/MetricBlock"
+        },
+        "unweighted": {
+          "$ref": "#/$defs/MetricBlock"
+        },
+        "byTier": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/MetricBlock"
+          }
+        },
+        "sections": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/SectionBlock"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "edits": {
+          "$ref": "#/$defs/EditSummary"
+        },
+        "generatedAt": {
+          "type": "string"
+        },
+        "failUnder": {
+          "type": "integer"
+        },
+        "overrides": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "placeholder": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rules": {
+          "$ref": "#/$defs/RuleSummary"
+        },
+        "checks": {
+          "$ref": "#/$defs/ChecksSummary"
+        },
+        "style": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "audience": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "weights",
+        "goldVoiceMinimum",
+        "goldPieces",
+        "bronzeFormatOnly",
+        "edited",
+        "counts",
+        "provenance",
+        "files",
+        "weighted",
+        "unweighted",
+        "byTier",
+        "sections",
+        "warnings",
+        "edits"
+      ],
+      "additionalProperties": false
+    },
+    "EditedPoolInfo": {
+      "type": "object",
+      "properties": {
+        "pieces": {
+          "type": "integer"
+        },
+        "configuredWeight": {
+          "type": "number"
+        },
+        "countedWeight": {
+          "type": "number"
+        },
+        "maxShare": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.25
+        }
+      },
+      "required": [
+        "pieces",
+        "configuredWeight",
+        "countedWeight",
+        "maxShare"
+      ],
+      "additionalProperties": false
+    },
+    "PieceCounts": {
+      "type": "object",
+      "properties": {
+        "prose": {
+          "$ref": "#/$defs/TierCounts"
+        },
+        "spoken": {
+          "$ref": "#/$defs/TierCounts"
+        },
+        "learned": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "prose",
+        "spoken",
+        "learned",
+        "total"
+      ],
+      "additionalProperties": false
+    },
+    "TierCounts": {
+      "type": "object",
+      "properties": {
+        "gold": {
+          "type": "integer"
+        },
+        "silver": {
+          "type": "integer"
+        },
+        "bronze": {
+          "type": "integer"
+        },
+        "edited": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "gold",
+        "silver",
+        "bronze",
+        "edited"
+      ],
+      "additionalProperties": false
+    },
+    "ProvenanceCounts": {
+      "type": "object",
+      "properties": {
+        "unaided": {
+          "type": "integer"
+        },
+        "writer-first": {
+          "type": "integer"
+        },
+        "ai-first": {
+          "type": "integer"
+        },
+        "unknown": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "unaided",
+        "writer-first",
+        "ai-first",
+        "unknown"
+      ],
+      "additionalProperties": false
+    },
+    "FileRow": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "tier": {
+          "enum": [
+            "gold",
+            "silver",
+            "bronze",
+            "edited"
+          ]
+        },
+        "kind": {
+          "enum": [
+            "prose",
+            "spoken"
+          ]
+        },
+        "section": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "weight": {
+          "type": "number"
+        },
+        "words": {
+          "type": "integer"
+        },
+        "learned": {
+          "type": "boolean"
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "confirmation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "tier",
+        "kind",
+        "section",
+        "weight",
+        "words",
+        "learned",
+        "origin",
+        "confirmation",
+        "model",
+        "tool"
+      ],
+      "additionalProperties": false
+    },
+    "MetricBlock": {
+      "type": "object",
+      "properties": {
+        "metrics": {
+          "$ref": "#/$defs/Metrics"
+        },
+        "signaturePhrases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SignaturePhrase"
+          }
+        },
+        "banList": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tellsInUse": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dictionEmpty": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "metrics",
+        "signaturePhrases",
+        "banList",
+        "tellsInUse",
+        "dictionEmpty"
+      ],
+      "additionalProperties": false
+    },
+    "Metrics": {
+      "type": "object",
+      "properties": {
+        "rhythmWords": {
+          "type": "number"
+        },
+        "rhythmSentences": {
+          "type": "number"
+        },
+        "dictionWords": {
+          "type": "number"
+        },
+        "formatParagraphs": {
+          "type": "number"
+        },
+        "medianSentenceLength": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sentenceLengthDistribution": {
+          "$ref": "#/$defs/Distribution"
+        },
+        "contractionsPer1k": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "iPer1k": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "emDashesPer1k": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "questionsPer1k": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "medianParagraphLength": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "openerShare": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "openers": {
+          "$ref": "#/$defs/OpenerRates"
+        }
+      },
+      "required": [
+        "rhythmWords",
+        "rhythmSentences",
+        "dictionWords",
+        "formatParagraphs",
+        "medianSentenceLength",
+        "sentenceLengthDistribution",
+        "contractionsPer1k",
+        "iPer1k",
+        "emDashesPer1k",
+        "questionsPer1k",
+        "medianParagraphLength",
+        "openerShare",
+        "openers"
+      ],
+      "additionalProperties": false
+    },
+    "Distribution": {
+      "type": "object",
+      "properties": {
+        "short": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "medium": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "long": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "short",
+        "medium",
+        "long"
+      ],
+      "additionalProperties": false
+    },
+    "OpenerRates": {
+      "type": "object",
+      "properties": {
+        "and": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "but": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "so": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "and",
+        "but",
+        "so"
+      ],
+      "additionalProperties": false
+    },
+    "SignaturePhrase": {
+      "type": "object",
+      "properties": {
+        "phrase": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer"
+        },
+        "weight": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "phrase",
+        "count",
+        "weight"
+      ],
+      "additionalProperties": false
+    },
+    "SectionBlock": {
+      "type": "object",
+      "properties": {
+        "pieces": {
+          "type": "integer"
+        },
+        "weighted": {
+          "$ref": "#/$defs/MetricBlock"
+        },
+        "unweighted": {
+          "$ref": "#/$defs/MetricBlock"
+        }
+      },
+      "required": [
+        "pieces",
+        "weighted",
+        "unweighted"
+      ],
+      "additionalProperties": false
+    },
+    "EditSummary": {
+      "type": "object",
+      "properties": {
+        "learns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EditLearnEntry"
+          }
+        },
+        "repeatedRemovals": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        "repeatedAdditions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        }
+      },
+      "required": [
+        "learns",
+        "repeatedRemovals",
+        "repeatedAdditions"
+      ],
+      "additionalProperties": false
+    },
+    "EditLearnEntry": {
+      "type": "object",
+      "properties": {
+        "wordsBefore": {
+          "type": "integer"
+        },
+        "wordsAfter": {
+          "type": "integer"
+        },
+        "wordsRemoved": {
+          "type": "integer"
+        },
+        "wordsAdded": {
+          "type": "integer"
+        },
+        "medianSentenceLengthBefore": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "medianSentenceLengthAfter": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contractionsPer1kBefore": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contractionsPer1kAfter": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "removedWords": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WordCount"
+          }
+        },
+        "addedWords": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WordCount"
+          }
+        },
+        "tokenEdits": {
+          "type": "integer"
+        },
+        "unchangedTokens": {
+          "type": "integer"
+        },
+        "deletions": {
+          "type": "integer"
+        },
+        "insertions": {
+          "type": "integer"
+        },
+        "replacements": {
+          "type": "integer"
+        },
+        "movedTokens": {
+          "type": "integer"
+        },
+        "movedSpans": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MovedSpan"
+          }
+        },
+        "editRate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "editRateDenominator": {
+          "type": "integer"
+        },
+        "paragraphsBefore": {
+          "type": "integer"
+        },
+        "paragraphsAfter": {
+          "type": "integer"
+        },
+        "sentencesBefore": {
+          "type": "integer"
+        },
+        "sentencesAfter": {
+          "type": "integer"
+        },
+        "structuralChanges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StructuralChange"
+          }
+        },
+        "structuralChangeCount": {
+          "type": "integer"
+        },
+        "slug": {
+          "type": "string"
+        },
+        "date": {},
+        "section": {},
+        "origin": {
+          "anyOf": [
+            {
+              "enum": [
+                "unaided",
+                "writer-first",
+                "ai-first"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "confirmation": {
+          "enum": [
+            "none",
+            "origin",
+            "promoted"
+          ]
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tier": {
+          "enum": [
+            "gold",
+            "silver",
+            "bronze",
+            "edited"
+          ]
+        }
+      },
+      "required": [
+        "wordsBefore",
+        "wordsAfter",
+        "wordsRemoved",
+        "wordsAdded",
+        "medianSentenceLengthBefore",
+        "medianSentenceLengthAfter",
+        "contractionsPer1kBefore",
+        "contractionsPer1kAfter",
+        "removedWords",
+        "addedWords",
+        "tokenEdits",
+        "unchangedTokens",
+        "deletions",
+        "insertions",
+        "replacements",
+        "movedTokens",
+        "movedSpans",
+        "editRate",
+        "editRateDenominator",
+        "paragraphsBefore",
+        "paragraphsAfter",
+        "sentencesBefore",
+        "sentencesAfter",
+        "structuralChanges",
+        "structuralChangeCount",
+        "slug",
+        "date",
+        "section",
+        "origin",
+        "confirmation",
+        "model",
+        "tool",
+        "tier"
+      ],
+      "additionalProperties": false
+    },
+    "WordCount": {
+      "type": "object",
+      "properties": {
+        "word": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "word",
+        "count"
+      ],
+      "additionalProperties": false
+    },
+    "MovedSpan": {
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        },
+        "from": {
+          "type": "integer"
+        },
+        "to": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "tokens",
+        "text",
+        "from",
+        "to"
+      ],
+      "additionalProperties": false
+    },
+    "StructuralChange": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "mark": {
+          "type": "string"
+        },
+        "before": {
+          "type": "integer"
+        },
+        "after": {
+          "type": "integer"
+        },
+        "delta": {
+          "type": "integer"
+        },
+        "change": {
+          "type": "string"
+        },
+        "from": {
+          "type": "integer"
+        },
+        "to": {
+          "type": "integer"
+        },
+        "preview": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "RuleSummary": {
+      "type": "object",
+      "properties": {
+        "minimumSupport": {
+          "type": "integer"
+        },
+        "confirmed": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ConfirmedRule"
+          }
+        },
+        "hypotheses": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RuleCandidate"
+          }
+        },
+        "rejected": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SuppressedRule"
+          }
+        },
+        "retired": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SuppressedRule"
+          }
+        }
+      },
+      "required": [
+        "minimumSupport",
+        "confirmed",
+        "hypotheses",
+        "rejected",
+        "retired"
+      ],
+      "additionalProperties": false
+    },
+    "ConfirmedRule": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "word": {
+          "type": "string"
+        },
+        "support": {
+          "type": "integer"
+        },
+        "minimumSupport": {
+          "type": "integer"
+        },
+        "pieces": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "receipts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sections": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "origins": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "examples": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RuleExample"
+          }
+        },
+        "counterexamples": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RuleCounterexample"
+          }
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "confirmedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "word",
+        "support",
+        "minimumSupport",
+        "pieces",
+        "receipts",
+        "sections",
+        "origins",
+        "examples",
+        "counterexamples",
+        "scope",
+        "confirmedAt"
+      ],
+      "additionalProperties": false
+    },
+    "RuleExample": {
+      "type": "object",
+      "properties": {
+        "slug": {
+          "type": "string"
+        },
+        "receipt": {
+          "type": "string"
+        },
+        "before_snippet": {
+          "type": "string"
+        },
+        "after_snippet": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "slug",
+        "receipt",
+        "before_snippet",
+        "after_snippet"
+      ],
+      "additionalProperties": false
+    },
+    "RuleCounterexample": {
+      "type": "object",
+      "properties": {
+        "slug": {
+          "type": "string"
+        },
+        "receipt": {
+          "type": "string"
+        },
+        "snippet": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "slug",
+        "receipt",
+        "snippet"
+      ],
+      "additionalProperties": false
+    },
+    "RuleCandidate": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "word": {
+          "type": "string"
+        },
+        "support": {
+          "type": "integer"
+        },
+        "minimumSupport": {
+          "type": "integer"
+        },
+        "pieces": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "receipts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sections": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "origins": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "examples": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RuleExample"
+          }
+        },
+        "counterexamples": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RuleCounterexample"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "word",
+        "support",
+        "minimumSupport",
+        "pieces",
+        "receipts",
+        "sections",
+        "origins",
+        "examples",
+        "counterexamples"
+      ],
+      "additionalProperties": false
+    },
+    "SuppressedRule": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "word": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "rejected",
+            "retired"
+          ]
+        },
+        "at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "word",
+        "status",
+        "at"
+      ],
+      "additionalProperties": false
+    },
+    "ChecksSummary": {
+      "type": "object",
+      "properties": {
+        "confirmed": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CheckItem"
+          }
+        },
+        "pending": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CheckItem"
+          }
+        },
+        "rejected": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CheckItem"
+          }
+        }
+      },
+      "required": [
+        "confirmed",
+        "pending",
+        "rejected"
+      ],
+      "additionalProperties": false
+    },
+    "CheckItem": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "span": {
+          "type": "string"
+        },
+        "polarity": {
+          "enum": [
+            "require",
+            "forbid"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "reused": {
+          "type": "boolean"
+        },
+        "pair": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "section": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "at": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "SessionMeta": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "ghostless-edit-session"
+        },
+        "version": {
+          "const": 1
+        },
+        "id": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "date": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "section": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "origin": {
+          "enum": [
+            "ai-first",
+            "writer-first"
+          ]
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sourceDraftName": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "open",
+            "final"
+          ]
+        },
+        "beforeFile": {
+          "const": "before.md"
+        },
+        "afterFile": {
+          "const": "after.md"
+        },
+        "notesFile": {
+          "const": "notes.md"
+        },
+        "receiptFile": {
+          "const": "receipt.json"
+        },
+        "beforeSha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "kind",
+        "version",
+        "id",
+        "date",
+        "createdAt",
+        "section",
+        "origin",
+        "sources",
+        "sourceDraftName",
+        "status",
+        "beforeFile",
+        "afterFile",
+        "notesFile",
+        "receiptFile",
+        "beforeSha256"
+      ],
+      "additionalProperties": false
+    },
+    "SessionStartResult": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "ghostless-edit-session"
+        },
+        "version": {
+          "const": 1
+        },
+        "id": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "date": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "section": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "origin": {
+          "enum": [
+            "ai-first",
+            "writer-first"
+          ]
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sourceDraftName": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "open",
+            "final"
+          ]
+        },
+        "beforeFile": {
+          "const": "before.md"
+        },
+        "afterFile": {
+          "const": "after.md"
+        },
+        "notesFile": {
+          "const": "notes.md"
+        },
+        "receiptFile": {
+          "const": "receipt.json"
+        },
+        "beforeSha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "version",
+        "id",
+        "date",
+        "createdAt",
+        "section",
+        "origin",
+        "sources",
+        "sourceDraftName",
+        "status",
+        "beforeFile",
+        "afterFile",
+        "notesFile",
+        "receiptFile",
+        "beforeSha256",
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "SessionReceipt": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "ghostless-edit-receipt"
+        },
+        "version": {
+          "const": 1
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "finishedAt": {
+          "type": "string"
+        },
+        "origin": {
+          "enum": [
+            "ai-first",
+            "writer-first"
+          ]
+        },
+        "section": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sourceDraftName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "beforeSha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "finalSha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "beforeFile": {
+          "const": "before.md"
+        },
+        "finalFile": {
+          "const": "after.md"
+        },
+        "notesFile": {
+          "anyOf": [
+            {
+              "const": "notes.md"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "notesSha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "learnedPath": {
+          "type": "string",
+          "pattern": "^gold/[^/]+$"
+        },
+        "tier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "confirmation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "changes": {
+          "$ref": "#/$defs/SessionChangesSummary"
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CheckItem"
+          }
+        },
+        "promotion": {
+          "$ref": "#/$defs/LearnResult"
+        },
+        "rebuilt": {
+          "type": "boolean"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "version",
+        "sessionId",
+        "finishedAt",
+        "origin",
+        "section",
+        "sources",
+        "sourceDraftName",
+        "beforeSha256",
+        "finalSha256",
+        "beforeFile",
+        "finalFile",
+        "notesFile",
+        "notesSha256",
+        "learnedPath",
+        "tier",
+        "confirmation",
+        "changes"
+      ],
+      "additionalProperties": false
+    },
+    "SessionChangesSummary": {
+      "type": "object",
+      "properties": {
+        "wordsBefore": {
+          "type": "integer"
+        },
+        "wordsAfter": {
+          "type": "integer"
+        },
+        "wordsRemoved": {
+          "type": "integer"
+        },
+        "wordsAdded": {
+          "type": "integer"
+        },
+        "medianSentenceLengthBefore": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "medianSentenceLengthAfter": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contractionsPer1kBefore": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contractionsPer1kAfter": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "removedWords": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WordCount"
+          }
+        },
+        "addedWords": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WordCount"
+          }
+        },
+        "tokenEdits": {
+          "type": "integer"
+        },
+        "unchangedTokens": {
+          "type": "integer"
+        },
+        "deletions": {
+          "type": "integer"
+        },
+        "insertions": {
+          "type": "integer"
+        },
+        "replacements": {
+          "type": "integer"
+        },
+        "movedTokens": {
+          "type": "integer"
+        },
+        "movedSpans": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MovedSpan"
+          }
+        },
+        "editRate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "editRateDenominator": {
+          "type": "integer"
+        },
+        "paragraphsBefore": {
+          "type": "integer"
+        },
+        "paragraphsAfter": {
+          "type": "integer"
+        },
+        "sentencesBefore": {
+          "type": "integer"
+        },
+        "sentencesAfter": {
+          "type": "integer"
+        },
+        "structuralChanges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StructuralChange"
+          }
+        },
+        "structuralChangeCount": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "wordsBefore",
+        "wordsAfter",
+        "wordsRemoved",
+        "wordsAdded",
+        "medianSentenceLengthBefore",
+        "medianSentenceLengthAfter",
+        "contractionsPer1kBefore",
+        "contractionsPer1kAfter",
+        "removedWords",
+        "addedWords",
+        "tokenEdits",
+        "unchangedTokens",
+        "deletions",
+        "insertions",
+        "replacements",
+        "movedTokens",
+        "movedSpans",
+        "editRate",
+        "editRateDenominator",
+        "paragraphsBefore",
+        "paragraphsAfter",
+        "sentencesBefore",
+        "sentencesAfter",
+        "structuralChanges",
+        "structuralChangeCount"
+      ],
+      "additionalProperties": false
+    },
+    "LearnResult": {
+      "type": "object",
+      "properties": {
+        "slug": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "meta": {
+          "$ref": "#/$defs/EditMeta"
+        },
+        "edits": {
+          "$ref": "#/$defs/EditSummary"
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "changed": {
+          "type": "boolean"
+        },
+        "confirmation": {
+          "type": "string"
+        },
+        "tier": {
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CheckItem"
+          }
+        },
+        "warning": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "previous": {
+          "type": "string"
+        },
+        "gold": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "RulesState": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "ghostless-rules"
+        },
+        "version": {
+          "const": 1
+        },
+        "confirmed": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/RuleDecisionRecord"
+          }
+        },
+        "rejected": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/RuleDecisionRecord"
+          }
+        },
+        "retired": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/RuleDecisionRecord"
+          }
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "version",
+        "confirmed",
+        "rejected",
+        "retired",
+        "scope"
+      ],
+      "additionalProperties": false
+    },
+    "RuleDecisionRecord": {
+      "type": "object",
+      "properties": {
+        "at": {
+          "type": "string"
+        },
+        "receipts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pieces": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "ChecksState": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "ghostless-checks"
+        },
+        "version": {
+          "const": 1
+        },
+        "confirmed": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/CheckRecord"
+          }
+        },
+        "rejected": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/CheckRecord"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "version",
+        "confirmed",
+        "rejected"
+      ],
+      "additionalProperties": false
+    },
+    "CheckRecord": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "span": {
+          "type": "string"
+        },
+        "polarity": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "reused": {
+          "type": "boolean"
+        },
+        "pair": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "section": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "at": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "DiffSummary": {
+      "type": "object",
+      "properties": {
+        "wordsBefore": {
+          "type": "integer"
+        },
+        "wordsAfter": {
+          "type": "integer"
+        },
+        "wordsRemoved": {
+          "type": "integer"
+        },
+        "wordsAdded": {
+          "type": "integer"
+        },
+        "medianSentenceLengthBefore": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "medianSentenceLengthAfter": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contractionsPer1kBefore": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contractionsPer1kAfter": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "removedWords": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WordCount"
+          }
+        },
+        "addedWords": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WordCount"
+          }
+        },
+        "tokenEdits": {
+          "type": "integer"
+        },
+        "unchangedTokens": {
+          "type": "integer"
+        },
+        "deletions": {
+          "type": "integer"
+        },
+        "insertions": {
+          "type": "integer"
+        },
+        "replacements": {
+          "type": "integer"
+        },
+        "movedTokens": {
+          "type": "integer"
+        },
+        "movedSpans": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MovedSpan"
+          }
+        },
+        "editRate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "editRateDenominator": {
+          "type": "integer"
+        },
+        "paragraphsBefore": {
+          "type": "integer"
+        },
+        "paragraphsAfter": {
+          "type": "integer"
+        },
+        "sentencesBefore": {
+          "type": "integer"
+        },
+        "sentencesAfter": {
+          "type": "integer"
+        },
+        "structuralChanges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StructuralChange"
+          }
+        },
+        "structuralChangeCount": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "wordsBefore",
+        "wordsAfter",
+        "wordsRemoved",
+        "wordsAdded",
+        "medianSentenceLengthBefore",
+        "medianSentenceLengthAfter",
+        "contractionsPer1kBefore",
+        "contractionsPer1kAfter",
+        "removedWords",
+        "addedWords",
+        "tokenEdits",
+        "unchangedTokens",
+        "deletions",
+        "insertions",
+        "replacements",
+        "movedTokens",
+        "movedSpans",
+        "editRate",
+        "editRateDenominator",
+        "paragraphsBefore",
+        "paragraphsAfter",
+        "sentencesBefore",
+        "sentencesAfter",
+        "structuralChanges",
+        "structuralChangeCount"
+      ],
+      "additionalProperties": false
+    },
+    "ProvenanceJson": {
+      "type": "object",
+      "properties": {
+        "origin": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "confirmation": {
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "origin",
+        "confirmation",
+        "model",
+        "tool"
+      ],
+      "additionalProperties": false
+    },
+    "RuleDecisionResult": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "receipts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pieces": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "CheckDecisionResult": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "span": {
+          "type": "string"
+        },
+        "polarity": {
+          "enum": [
+            "require",
+            "forbid"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "reused": {
+          "type": "boolean"
+        },
+        "pair": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "section": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "SessionSnapshotResult": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "savedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "savedAt"
+      ],
+      "additionalProperties": false
+    },
+    "BridgeJudgeResult": {
+      "type": "object",
+      "properties": {
+        "needsBuild": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "failUnder": {
+          "type": "integer"
+        },
+        "reviewRequired": {
+          "type": "boolean"
+        },
+        "assessment": {
+          "type": "string"
+        },
+        "section": {
+          "type": "string"
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/JudgeCheck"
+          }
+        },
+        "banned": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BannedHit"
+          }
+        },
+        "confirmedRules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ConfirmedRuleHit"
+          }
+        },
+        "structure": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StructureHitDict"
+          }
+        },
+        "placeholders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "draft": {
+          "$ref": "#/$defs/MetricMap"
+        },
+        "targets": {
+          "$ref": "#/$defs/MetricMap"
+        },
+        "confidence": {
+          "$ref": "#/$defs/CorpusConfidence"
+        },
+        "lowConfidence": {
+          "type": "boolean"
+        },
+        "stale": {
+          "type": "boolean"
+        },
+        "staleSources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "availableSections": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "confirmedChecks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ConfirmedCheckView"
+          }
+        }
+      },
+      "required": [],
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "needsBuild",
+            "error"
+          ]
+        },
+        {
+          "required": [
+            "ok",
+            "score",
+            "checks",
+            "stale",
+            "confirmedChecks"
+          ]
+        },
+        {
+          "required": [
+            "ok",
+            "error"
+          ]
+        }
+      ]
+    },
+    "JudgeCheck": {
+      "type": "object",
+      "properties": {
+        "metric": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "actual": {
+          "anyOf": [
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "low": {
+          "type": "number"
+        },
+        "high": {
+          "type": "number"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "low",
+            "high",
+            "off"
+          ]
+        },
+        "penalty": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "metric",
+        "label",
+        "target",
+        "actual",
+        "low",
+        "high",
+        "status",
+        "penalty"
+      ],
+      "additionalProperties": false
+    },
+    "BannedHit": {
+      "type": "object",
+      "properties": {
+        "tell": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "tell",
+        "count"
+      ],
+      "additionalProperties": false
+    },
+    "ConfirmedRuleHit": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "word": {
+          "type": "string"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "count": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "word",
+        "scope",
+        "count"
+      ],
+      "additionalProperties": false
+    },
+    "StructureHitDict": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "excerpt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "excerpt"
+      ],
+      "additionalProperties": false
+    },
+    "MetricMap": {
+      "type": "object",
+      "properties": {
+        "rhythmWords": {
+          "type": "number"
+        },
+        "rhythmSentences": {
+          "type": "number"
+        },
+        "dictionWords": {
+          "type": "number"
+        },
+        "formatParagraphs": {
+          "type": "number"
+        },
+        "medianSentenceLength": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sentenceLengthDistribution": {
+          "$ref": "#/$defs/Distribution"
+        },
+        "contractionsPer1k": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "iPer1k": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "emDashesPer1k": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "questionsPer1k": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "medianParagraphLength": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "openerShare": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "openers": {
+          "$ref": "#/$defs/OpenerRates"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "CorpusConfidence": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "trustworthy": {
+          "type": "boolean"
+        },
+        "pieces": {
+          "type": "integer"
+        },
+        "words": {
+          "type": "integer"
+        },
+        "writtenWords": {
+          "type": "integer"
+        },
+        "sentences": {
+          "type": "integer"
+        },
+        "minimums": {
+          "$ref": "#/$defs/ConfidenceMinimums"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "level",
+        "trustworthy",
+        "pieces",
+        "words",
+        "writtenWords",
+        "sentences",
+        "minimums",
+        "note"
+      ],
+      "additionalProperties": false
+    },
+    "ConfidenceMinimums": {
+      "type": "object",
+      "properties": {
+        "words": {
+          "type": "integer"
+        },
+        "pieces": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "words",
+        "pieces"
+      ],
+      "additionalProperties": false
+    },
+    "ConfirmedCheckView": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "span": {
+          "type": "string"
+        },
+        "polarity": {
+          "type": "string"
+        },
+        "section": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pass": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "span",
+        "polarity",
+        "section",
+        "pass"
+      ],
+      "additionalProperties": false
+    },
+    "BridgeSessionItem": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "createdAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sourceDraftName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "section": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "editRate": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "learnedPath": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "createdAt",
+        "sourceDraftName",
+        "status",
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "ProjectResolveResult": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "project",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "SessionId": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:-[a-z0-9]+)*(?![\\s\\S])"
+    },
+    "Sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "minLength": 64,
+      "maxLength": 64
+    },
+    "Manifest": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "ghostless"
+        },
+        "version": {
+          "const": 1
+        },
+        "weights": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
+        },
+        "goldVoiceMinimum": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "updateCheck": {
+          "type": "boolean"
+        },
+        "failUnder": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "overrides": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "placeholder": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rules": {
+          "type": "object",
+          "properties": {
+            "minimumSupport": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "pieces": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "tier": {
+                "enum": [
+                  "gold",
+                  "silver",
+                  "bronze",
+                  "edited"
+                ]
+              },
+              "section": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "kind": {
+                "enum": [
+                  "prose",
+                  "spoken"
+                ]
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "EditMeta": {
+      "type": "object",
+      "properties": {
+        "date": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "section": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "enum": [
+                "ai-first",
+                "writer-first"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provenance": {
+          "$ref": "#/$defs/ProvenanceJson"
+        },
+        "kind": {
+          "enum": [
+            "prose",
+            "spoken"
+          ]
+        },
+        "beforeFile": {
+          "const": "before.md"
+        },
+        "afterFile": {
+          "const": "after.md"
+        },
+        "diffVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "beforeSha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "afterSha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CheckItem"
+          }
+        },
+        "wordsBefore": {
+          "type": "integer"
+        },
+        "wordsAfter": {
+          "type": "integer"
+        },
+        "wordsRemoved": {
+          "type": "integer"
+        },
+        "wordsAdded": {
+          "type": "integer"
+        },
+        "medianSentenceLengthBefore": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "medianSentenceLengthAfter": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contractionsPer1kBefore": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contractionsPer1kAfter": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "removedWords": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WordCount"
+          }
+        },
+        "addedWords": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WordCount"
+          }
+        },
+        "tokenEdits": {
+          "type": "integer"
+        },
+        "unchangedTokens": {
+          "type": "integer"
+        },
+        "deletions": {
+          "type": "integer"
+        },
+        "insertions": {
+          "type": "integer"
+        },
+        "replacements": {
+          "type": "integer"
+        },
+        "movedTokens": {
+          "type": "integer"
+        },
+        "movedSpans": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MovedSpan"
+          }
+        },
+        "editRate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "editRateDenominator": {
+          "type": "integer"
+        },
+        "paragraphsBefore": {
+          "type": "integer"
+        },
+        "paragraphsAfter": {
+          "type": "integer"
+        },
+        "sentencesBefore": {
+          "type": "integer"
+        },
+        "sentencesAfter": {
+          "type": "integer"
+        },
+        "structuralChanges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StructuralChange"
+          }
+        },
+        "structuralChangeCount": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "beforeFile",
+        "afterFile"
+      ],
+      "additionalProperties": false
+    },
+    "pingRequest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "method": {
+          "const": "ping"
+        },
+        "params": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "pingResult": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "additionalProperties": false
+    },
+    "resolve_projectRequest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "method": {
+          "const": "resolve_project"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "resolve_projectResult": {
+      "$ref": "#/$defs/ProjectResolveResult"
+    },
+    "judge_textRequest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "method": {
+          "const": "judge_text"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "section": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "project",
+            "text"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "judge_textResult": {
+      "$ref": "#/$defs/BridgeJudgeResult"
+    },
+    "sessions_listRequest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "method": {
+          "const": "sessions_list"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "sessions_listResult": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/BridgeSessionItem"
+      }
+    },
+    "session_startRequest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "method": {
+          "const": "session_start"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string"
+            },
+            "draft": {
+              "type": "string"
+            },
+            "section": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "origin": {
+              "enum": [
+                "ai-first",
+                "writer-first"
+              ]
+            },
+            "sources": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "project",
+            "draft"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "session_startResult": {
+      "$ref": "#/$defs/SessionStartResult"
+    },
+    "session_snapshotRequest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "method": {
+          "const": "session_snapshot"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string"
+            },
+            "session": {
+              "$ref": "#/$defs/SessionId"
+            },
+            "after": {
+              "type": "string"
+            },
+            "notes": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project",
+            "session",
+            "after",
+            "notes"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "session_snapshotResult": {
+      "$ref": "#/$defs/SessionSnapshotResult"
+    },
+    "session_finishRequest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "method": {
+          "const": "session_finish"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string"
+            },
+            "session": {
+              "$ref": "#/$defs/SessionId"
+            },
+            "final": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "note": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "checks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "promote": {
+              "type": "boolean"
+            },
+            "rebuild": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "project",
+            "session"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "session_finishResult": {
+      "$ref": "#/$defs/SessionReceipt"
+    },
+    "buildRequest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "method": {
+          "const": "build"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "buildResult": {
+      "type": "object",
+      "properties": {
+        "goldPieces": {
+          "type": "integer"
+        },
+        "counts": {
+          "$ref": "#/$defs/PieceCounts"
+        },
+        "bronzeFormatOnly": {
+          "type": "boolean"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "generatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "goldPieces",
+        "counts",
+        "bronzeFormatOnly",
+        "warnings",
+        "generatedAt"
+      ],
+      "additionalProperties": false
+    },
+    "rules_listRequest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "method": {
+          "const": "rules_list"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "rules_listResult": {
+      "$ref": "#/$defs/RuleSummary"
+    },
+    "rules_decideRequest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "method": {
+          "const": "rules_decide"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string"
+            },
+            "action": {
+              "enum": [
+                "confirm",
+                "retire",
+                "reject"
+              ]
+            },
+            "ruleId": {
+              "type": "string"
+            },
+            "section": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "global": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "project",
+            "action",
+            "ruleId"
+          ],
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "global": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "global"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "section": {
+                    "type": "null"
+                  },
+                  "action": {
+                    "const": "confirm"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "action": {
+                    "enum": [
+                      "reject",
+                      "retire",
+                      "add"
+                    ]
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "section": {
+                    "type": "null"
+                  },
+                  "global": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "rules_decideResult": {
+      "$ref": "#/$defs/RuleDecisionResult"
+    },
+    "checks_listRequest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "method": {
+          "const": "checks_list"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "checks_listResult": {
+      "$ref": "#/$defs/ChecksSummary"
+    },
+    "checks_decideRequest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "method": {
+          "const": "checks_decide"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string"
+            },
+            "action": {
+              "enum": [
+                "confirm",
+                "reject",
+                "add"
+              ]
+            },
+            "target": {
+              "type": "string"
+            },
+            "section": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "global": {
+              "type": "boolean"
+            },
+            "text": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "project",
+            "action",
+            "target"
+          ],
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "global": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "global"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "section": {
+                    "type": "null"
+                  },
+                  "action": {
+                    "const": "confirm"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "action": {
+                    "enum": [
+                      "reject",
+                      "retire",
+                      "add"
+                    ]
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "section": {
+                    "type": "null"
+                  },
+                  "global": {
+                    "const": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "action": {
+                    "const": "add"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "checks_decideResult": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/CheckDecisionResult"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CheckItem"
+          }
+        }
+      ]
+    },
+    "save_noteRequest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "method": {
+          "const": "save_note"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "style",
+                "audience"
+              ]
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project",
+            "kind",
+            "text"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "save_noteResult": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "created": {
+          "type": "boolean"
+        },
+        "appended": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "created",
+        "appended"
+      ],
+      "additionalProperties": false
+    },
+    "promoteRequest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "method": {
+          "const": "promote"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string"
+            },
+            "slug": {
+              "type": "string"
+            },
+            "demote": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "project",
+            "slug"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "promoteResult": {
+      "$ref": "#/$defs/LearnResult"
+    },
+    "BridgeRequest": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/pingRequest"
+        },
+        {
+          "$ref": "#/$defs/resolve_projectRequest"
+        },
+        {
+          "$ref": "#/$defs/judge_textRequest"
+        },
+        {
+          "$ref": "#/$defs/sessions_listRequest"
+        },
+        {
+          "$ref": "#/$defs/session_startRequest"
+        },
+        {
+          "$ref": "#/$defs/session_snapshotRequest"
+        },
+        {
+          "$ref": "#/$defs/session_finishRequest"
+        },
+        {
+          "$ref": "#/$defs/buildRequest"
+        },
+        {
+          "$ref": "#/$defs/rules_listRequest"
+        },
+        {
+          "$ref": "#/$defs/rules_decideRequest"
+        },
+        {
+          "$ref": "#/$defs/checks_listRequest"
+        },
+        {
+          "$ref": "#/$defs/checks_decideRequest"
+        },
+        {
+          "$ref": "#/$defs/save_noteRequest"
+        },
+        {
+          "$ref": "#/$defs/promoteRequest"
+        }
+      ]
+    },
+    "BridgeResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "ok": {
+              "const": true
+            },
+            "result": {}
+          },
+          "required": [
+            "id",
+            "ok",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "ok": {
+              "const": false
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "ok",
+            "error"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

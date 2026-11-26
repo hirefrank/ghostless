@@ -1,4 +1,6 @@
 use super::*;
+#[path = "lifecycle_property.rs"]
+mod lifecycle_property;
 use crate::error::EditorError;
 use crate::{
     documents::{CachedJudge, DocId, DocumentBuffer},

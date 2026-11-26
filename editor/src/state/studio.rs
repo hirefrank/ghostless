@@ -123,17 +123,8 @@ impl Editor {
         };
         self.studio.sections = crate::fs_io::read_utf8(&project.join("voice-stats.json"))
             .ok()
-            .and_then(|stats| serde_json::from_str::<serde_json::Value>(&stats).ok())
-            .and_then(|stats| {
-                Some(
-                    stats
-                        .get("sections")?
-                        .as_object()?
-                        .keys()
-                        .cloned()
-                        .collect(),
-                )
-            })
+            .and_then(|stats| serde_json::from_str::<crate::contracts::VoiceStats>(&stats).ok())
+            .map(|stats| stats.sections.into_keys().collect())
             .unwrap_or_default();
         let rules = self.voice_request(
             BridgeOp::RulesList {
@@ -244,7 +235,7 @@ impl Editor {
     pub(in crate::state) fn apply_voice_decision(
         &mut self,
         id: u64,
-        result: Result<serde_json::Value, EditorError>,
+        result: Result<(), EditorError>,
     ) {
         if !self.accepts_voice_reply(self.studio.decision.as_ref(), id) {
             return;
@@ -332,7 +323,7 @@ mod tests {
             if method == "checks_decide" {
                 self.0.send(params.clone()).unwrap();
             }
-            Ok(json!({}))
+            Ok(json!({"id":"check:opener","status":"confirmed"}))
         }
     }
 

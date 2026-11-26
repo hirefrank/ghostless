@@ -1,0 +1,743 @@
+[
+  {
+    "schema": "Manifest",
+    "payload": {
+      "kind": "invalid",
+      "version": 1,
+      "weights": {
+        "gold": 3.0,
+        "silver": 1.0,
+        "bronze": 0.5,
+        "edited": 0.5
+      },
+      "goldVoiceMinimum": 10,
+      "updateCheck": true,
+      "failUnder": 70
+    }
+  },
+  {
+    "schema": "CompiledStats",
+    "payload": {
+      "schemaVersion": 1,
+      "weights": {
+        "gold": 3.0,
+        "silver": 1.0,
+        "bronze": 0.5,
+        "edited": 0.5
+      },
+      "goldVoiceMinimum": 10,
+      "goldPieces": 1,
+      "bronzeFormatOnly": false,
+      "edited": {
+        "pieces": 0,
+        "configuredWeight": 0,
+        "countedWeight": 0,
+        "maxShare": 0.25
+      },
+      "counts": {
+        "prose": {
+          "gold": 1,
+          "silver": 0,
+          "bronze": 0,
+          "edited": 0
+        },
+        "spoken": {
+          "gold": 0,
+          "silver": 0,
+          "bronze": 0,
+          "edited": 0
+        },
+        "learned": 0,
+        "total": 1
+      },
+      "provenance": {
+        "unaided": 1,
+        "writer-first": 0,
+        "ai-first": 0,
+        "unknown": 0
+      },
+      "files": [
+        {
+          "path": "corpus/gold/notes.md",
+          "tier": "gold",
+          "kind": "prose",
+          "section": null,
+          "weight": 3.0,
+          "words": 8,
+          "learned": false,
+          "origin": "unaided",
+          "confirmation": "origin",
+          "model": null,
+          "tool": null
+        }
+      ],
+      "weighted": {
+        "metrics": {
+          "rhythmWords": 24.0,
+          "rhythmSentences": 6.0,
+          "dictionWords": 24.0,
+          "formatParagraphs": 3.0,
+          "medianSentenceLength": 3,
+          "sentenceLengthDistribution": {
+            "short": 1.0,
+            "medium": 0.0,
+            "long": 0.0
+          },
+          "contractionsPer1k": 0.0,
+          "iPer1k": 125.0,
+          "emDashesPer1k": 0.0,
+          "questionsPer1k": 0.0,
+          "medianParagraphLength": 8,
+          "openerShare": 0.0,
+          "openers": {
+            "and": 0.0,
+            "but": 0.0,
+            "so": 0.0
+          }
+        },
+        "signaturePhrases": [],
+        "banList": [
+          "a testament to",
+          "additionally",
+          "akin",
+          "at the end of the day",
+          "beacon",
+          "bolster",
+          "bustling",
+          "cannot be overstated",
+          "cutting-edge",
+          "deep dive",
+          "delve",
+          "delved",
+          "delves",
+          "delving",
+          "elevate",
+          "embark",
+          "ever-evolving",
+          "facilitate",
+          "foster",
+          "furthermore",
+          "game-changer",
+          "groundbreaking",
+          "harness",
+          "holistic",
+          "in conclusion",
+          "in the realm of",
+          "in today's world",
+          "interplay",
+          "intricate",
+          "it's important to note",
+          "it's worth noting",
+          "leverage",
+          "meticulous",
+          "moreover",
+          "multifaceted",
+          "myriad",
+          "nestled",
+          "overarching",
+          "paradigm",
+          "paving the way",
+          "pivotal",
+          "plays a crucial role",
+          "plethora",
+          "rapidly evolving",
+          "realm",
+          "rich tapestry",
+          "robust",
+          "seamless",
+          "shed light on",
+          "showcase",
+          "showcasing",
+          "streamline",
+          "synergy",
+          "tapestry",
+          "testament",
+          "the landscape of",
+          "transformative",
+          "underscore",
+          "unpack",
+          "utilize",
+          "vibrant",
+          "when it comes to"
+        ],
+        "tellsInUse": [],
+        "dictionEmpty": false
+      },
+      "unweighted": {
+        "metrics": {
+          "rhythmWords": 8.0,
+          "rhythmSentences": 2.0,
+          "dictionWords": 8.0,
+          "formatParagraphs": 1.0,
+          "medianSentenceLength": 3,
+          "sentenceLengthDistribution": {
+            "short": 1.0,
+            "medium": 0.0,
+            "long": 0.0
+          },
+          "contractionsPer1k": 0.0,
+          "iPer1k": 125.0,
+          "emDashesPer1k": 0.0,
+          "questionsPer1k": 0.0,
+          "medianParagraphLength": 8,
+          "openerShare": 0.0,
+          "openers": {
+            "and": 0.0,
+            "but": 0.0,
+            "so": 0.0
+          }
+        },
+        "signaturePhrases": [],
+        "banList": [
+          "a testament to",
+          "additionally",
+          "akin",
+          "at the end of the day",
+          "beacon",
+          "bolster",
+          "bustling",
+          "cannot be overstated",
+          "cutting-edge",
+          "deep dive",
+          "delve",
+          "delved",
+          "delves",
+          "delving",
+          "elevate",
+          "embark",
+          "ever-evolving",
+          "facilitate",
+          "foster",
+          "furthermore",
+          "game-changer",
+          "groundbreaking",
+          "harness",
+          "holistic",
+          "in conclusion",
+          "in the realm of",
+          "in today's world",
+          "interplay",
+          "intricate",
+          "it's important to note",
+          "it's worth noting",
+          "leverage",
+          "meticulous",
+          "moreover",
+          "multifaceted",
+          "myriad",
+          "nestled",
+          "overarching",
+          "paradigm",
+          "paving the way",
+          "pivotal",
+          "plays a crucial role",
+          "plethora",
+          "rapidly evolving",
+          "realm",
+          "rich tapestry",
+          "robust",
+          "seamless",
+          "shed light on",
+          "showcase",
+          "showcasing",
+          "streamline",
+          "synergy",
+          "tapestry",
+          "testament",
+          "the landscape of",
+          "transformative",
+          "underscore",
+          "unpack",
+          "utilize",
+          "vibrant",
+          "when it comes to"
+        ],
+        "tellsInUse": [],
+        "dictionEmpty": false
+      },
+      "byTier": {
+        "gold": {
+          "metrics": {
+            "rhythmWords": 8.0,
+            "rhythmSentences": 2.0,
+            "dictionWords": 8.0,
+            "formatParagraphs": 1.0,
+            "medianSentenceLength": 3,
+            "sentenceLengthDistribution": {
+              "short": 1.0,
+              "medium": 0.0,
+              "long": 0.0
+            },
+            "contractionsPer1k": 0.0,
+            "iPer1k": 125.0,
+            "emDashesPer1k": 0.0,
+            "questionsPer1k": 0.0,
+            "medianParagraphLength": 8,
+            "openerShare": 0.0,
+            "openers": {
+              "and": 0.0,
+              "but": 0.0,
+              "so": 0.0
+            }
+          },
+          "signaturePhrases": [],
+          "banList": [
+            "a testament to",
+            "additionally",
+            "akin",
+            "at the end of the day",
+            "beacon",
+            "bolster",
+            "bustling",
+            "cannot be overstated",
+            "cutting-edge",
+            "deep dive",
+            "delve",
+            "delved",
+            "delves",
+            "delving",
+            "elevate",
+            "embark",
+            "ever-evolving",
+            "facilitate",
+            "foster",
+            "furthermore",
+            "game-changer",
+            "groundbreaking",
+            "harness",
+            "holistic",
+            "in conclusion",
+            "in the realm of",
+            "in today's world",
+            "interplay",
+            "intricate",
+            "it's important to note",
+            "it's worth noting",
+            "leverage",
+            "meticulous",
+            "moreover",
+            "multifaceted",
+            "myriad",
+            "nestled",
+            "overarching",
+            "paradigm",
+            "paving the way",
+            "pivotal",
+            "plays a crucial role",
+            "plethora",
+            "rapidly evolving",
+            "realm",
+            "rich tapestry",
+            "robust",
+            "seamless",
+            "shed light on",
+            "showcase",
+            "showcasing",
+            "streamline",
+            "synergy",
+            "tapestry",
+            "testament",
+            "the landscape of",
+            "transformative",
+            "underscore",
+            "unpack",
+            "utilize",
+            "vibrant",
+            "when it comes to"
+          ],
+          "tellsInUse": [],
+          "dictionEmpty": false
+        },
+        "silver": {
+          "metrics": {
+            "rhythmWords": 0.0,
+            "rhythmSentences": 0,
+            "dictionWords": 0.0,
+            "formatParagraphs": 0,
+            "medianSentenceLength": null,
+            "sentenceLengthDistribution": {
+              "short": null,
+              "medium": null,
+              "long": null
+            },
+            "contractionsPer1k": null,
+            "iPer1k": null,
+            "emDashesPer1k": null,
+            "questionsPer1k": null,
+            "medianParagraphLength": null,
+            "openerShare": null,
+            "openers": {
+              "and": null,
+              "but": null,
+              "so": null
+            }
+          },
+          "signaturePhrases": [],
+          "banList": [],
+          "tellsInUse": [],
+          "dictionEmpty": true
+        },
+        "bronze": {
+          "metrics": {
+            "rhythmWords": 0.0,
+            "rhythmSentences": 0,
+            "dictionWords": 0.0,
+            "formatParagraphs": 0,
+            "medianSentenceLength": null,
+            "sentenceLengthDistribution": {
+              "short": null,
+              "medium": null,
+              "long": null
+            },
+            "contractionsPer1k": null,
+            "iPer1k": null,
+            "emDashesPer1k": null,
+            "questionsPer1k": null,
+            "medianParagraphLength": null,
+            "openerShare": null,
+            "openers": {
+              "and": null,
+              "but": null,
+              "so": null
+            }
+          },
+          "signaturePhrases": [],
+          "banList": [],
+          "tellsInUse": [],
+          "dictionEmpty": true
+        },
+        "edited": {
+          "metrics": {
+            "rhythmWords": 0.0,
+            "rhythmSentences": 0,
+            "dictionWords": 0.0,
+            "formatParagraphs": 0,
+            "medianSentenceLength": null,
+            "sentenceLengthDistribution": {
+              "short": null,
+              "medium": null,
+              "long": null
+            },
+            "contractionsPer1k": null,
+            "iPer1k": null,
+            "emDashesPer1k": null,
+            "questionsPer1k": null,
+            "medianParagraphLength": null,
+            "openerShare": null,
+            "openers": {
+              "and": null,
+              "but": null,
+              "so": null
+            }
+          },
+          "signaturePhrases": [],
+          "banList": [],
+          "tellsInUse": [],
+          "dictionEmpty": true
+        },
+        "spoken": {
+          "metrics": {
+            "rhythmWords": 0.0,
+            "rhythmSentences": 0,
+            "dictionWords": 0.0,
+            "formatParagraphs": 0,
+            "medianSentenceLength": null,
+            "sentenceLengthDistribution": {
+              "short": null,
+              "medium": null,
+              "long": null
+            },
+            "contractionsPer1k": null,
+            "iPer1k": null,
+            "emDashesPer1k": null,
+            "questionsPer1k": null,
+            "medianParagraphLength": null,
+            "openerShare": null,
+            "openers": {
+              "and": null,
+              "but": null,
+              "so": null
+            }
+          },
+          "signaturePhrases": [],
+          "banList": [],
+          "tellsInUse": [],
+          "dictionEmpty": true
+        }
+      },
+      "sections": [],
+      "warnings": [
+        "The written sample is under 1,500 words. The absent-tell list is provisional; review hits in context rather than treating absence as a firm rule."
+      ],
+      "edits": {
+        "learns": [],
+        "repeatedRemovals": {},
+        "repeatedAdditions": {}
+      },
+      "generatedAt": "2026-11-26T13:10:22Z",
+      "failUnder": 70,
+      "overrides": {},
+      "placeholder": "WRITER",
+      "rules": {
+        "minimumSupport": 3,
+        "confirmed": [],
+        "hypotheses": [],
+        "rejected": [],
+        "retired": []
+      },
+      "checks": {
+        "confirmed": [],
+        "pending": [],
+        "rejected": []
+      },
+      "style": null,
+      "audience": null
+    }
+  },
+  {
+    "schema": "SessionMeta",
+    "payload": {
+      "kind": "ghostless-edit-session",
+      "version": 1,
+      "id": "2026-11-26-notes",
+      "date": "2026-11-26",
+      "createdAt": "2026-11-26T13:10:22Z",
+      "section": "notes",
+      "origin": "writer-first",
+      "sources": [],
+      "sourceDraftName": "draft.md",
+      "status": "open",
+      "beforeFile": "before.md",
+      "afterFile": "after.md",
+      "notesFile": "notes.md",
+      "receiptFile": "receipt.json",
+      "beforeSha256": 42
+    }
+  },
+  {
+    "schema": "SessionReceipt",
+    "payload": {
+      "kind": "ghostless-edit-receipt",
+      "version": 1,
+      "sessionId": "2026-11-26-notes",
+      "finishedAt": "2026-11-26T13:10:22Z",
+      "origin": "writer-first",
+      "section": "notes",
+      "sources": [],
+      "sourceDraftName": "draft.md",
+      "beforeSha256": "63ae275eee974651d9f03b67e0ee48d4e2354ac8dcc96727a49e01ff1aab721f",
+      "finalSha256": "3b17659a776da8f16741a0b3241fc7b61c05ca1f6c0a51a2a167f0997351c159",
+      "beforeFile": "before.md",
+      "finalFile": "after.md",
+      "notesFile": "notes.md",
+      "notesSha256": "053524429b79a3105bf88702d9ec9054c71f20849240ce090e184d03f3fa7e38",
+      "learnedPath": "gold/2026-11-26-notes",
+      "tier": "gold",
+      "confirmation": "origin",
+      "changes": {
+        "wordsBefore": 8,
+        "wordsAfter": 8,
+        "wordsRemoved": 2,
+        "wordsAdded": 2,
+        "medianSentenceLengthBefore": 3,
+        "medianSentenceLengthAfter": 3,
+        "contractionsPer1kBefore": 0.0,
+        "contractionsPer1kAfter": 0.0,
+        "removedWords": [
+          {
+            "word": "level",
+            "count": 1
+          }
+        ],
+        "addedWords": [
+          {
+            "word": "correction",
+            "count": 1
+          }
+        ],
+        "tokenEdits": 2,
+        "unchangedTokens": 6,
+        "deletions": 0,
+        "insertions": 0,
+        "replacements": 2,
+        "movedTokens": 0,
+        "movedSpans": [],
+        "editRate": 0.25,
+        "editRateDenominator": 8,
+        "paragraphsBefore": 1,
+        "paragraphsAfter": 1,
+        "sentencesBefore": 2,
+        "sentencesAfter": 2,
+        "structuralChanges": [
+          {
+            "kind": "punctuation",
+            "mark": ":",
+            "before": 1,
+            "after": 0,
+            "delta": -1
+          }
+        ],
+        "structuralChangeCount": 1
+      },
+      "checks": [
+        {
+          "id": "check:the-opening-avoids-level-9-114dec",
+          "text": "The opening avoids \"Level 9:\".",
+          "span": "Level 9:",
+          "polarity": "forbid",
+          "status": "pending",
+          "reused": false
+        }
+      ],
+      "warnings": "bad"
+    }
+  },
+  {
+    "schema": "RulesState",
+    "payload": {
+      "confirmed": [],
+      "kind": "ghostless-rules",
+      "rejected": {
+        "cut:delve": {
+          "at": "2026-01-03"
+        }
+      },
+      "retired": {
+        "cut:delve": {
+          "at": "2026-01-02"
+        }
+      },
+      "scope": {},
+      "version": 1
+    }
+  },
+  {
+    "schema": "ChecksState",
+    "payload": {
+      "confirmed": {
+        "check:the-opening-avoids-level-9-114dec": {
+          "at": "2026-11-26T13:10:22Z",
+          "pair": "2026-11-26-notes",
+          "polarity": "forbid",
+          "section": null,
+          "span": "Level 9:",
+          "text": "The opening avoids \"Level 9:\"."
+        }
+      },
+      "kind": "ghostless-checks",
+      "rejected": [],
+      "version": 1
+    }
+  },
+  {
+    "schema": "EditMeta",
+    "payload": {
+      "date": "2026-11-26",
+      "section": "notes",
+      "origin": "writer-first",
+      "provenance": {
+        "origin": "writer-first",
+        "confirmation": "origin",
+        "model": null,
+        "tool": null
+      },
+      "kind": "prose",
+      "beforeFile": "before.md",
+      "afterFile": null,
+      "diffVersion": 2,
+      "beforeSha256": "63ae275eee974651d9f03b67e0ee48d4e2354ac8dcc96727a49e01ff1aab721f",
+      "afterSha256": "3b17659a776da8f16741a0b3241fc7b61c05ca1f6c0a51a2a167f0997351c159",
+      "checks": [
+        {
+          "id": "check:the-opening-avoids-level-9-114dec",
+          "text": "The opening avoids \"Level 9:\".",
+          "span": "Level 9:",
+          "polarity": "forbid"
+        }
+      ],
+      "wordsBefore": 8,
+      "wordsAfter": 8,
+      "wordsRemoved": 2,
+      "wordsAdded": 2,
+      "medianSentenceLengthBefore": 3,
+      "medianSentenceLengthAfter": 3,
+      "contractionsPer1kBefore": 0.0,
+      "contractionsPer1kAfter": 0.0,
+      "removedWords": [
+        {
+          "word": "level",
+          "count": 1
+        }
+      ],
+      "addedWords": [
+        {
+          "word": "correction",
+          "count": 1
+        }
+      ],
+      "tokenEdits": 2,
+      "unchangedTokens": 6,
+      "deletions": 0,
+      "insertions": 0,
+      "replacements": 2,
+      "movedTokens": 0,
+      "movedSpans": [],
+      "editRate": 0.25,
+      "editRateDenominator": 8,
+      "paragraphsBefore": 1,
+      "paragraphsAfter": 1,
+      "sentencesBefore": 2,
+      "sentencesAfter": 2,
+      "structuralChanges": [
+        {
+          "kind": "punctuation",
+          "mark": ":",
+          "before": 1,
+          "after": 0,
+          "delta": -1
+        }
+      ],
+      "structuralChangeCount": 1
+    }
+  },
+  {
+    "schema": "BridgeRequest",
+    "payload": {
+      "id": 1,
+      "method": "session_finish",
+      "params": {
+        "project": "/writing/voice",
+        "session": "../other"
+      }
+    }
+  },
+  {
+    "schema": "BridgeRequest",
+    "payload": {
+      "id": 2,
+      "method": "rules_decide",
+      "params": {
+        "project": "/writing/voice",
+        "ruleId": "cut:delve",
+        "action": "confirm",
+        "global": true,
+        "section": "notes"
+      }
+    }
+  },
+  {
+    "schema": "BridgeResponse",
+    "payload": {
+      "id": 3,
+      "ok": false,
+      "result": null
+    }
+  },
+  {
+    "schema": "judge_textResult",
+    "payload": {
+      "ok": true,
+      "score": 101
+    }
+  }
+]

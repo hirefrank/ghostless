@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import unicodedata
+import zlib
+from itertools import pairwise
 from pathlib import Path
+from typing import cast
 
 ROOT = Path(__file__).resolve().parents[1]
 EDITOR = ROOT / "editor" / "target" / "release" / ("ghostless-editor.exe" if os.name == "nt" else "ghostless-editor")
@@ -27,17 +32,166 @@ def _show(text: str) -> str:
     return "".join(f"\\u{ord(ch):04x}" if ord(ch) > 126 else ch for ch in text)
 
 
-def _working_box_height(tree_path: Path) -> float:
-    data = json.loads(tree_path.read_text(encoding="utf-8"))
-    for element in data.get("elements", []):
-        if not isinstance(element, dict):
-            continue
-        path = str(element.get("path", ""))
-        if element.get("role") == "textbox" and "working-body" in path:
-            rect = element.get("rect")
-            if isinstance(rect, list) and len(rect) == 4:
-                return float(rect[3])
-    raise RuntimeError(f"Working draft textbox not found in {tree_path}")
+Rect = tuple[float, float, float, float]
+Elements = list[dict[str, object]]
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def element_rect(elements: Elements, key: str | None, role: str, *, label: str | None = None) -> Rect:
+    matches = [
+        item
+        for item in elements
+        if item.get("key") == key and item.get("role") == role and (label is None or item.get("label") == label)
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(f"Expected one {role} element keyed {key!r}, found {len(matches)}")
+    rect = matches[0].get("rect")
+    if (
+        not isinstance(rect, list)
+        or len(rect) != 4
+        or not all(isinstance(value, (float, int)) and math.isfinite(value) for value in rect)
+        or min(rect[2:]) <= 0
+    ):
+        raise RuntimeError(f"Invalid rectangle for {key}: {rect!r}")
+    return cast(Rect, tuple(rect))
+
+
+def require_inside(inner: Rect, outer: Rect, label: str) -> None:
+    x, y, width, height = inner
+    left, top, outer_width, outer_height = outer
+    if not (
+        left - 1 <= x and top - 1 <= y and x + width <= left + outer_width + 1 and y + height <= top + outer_height + 1
+    ):
+        raise RuntimeError(f"{label} extends past its containing pane: {inner} vs {outer}")
+
+
+def assert_studio_layout(
+    elements: Elements,
+    *,
+    sidebar: bool = True,
+    inspector: bool = False,
+    compare: bool = False,
+    size: tuple[int, int] = (1280, 820),
+) -> None:
+    main = element_rect(elements, "main-pane", "main")
+    if compare:
+        working = element_rect(elements, "compare-body", "region", label="Draft comparison")
+    else:
+        working = element_rect(elements, "prose-input", "textbox", label="Working draft")
+    require_inside(working, main, "Writing surface")
+    panes = [main]
+    if sidebar:
+        left = element_rect(elements, "sidebar-pane", "region", label="Sidebar")
+        require_inside(element_rect(elements, "workspace-files", "tree", label="Files"), left, "Workspace tree")
+        panes.insert(0, left)
+    if inspector:
+        panes.append(element_rect(elements, "inspector-pane", "region", label="Inspector"))
+    for pane in panes:
+        require_inside(pane, (0.0, 0.0, *size), "Studio pane")
+    for left, right in pairwise(panes):
+        if left[0] + left[2] > right[0] + 1:
+            raise RuntimeError(f"Studio panes overlap or appear out of order: {left} vs {right}")
+
+
+def read_elements(path: Path) -> Elements:
+    return cast(Elements, json.loads(path.read_text(encoding="utf-8"))["elements"])
+
+
+def _paeth(left: int, up: int, corner: int) -> int:
+    forecast = left + up - corner
+    a, b, c = abs(forecast - left), abs(forecast - up), abs(forecast - corner)
+    if a <= b and a <= c:
+        return left
+    return up if b <= c else corner
+
+
+def _png_scanlines(data: bytes, expected: tuple[int, int]) -> tuple[bytes, int]:
+    if not data.startswith(PNG_SIGNATURE):
+        raise ValueError("missing PNG signature")
+    offset = len(PNG_SIGNATURE)
+    channels = 0
+    compressed = bytearray()
+    while offset + 12 <= len(data):
+        size, kind = struct.unpack_from(">I4s", data, offset)
+        end = offset + 8 + size
+        if end + 4 > len(data):
+            raise ValueError("truncated PNG chunk")
+        body = data[offset + 8 : end]
+        (checksum,) = struct.unpack_from(">I", data, end)
+        if zlib.crc32(kind + body) != checksum:
+            raise ValueError(f"bad checksum for PNG chunk {kind!r}")
+        if offset == len(PNG_SIGNATURE):
+            if kind != b"IHDR" or size != 13:
+                raise ValueError("missing PNG header")
+            width, height, depth, color, mode, filtering, interlace = struct.unpack(">IIBBBBB", body)
+            if (width, height) != expected:
+                raise ValueError(f"expected {expected[0]}x{expected[1]}, got {width}x{height}")
+            if depth != 8 or color not in (2, 6) or mode or filtering or interlace:
+                raise ValueError("expected an 8-bit non-interlaced RGB or RGBA render")
+            channels = 4 if color == 6 else 3
+        elif kind == b"IDAT":
+            compressed.extend(body)
+        elif kind == b"IEND" and size == 0 and end + 4 == len(data):
+            break
+        offset = end + 4
+    else:
+        raise ValueError("missing final PNG chunk")
+
+    required = expected[1] * (expected[0] * channels + 1)
+    decoder = zlib.decompressobj()
+    pixels = decoder.decompress(compressed, required + 1)
+    if len(pixels) != required or not decoder.eof or decoder.unused_data:
+        raise ValueError("wrong number of PNG scanline bytes")
+    return pixels, channels
+
+
+def _unfilter(row: bytearray, previous: bytearray, filter_type: int, channels: int) -> None:
+    if filter_type == 0:
+        return
+    for index, value in enumerate(row):
+        left = row[index - channels] if index >= channels else 0
+        up = previous[index]
+        if filter_type == 1:
+            prediction = left
+        elif filter_type == 2:
+            prediction = up
+        elif filter_type == 3:
+            prediction = (left + up) // 2
+        elif filter_type == 4:
+            corner = previous[index - channels] if index >= channels else 0
+            prediction = _paeth(left, up, corner)
+        else:
+            raise ValueError(f"unknown PNG scanline filter {filter_type}")
+        row[index] = (value + prediction) & 255
+
+
+def validate_png(path: Path, expected: tuple[int, int]) -> None:
+    """Decode Rune's RGB/RGBA PNGs and reject blank, solid, or transparent renders."""
+    try:
+        scanlines, channels = _png_scanlines(path.read_bytes(), expected)
+        stride = expected[0] * channels
+        previous = bytearray(stride)
+        darkest = [255, 255, 255]
+        lightest = [0, 0, 0]
+        varied = False
+        for start in range(0, len(scanlines), stride + 1):
+            row = bytearray(scanlines[start + 1 : start + 1 + stride])
+            _unfilter(row, previous, scanlines[start], channels)
+            previous = row
+            if varied:
+                continue
+            for offset in range(0, stride, channels):
+                if channels == 4 and row[offset + 3] < 16:
+                    continue
+                for c in range(3):
+                    value = row[offset + c]
+                    darkest[c] = min(darkest[c], value)
+                    lightest[c] = max(lightest[c], value)
+            varied = any(high - low >= 8 for low, high in zip(darkest, lightest, strict=True))
+        if not varied:
+            raise ValueError("visible pixels have no meaningful color variance")
+    except (OSError, ValueError, zlib.error) as exc:
+        raise RuntimeError(f"Invalid screenshot {path.name}: {exc}") from exc
 
 
 def _cli_cmd(executable: str, *args: str) -> list[str]:
@@ -47,10 +201,26 @@ def _cli_cmd(executable: str, *args: str) -> list[str]:
 
 
 def run(args: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> str:
-    result = subprocess.run(args, cwd=cwd, env=env, text=True, encoding="utf-8", capture_output=True, check=False)
+    result = subprocess.run(
+        args,
+        cwd=cwd,
+        env={**(os.environ if env is None else env), "PYTHONUTF8": "1"},
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=False,
+    )
     if result.returncode:
         raise RuntimeError(f"{args!r} exited {result.returncode}\n{result.stdout}\n{result.stderr}")
     return result.stdout
+
+
+def run_editor(args: list[str], *, cwd: Path, env: dict[str, str]) -> None:
+    run([str(EDITOR), *args, "--scale", "1"], cwd=cwd, env=env)
+    if "--snap" in args:
+        size = args[args.index("--size") + 1]
+        width, height = (int(part) for part in size.split("x"))
+        validate_png(Path(args[args.index("--snap") + 1]), (width, height))
 
 
 def find_cli() -> str:
@@ -125,7 +295,7 @@ def studio_scene(
     mark: str = "end",
     snap: Path | None = None,
     workspace: Path | None = None,
-) -> list[dict[str, object]]:
+) -> Elements:
     """Render a script checkpoint and return the accessibility elements at that instant."""
     script_path = ROOT / "editor" / "tests" / f"{script}.json"
     if workspace is not None:
@@ -138,9 +308,8 @@ def studio_scene(
         script_path.write_text(json.dumps(script_data), encoding="utf-8")
     tree = base / f"{label}-tree.json"
     options = ["--snap", str(snap)] if snap is not None else []
-    run(
+    run_editor(
         [
-            str(EDITOR),
             *launch,
             "--script",
             str(script_path),
@@ -149,8 +318,6 @@ def studio_scene(
             "--size",
             STUDIO_SIZE,
             "--realtime",
-            "--scale",
-            "1",
             "--tree",
             str(tree),
             *options,
@@ -158,11 +325,10 @@ def studio_scene(
         cwd=base,
         env=env,
     )
-    elements: list[dict[str, object]] = json.loads(tree.read_text(encoding="utf-8"))["elements"]
-    return elements
+    return read_elements(tree)
 
 
-def studio_mentions(elements: list[dict[str, object]], text: str) -> bool:
+def studio_mentions(elements: Elements, text: str) -> bool:
     return any(text in str(element.get(field, "")) for element in elements for field in ("label", "text", "value"))
 
 
@@ -205,7 +371,7 @@ def smoke_workspace_edit(base: Path, workspace: Path, draft: Path, env: dict[str
         raise RuntimeError("The draft's undo history did not survive switching to a second tab")
 
 
-def diff_layout(elements: list[dict[str, object]], layout: str) -> bool:
+def diff_layout(elements: Elements, layout: str) -> bool:
     return any(element.get("label") == layout and element.get("itemSelected") is True for element in elements)
 
 
@@ -213,6 +379,7 @@ def smoke_linked_session(base: Path, workspace: Path, voice: Path, draft: Path, 
     linked_env = studio_home(base, "linked", env)
     launch = ("--folder", str(workspace))
     unified = studio_scene(base, linked_env, "linked-compare", "workspace-unified", *launch)
+    assert_studio_layout(unified, compare=True)
     if not diff_layout(unified, "Unified") or not studio_mentions(unified, "Baseline vs draft"):
         raise RuntimeError("Linked draft did not switch to Unified Compare")
     sessions = [path for path in (voice / "sessions").iterdir() if (path / "session.json").is_file()]
@@ -227,10 +394,17 @@ def smoke_linked_session(base: Path, workspace: Path, voice: Path, draft: Path, 
         raise RuntimeError("Compare or save finished the session")
 
     split = studio_scene(base, linked_env, "linked-finish", "workspace-split", *launch, mark="split")
+    assert_studio_layout(split, compare=True)
     if not diff_layout(split, "Split") or not studio_mentions(split, "Baseline vs draft"):
         raise RuntimeError("Linked draft did not switch back to Split Compare")
+    signoff = studio_scene(base, linked_env, "linked-finish", "workspace-signoff", *launch, mark="signoff")
+    dialog = element_rect(signoff, "finish-session-dialog", "dialog", label="Finish Edit Session")
+    require_inside(dialog, (0.0, 0.0, 1280, 820), "Sign-off dialog")
+    require_inside(element_rect(signoff, "finish-notes", "textbox"), dialog, "Sign-off notes")
+    require_inside(element_rect(signoff, "confirm-finish", "button", label="Finish & Learn"), dialog, "Finish button")
     prior_stats = (voice / "voice-stats.json").read_bytes()
     finished = studio_scene(base, linked_env, "linked-finish", "workspace-finished", *launch)
+    assert_studio_layout(finished, compare=True)
     if not studio_mentions(finished, "Session: finished"):
         raise RuntimeError("Finish & Learn did not lock the workspace-linked session")
     receipt = json.loads((session / "receipt.json").read_text(encoding="utf-8"))
@@ -247,7 +421,13 @@ def smoke_linked_session(base: Path, workspace: Path, voice: Path, draft: Path, 
 def smoke_writing_studio(base: Path, cli: str, env: dict[str, str]) -> None:
     workspace, voice, draft = studio_workspace(base, cli, env)
     welcome_env = studio_home(base, "welcome", env)
+    before_open = studio_scene(
+        base, welcome_env, "workspace-welcome", "initial-welcome", workspace=workspace, mark="welcome"
+    )
+    open_folder = element_rect(before_open, None, "button", label="Open Folder…")
+    require_inside(open_folder, (0.0, 0.0, 1280, 820), "Welcome Open Folder button")
     welcome = studio_scene(base, welcome_env, "workspace-welcome", "workspace-welcome", workspace=workspace)
+    assert_studio_layout(welcome)
     for label in ("NEXT.md", "questions.md", "draft.md", "Rules & Checks"):
         if not studio_mentions(welcome, label):
             raise RuntimeError(f"Open Folder did not show {label} from the workspace or nested voice project")
@@ -264,6 +444,7 @@ def smoke_writing_studio(base: Path, cli: str, env: dict[str, str]) -> None:
         str(workspace),
         snap=base / "editor-preview.png",
     )
+    assert_studio_layout(inspector, inspector=True)
     for label in ("Score ", "delve", "Voice lens"):
         if not studio_mentions(inspector, label):
             raise RuntimeError(f"The live Voice Inspector did not report {label}")
@@ -325,9 +506,8 @@ def main() -> None:  # noqa: C901  # linear GUI smoke scenario, not a library fu
         draft = base / "draft.md"
         draft.write_text("It's not a note, it's a framework.\n", encoding="utf-8")
         snap = base / "finished.png"
-        run(
+        run_editor(
             [
-                str(EDITOR),
                 "--project",
                 str(project),
                 "--draft",
@@ -360,8 +540,8 @@ def main() -> None:  # noqa: C901  # linear GUI smoke scenario, not a library fu
             raise RuntimeError(f"Unexpected editor notes: {_show(notes)!r}")
         if (session / "before.md").read_text(encoding="utf-8") != draft.read_text(encoding="utf-8"):
             raise RuntimeError("The immutable original changed")
-        if not snap.is_file() or not (project / str(receipt["learnedPath"])).is_dir():
-            raise RuntimeError("Editor did not render or learn the finished edit")
+        if not (project / str(receipt["learnedPath"])).is_dir():
+            raise RuntimeError("Editor did not learn the finished edit")
         run(_cli_cmd(cli, "build", "--project", str(project)), cwd=base, env=env)
         judged = subprocess.run(
             _cli_cmd(cli, "judge", str(session / "after.md"), "--project", str(project)),
@@ -385,9 +565,8 @@ def main() -> None:  # noqa: C901  # linear GUI smoke scenario, not a library fu
             raise RuntimeError("Finish was not idempotent")
         recovery_draft = base / "recovery.md"
         recovery_draft.write_text("Before the interruption.\n", encoding="utf-8")
-        run(
+        run_editor(
             [
-                str(EDITOR),
                 "--project",
                 str(project),
                 "--draft",
@@ -420,9 +599,8 @@ def main() -> None:  # noqa: C901  # linear GUI smoke scenario, not a library fu
         shutil.copytree(project, moved)
         reopened = base / "reopened.png"
         tree = base / "reopened-tree.json"
-        run(
+        run_editor(
             [
-                str(EDITOR),
                 "--project",
                 str(moved),
                 "--session",
@@ -437,14 +615,11 @@ def main() -> None:  # noqa: C901  # linear GUI smoke scenario, not a library fu
             cwd=base,
             env=env,
         )
-        if not reopened.is_file():
-            raise RuntimeError("Cannot reopen a finished session")
-        if not tree.is_file() or "Working draft" not in tree.read_text(encoding="utf-8"):
-            raise RuntimeError("Accessible editor label missing from Rune tree")
+        reopened_elements = read_elements(tree)
+        assert_studio_layout(reopened_elements, sidebar=False, inspector=True, size=(1120, 800))
         recovered = base / "recovered.png"
-        run(
+        run_editor(
             [
-                str(EDITOR),
                 "--project",
                 str(moved),
                 "--session",
@@ -457,15 +632,12 @@ def main() -> None:  # noqa: C901  # linear GUI smoke scenario, not a library fu
             cwd=base,
             env=env,
         )
-        if not recovered.is_file():
-            raise RuntimeError("Cannot reopen an interrupted session after moving the project")
 
         # Closing before the 800 ms autosave timer expires still flushes dirty edits.
         unsaved_draft = base / "unsaved-close.md"
         unsaved_draft.write_text("Initial unsaved close draft.\n", encoding="utf-8")
-        run(
+        run_editor(
             [
-                str(EDITOR),
                 "--project",
                 str(project),
                 "--draft",
@@ -499,9 +671,8 @@ def main() -> None:  # noqa: C901  # linear GUI smoke scenario, not a library fu
 
         # Working-copy TextArea grows dynamically with window height.
         tall_tree = base / "tall-tree.json"
-        run(
+        run_editor(
             [
-                str(EDITOR),
                 "--project",
                 str(moved),
                 "--session",
@@ -516,8 +687,10 @@ def main() -> None:  # noqa: C901  # linear GUI smoke scenario, not a library fu
             cwd=base,
             env=env,
         )
-        normal_height = _working_box_height(tree)
-        tall_height = _working_box_height(tall_tree)
+        tall_elements = read_elements(tall_tree)
+        assert_studio_layout(tall_elements, sidebar=False, inspector=True, size=(1120, 1040))
+        normal_height = element_rect(reopened_elements, "prose-input", "textbox")[3]
+        tall_height = element_rect(tall_elements, "prose-input", "textbox")[3]
         if tall_height < normal_height + 200.0:
             raise RuntimeError(
                 f"Expected working draft height to grow with window size: 800 -> {normal_height}, 1040 -> {tall_height}"
@@ -552,9 +725,8 @@ def main() -> None:  # noqa: C901  # linear GUI smoke scenario, not a library fu
         cwd_draft = base / "cwd-draft.md"
         cwd_draft.write_text("Opened from the project directory.\n", encoding="utf-8")
         before = {path.name for path in (project / "sessions").iterdir()}
-        run(
+        run_editor(
             [
-                str(EDITOR),
                 "--draft",
                 str(cwd_draft),
                 "--script",

@@ -1,13 +1,13 @@
 {
   "events": [
-    {"t": 0.10, "type": "tap", "x": 200, "y": 125},
+    {"t": 0.10, "type": "tap", "key": "prose-input"},
     {"t": 0.20, "type": "key", "name": "a", "cmd": true},
     {"t": 0.30, "type": "type", "text": "Recovery text. こんにちは ✨", "every": 0.02},
     {"t": 0.90, "type": "key", "name": "z", "cmd": true},
     {"t": 1.05, "type": "key", "name": "z", "cmd": true, "shift": true},
     {"t": 1.15, "type": "paste", "text": " pasted"},
-    {"t": 1.25, "type": "tap", "x": 927, "y": 74},
-    {"t": 1.35, "type": "tap", "x": 965, "y": 141},
+    {"t": 1.25, "type": "tap", "key": "inspector-tabs/segment1"},
+    {"t": 1.35, "type": "tap", "key": "session-edit-notes"},
     {"t": 1.45, "type": "type", "text": "Resume after closing.", "every": 0.02},
     {"t": 2.00, "type": "key", "name": "s", "cmd": true},
     {"t": 2.25, "type": "mark", "name": "end"}

@@ -105,7 +105,10 @@ def diff_texts(before: str, after: str) -> DiffSummary:
     token_edits = sequence["deletions"] + sequence["insertions"] + sequence["replacements"] + sequence["movedTokens"]
     unchanged_tokens = sequence["unchangedTokens"]
     edit_denominator = token_edits + unchanged_tokens
-    edit_rate = round(token_edits / edit_denominator, 4) if edit_denominator else 0.0
+    rate = token_edits / edit_denominator if edit_denominator else 0.0
+    rounded_rate = round(rate, 4)
+    # Keep the exact endpoints reserved for unchanged and fully edited text.
+    edit_rate = rounded_rate if 0 < rounded_rate < 1 else rate
 
     return {
         "wordsBefore": before_measured.words,
@@ -680,6 +683,8 @@ def _cached_summary(
     moved_spans = _cached_moved_spans(meta["movedSpans"])
     edit_rate = _cached_float(meta["editRate"])
     edit_denom = _cached_int(meta["editRateDenominator"])
+    if edit_denom and token_edits is not None and edit_rate in (0.0, 1.0):
+        edit_rate = token_edits / edit_denom
     paragraphs_before = _cached_int(meta["paragraphsBefore"])
     paragraphs_after = _cached_int(meta["paragraphsAfter"])
     sentences_before = _cached_int(meta["sentencesBefore"])

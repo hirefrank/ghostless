@@ -1,0 +1,70 @@
+[
+  {
+    "id": "2026-01-02",
+    "valid": true
+  },
+  {
+    "id": "2026-01-02-essay-12",
+    "valid": true
+  },
+  {
+    "id": "0000-00-00",
+    "valid": true
+  },
+  {
+    "id": "2026-01-02-a-0",
+    "valid": true
+  },
+  {
+    "id": "",
+    "valid": false
+  },
+  {
+    "id": "..",
+    "valid": false
+  },
+  {
+    "id": "../2026-01-02",
+    "valid": false
+  },
+  {
+    "id": "2026-01-02/notes",
+    "valid": false
+  },
+  {
+    "id": "2026-01-02\\notes",
+    "valid": false
+  },
+  {
+    "id": "2026-01-02\n",
+    "valid": false
+  },
+  {
+    "id": "2026-01-02-a_",
+    "valid": false
+  },
+  {
+    "id": "2026-01-02-É",
+    "valid": false
+  },
+  {
+    "id": "２０２６-01-02",
+    "valid": false
+  },
+  {
+    "id": "2026-01-02-A",
+    "valid": false
+  },
+  {
+    "id": "2026-01-02--a",
+    "valid": false
+  },
+  {
+    "id": "2026-1-02",
+    "valid": false
+  },
+  {
+    "id": "2026-01-02-",
+    "valid": false
+  }
+]

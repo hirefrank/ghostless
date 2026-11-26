@@ -1,0 +1,122 @@
+{
+  "ok": true,
+  "mode": "edits",
+  "cv": true,
+  "seed": 27,
+  "totalCount": 3,
+  "holdoutCount": 3,
+  "train": {
+    "pieces": 4,
+    "words": 45,
+    "writtenWords": 45,
+    "sentences": 7,
+    "confidence": "low"
+  },
+  "holdout": {
+    "pieces": 3,
+    "judged": 3,
+    "meanScore": 55.3333,
+    "minScore": 18.0,
+    "maxScore": 94.0,
+    "meanEditRate": 0.6242,
+    "passRate": 0.3333
+  },
+  "correlation": {
+    "pearson": -0.8797,
+    "spearman": -0.5,
+    "n": 3
+  },
+  "acceptance": {
+    "threshold": 0.15,
+    "accepted": {
+      "count": 1,
+      "meanScore": 94.0
+    },
+    "revised": {
+      "count": 2,
+      "meanScore": 36.0
+    },
+    "scoreGap": 58.0
+  },
+  "direction": "negative",
+  "verdict": "Higher scores came with lighter edits (r=-0.50, n=3).",
+  "items": [
+    {
+      "kind": "edit",
+      "slug": "2026-01-01-notes",
+      "section": "notes",
+      "origin": "ai-first",
+      "words": 24,
+      "score": 94,
+      "ok": true,
+      "editRate": 0.0417,
+      "accepted": true
+    },
+    {
+      "kind": "edit",
+      "slug": "2026-01-02-notes",
+      "section": "notes",
+      "origin": "ai-first",
+      "words": 21,
+      "score": 18,
+      "ok": false,
+      "editRate": 0.9143,
+      "accepted": false
+    },
+    {
+      "kind": "edit",
+      "slug": "2026-01-03-notes",
+      "section": "notes",
+      "origin": "ai-first",
+      "words": 12,
+      "score": 54,
+      "ok": false,
+      "editRate": 0.9167,
+      "accepted": false
+    }
+  ],
+  "notes": [
+    "The train sample is small, so treat the correlation as a direction, not a verdict."
+  ],
+  "holdouts": {
+    "pieces": 1,
+    "train": {
+      "pieces": 5,
+      "words": 45,
+      "writtenWords": 45,
+      "sentences": 7,
+      "confidence": "low"
+    },
+    "summary": {
+      "pieces": 1,
+      "judged": 1,
+      "meanScore": 70.0,
+      "minScore": 70.0,
+      "maxScore": 70.0,
+      "meanEditRate": null,
+      "passRate": 1.0
+    },
+    "items": [
+      {
+        "kind": "piece",
+        "path": "holdouts/clinic.md",
+        "section": null,
+        "words": 11,
+        "score": 70,
+        "ok": true
+      }
+    ]
+  },
+  "confirmedChecks": {
+    "passes": 0,
+    "total": 0,
+    "label": null,
+    "session": null,
+    "fresh": false,
+    "skillSha256": null,
+    "skillFiles": {},
+    "guideSha256": null,
+    "items": [],
+    "note": "No confirmed checks yet. A saved check stays inactive until you confirm it."
+  }
+}

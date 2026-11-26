@@ -6,6 +6,7 @@ cd "$ROOT"
 export PYTHONUTF8=1
 export PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}"
 export GHOSTLESS_NO_UPDATE=1
+export GHOSTLESS_REQUIRE_DEV_TESTS=1
 
 python3 -m ruff check lib tests
 python3 -m ruff format --check lib tests

@@ -1,3 +1,4 @@
+use crate::contracts::session_metadata;
 use crate::error::EditorError;
 use crate::{
     bridge::{self, FinishOptions, FinishReceipt},
@@ -7,7 +8,6 @@ use crate::{
     session::valid_session_id,
     workspace_tree::{self, WorkspaceEntry},
 };
-use serde_json::Value;
 use std::{
     collections::HashMap,
     fs,
@@ -511,22 +511,13 @@ pub(crate) fn write_session_direct(
             "This session is already finished. Start a new session to edit again.".into(),
         ));
     }
-    let meta_raw = fs_io::read_utf8(&folder.join("session.json"))?;
-    let meta: Value = serde_json::from_str(&meta_raw).map_err(|e| EditorError::Json {
-        context: format!("Invalid session metadata in {}: {e}", folder.display()),
+    let meta = session_metadata(&folder)?;
+    let expected_sha = meta.before_sha256.as_deref().ok_or_else(|| {
+        format!(
+            "Session metadata missing beforeSha256 in {}",
+            folder.display()
+        )
     })?;
-    if meta.get("kind").and_then(Value::as_str) != Some("ghostless-edit-session") {
-        return Err("Unsupported session format".into());
-    }
-    let expected_sha = meta
-        .get("beforeSha256")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            format!(
-                "Session metadata missing beforeSha256 in {}",
-                folder.display()
-            )
-        })?;
     if cached_before_sha256.is_some_and(|cached| cached != expected_sha) {
         return Err(EditorError::BaselineMismatch(format!(
             "The immutable baseline metadata changed in {}.",
@@ -666,7 +657,7 @@ mod tests {
                 doc_id,
                 generation: 1,
                 project: std::env::temp_dir(),
-                session_id: "session".into(),
+                session_id: "2026-01-02-search".into(),
                 before_sha256: None,
                 snapshot: None,
                 options: FinishOptions::default(),

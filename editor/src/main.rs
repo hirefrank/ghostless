@@ -2,6 +2,7 @@
 use rune::{App, AppSpec};
 mod bridge;
 mod cli;
+mod contracts;
 mod documents;
 mod error;
 mod fs_io;
@@ -9,6 +10,8 @@ mod hunks;
 mod markdown_decor;
 mod markdown_edit;
 mod prefs;
+#[cfg(test)]
+mod properties;
 mod quick_open;
 mod search;
 mod session;

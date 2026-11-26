@@ -10,3 +10,5 @@ __pycache__/
 scripts/
 .coverage
 coverage.json
+
+fixtures/contracts/

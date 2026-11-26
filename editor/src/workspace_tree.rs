@@ -5,7 +5,6 @@ use crate::{
     session::valid_session_id,
 };
 use rune_kit::{FileNode, FileTree, TreeModel, natural_cmp};
-use serde::Deserialize;
 use std::{
     collections::HashMap,
     ffi::OsStr,
@@ -31,7 +30,8 @@ pub(crate) struct WorkspaceEntry {
     pub read_only: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum SessionStatus {
     Editing,
     Finished,
@@ -384,15 +384,6 @@ pub(crate) fn preserve_open_folders(
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SessionMetadata {
-    kind: String,
-    id: String,
-    source_draft_name: String,
-    created_at: String,
-}
-
 pub(crate) fn scan_sessions(
     voice_project: &Path,
     links: &HashMap<String, SessionLink>,
@@ -415,11 +406,9 @@ pub(crate) fn scan_sessions(
             if !is_regular_file(&path) {
                 return None;
             }
-            let metadata: SessionMetadata = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
-            if metadata.kind != "ghostless-edit-session"
-                || !valid_session_id(&metadata.id)
-                || folder.file_name() != OsStr::new(&metadata.id)
-            {
+            let metadata = crate::contracts::session_metadata(&session_dir).ok()?;
+            let id = metadata.id?;
+            if !valid_session_id(&id) || folder.file_name() != OsStr::new(&id) {
                 return None;
             }
             let status = if session_dir.join("receipt.json").exists() {
@@ -428,15 +417,12 @@ pub(crate) fn scan_sessions(
                 SessionStatus::Editing
             };
             let linked_workspace_file = links
-                .get(&EditorStateStore::session_link_key(
-                    voice_project,
-                    &metadata.id,
-                ))
+                .get(&EditorStateStore::session_link_key(voice_project, &id))
                 .map(|link| link.workspace_file.clone());
             Some(SessionSummary {
-                id: metadata.id,
-                source_name: metadata.source_draft_name,
-                created_at: metadata.created_at,
+                id,
+                source_name: metadata.source_draft_name?,
+                created_at: metadata.created_at?,
                 status,
                 session_dir,
                 linked_workspace_file,
@@ -759,6 +745,55 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn scan_workspace_scales_across_a_writing_project() {
+        use crate::test_util::TestDir;
+        use std::time::{Duration, Instant};
+
+        let area = TestDir::new("workspace-scale");
+        let mut times = Vec::new();
+        for pieces in [50, 200] {
+            let root = area.join(pieces.to_string());
+            let voice = root.join("voice");
+            let paragraph = "The station clock ran slow. I put the ticket in my pocket.\n";
+            for index in 0..pieces {
+                let piece = root.join(format!("work/series-{}/piece-{index}", index % 5));
+                fs::create_dir_all(&piece).unwrap();
+                fs::write(piece.join("draft.md"), paragraph.repeat(20)).unwrap();
+                fs::write(piece.join("questions.md"), "What changed?\n").unwrap();
+            }
+            for index in 0..pieces / 10 {
+                let pair = voice.join("gold").join(format!("2026-01-02-note-{index}"));
+                fs::create_dir_all(&pair).unwrap();
+                fs::write(pair.join("before.md"), "Could we delve into the plan?\n").unwrap();
+                fs::write(pair.join("after.md"), "Here is the plan.\n").unwrap();
+                fs::write(pair.join("meta.json"), "{}").unwrap();
+            }
+            fs::write(voice.join("manifest.json"), r#"{"kind":"ghostless"}"#).unwrap();
+            let tree = scan_workspace(&root, Some(&voice), false);
+            assert!(tree.contains("work/series-0/piece-0/draft.md"));
+            assert!(tree.contains(&format!(
+                "work/series-{}/piece-{}/questions.md",
+                (pieces - 1) % 5,
+                pieces - 1
+            )));
+            let mut elapsed = [Duration::ZERO; 5];
+            for sample in &mut elapsed {
+                let start = Instant::now();
+                std::hint::black_box(scan_workspace(&root, Some(&voice), false));
+                *sample = start.elapsed();
+            }
+            elapsed.sort_unstable();
+            times.push(elapsed[2]);
+        }
+        let small = times[0];
+        let large = times[1];
+        assert!(
+            large < Duration::from_secs(2) && large < 8 * small + Duration::from_millis(60),
+            "scan_workspace grew from {small:?} to {large:?} for 4× as many pieces",
+        );
     }
 
     #[test]

@@ -134,7 +134,8 @@ def _recorded_paths(stats: Mapping[str, object]) -> list[str]:
 def _has_decisions(block: object) -> bool:
     if not isinstance(block, dict):
         return False
-    for key in ("confirmed", "rejected", "retired", "pending"):
+    # Pending checks are stored in gold pair metadata, independently of checks.json.
+    for key in ("confirmed", "rejected", "retired"):
         value = block.get(key)
         if isinstance(value, list | dict) and len(value) > 0:
             return True

@@ -1,5 +1,5 @@
+use crate::contracts::Manifest;
 use crate::error::EditorError;
-use serde_json::Value;
 use std::{
     env,
     io::Write,
@@ -149,10 +149,7 @@ pub(crate) fn manifest_is_ghostless(dir: &std::path::Path) -> bool {
     let Ok(text) = std::fs::read_to_string(dir.join("manifest.json")) else {
         return false;
     };
-    let Ok(value) = serde_json::from_str::<Value>(&text) else {
-        return false;
-    };
-    value.get("kind").and_then(Value::as_str) == Some("ghostless")
+    serde_json::from_str::<Manifest>(&text).is_ok()
 }
 
 #[cfg(test)]

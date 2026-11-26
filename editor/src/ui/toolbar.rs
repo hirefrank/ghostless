@@ -74,7 +74,8 @@ pub(crate) fn build(editor: &Editor, kit: &Kit, overlays: &mut Vec<El>) -> Toolb
                     .variant(ButtonVariant::Submit)
                     .disabled(!editor.can_open_finish())
                     .on_press(|e: &mut Editor| e.finish())
-                    .build(kit),
+                    .build(kit)
+                    .key("finish-session-button"),
             );
     }
 

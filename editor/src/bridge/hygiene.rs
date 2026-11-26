@@ -1,6 +1,6 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RulesSummary {
     pub minimum_support: usize,
@@ -10,7 +10,7 @@ pub(crate) struct RulesSummary {
     pub retired: Vec<Rule>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Rule {
     pub id: String,
@@ -21,27 +21,27 @@ pub(crate) struct Rule {
     #[serde(default)]
     pub examples: Vec<RuleExample>,
     #[serde(default)]
-    pub counterexamples: Vec<serde_json::Value>,
+    pub counterexamples: Vec<RuleCounterexample>,
     #[serde(default)]
     pub receipts: Vec<String>,
     pub scope: Option<String>,
     pub confirmed_at: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct RuleExample {
     pub before_snippet: String,
     pub after_snippet: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ChecksSummary {
     pub pending: Vec<Check>,
     pub confirmed: Vec<Check>,
     pub rejected: Vec<Check>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Check {
     pub id: String,
     #[serde(default)]
@@ -50,9 +50,33 @@ pub(crate) struct Check {
     pub span: String,
     #[serde(default)]
     pub polarity: String,
-    #[serde(default)]
-    pub pair: String,
+    pub pair: Option<String>,
     pub section: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct RuleCounterexample {
+    slug: String,
+    receipt: String,
+    snippet: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct RuleDecision {
+    pub id: String,
+    pub status: String,
+    pub scope: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum CheckDecision {
+    Item {
+        status: String,
+        #[serde(flatten)]
+        check: Check,
+    },
+    Added(Vec<Check>),
 }
 
 #[cfg(test)]

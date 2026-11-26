@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import unittest
@@ -12,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
 
 from ghostless.stats import Piece, summarize  # noqa: E402
+from ghostless.tells import ban_hits, structural_tells  # noqa: E402
 from ghostless.text import (  # noqa: E402
     STOPWORDS,
     first_word,
@@ -132,6 +134,27 @@ class SignaturePhraseTests(unittest.TestCase):
         summary = summarize(pieces, bronze_format_only=False, use_weights=True)
         phrases = [item["phrase"] for item in summary["signaturePhrases"]]
         self.assertIn("cold coffee", phrases)
+
+
+class TellRegressionTests(unittest.TestCase):
+    def test_labeled_precision_recall_and_sentence_boundaries(self) -> None:
+        cases = json.loads((ROOT / "tests/fixtures/nlp-labels.json").read_text(encoding="utf-8"))
+        expected: set[tuple[str, str]] = set()
+        observed: set[tuple[str, str]] = set()
+        for case in cases:
+            identifier, text = case["id"], case["text"]
+            expected.update((identifier, kind) for kind in case["tells"])
+            observed.update((identifier, hit.kind) for hit in structural_tells(text))
+            observed.update((identifier, tell) for tell, _ in ban_hits(text, ["delve", "delve into"]))
+            if "sentences" in case:
+                self.assertEqual(measure(text).sentences, case["sentences"], identifier)
+
+        # Literal shopping lists and quoted corrections are known heuristic
+        # false positives. The floors preserve usefulness without requiring
+        # these patterns to infer intent from a short snippet.
+        correct = len(observed & expected)
+        self.assertGreaterEqual(correct / max(1, len(observed)), 0.80, sorted(observed - expected))
+        self.assertGreaterEqual(correct / len(expected), 0.90, sorted(expected - observed))
 
 
 if __name__ == "__main__":
