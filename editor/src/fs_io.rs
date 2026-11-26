@@ -46,7 +46,16 @@ fn replace(temp: &Path, path: &Path) -> std::io::Result<()> {
     }
 }
 
-pub(crate) fn sha256_text(text: &str) -> String { format!("{:x}", Sha256::digest(text.as_bytes())) }
+pub(crate) fn sha256_text(text: &str) -> String {
+    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let digest = Sha256::digest(text.as_bytes());
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for &byte in digest.iter() {
+        hex.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+        hex.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
+    }
+    hex
+}
 
 pub(crate) fn is_contained_in(root: &Path, candidate: &Path) -> bool {
     let Ok(root) = root.canonicalize() else { return false };
