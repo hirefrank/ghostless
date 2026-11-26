@@ -1,0 +1,19 @@
+{
+  "events": [
+    {"t": 0.22, "type": "key", "name": "p", "cmd": true},
+    {"t": 0.42, "type": "type", "text": "draft.md", "every": 0.02},
+    {"t": 0.75, "type": "key", "name": "Enter"},
+    {"t": 1.00, "type": "key", "name": "p", "cmd": true, "shift": true},
+    {"t": 1.20, "type": "type", "text": "Start Edit Session", "every": 0.02},
+    {"t": 1.70, "type": "key", "name": "Enter"},
+    {"t": 2.00, "type": "tap", "x": 620, "y": 355},
+    {"t": 2.22, "type": "tap", "x": 818, "y": 525},
+    {"t": 4.00, "type": "tap", "x": 420, "y": 140},
+    {"t": 4.20, "type": "key", "name": "a", "cmd": true},
+    {"t": 4.37, "type": "paste", "text": "# The late train\n\nI made the final train. Café was still open.\n"},
+    {"t": 4.65, "type": "key", "name": "s", "cmd": true},
+    {"t": 5.10, "type": "key", "name": "d", "cmd": true},
+    {"t": 5.50, "type": "tap", "x": 407, "y": 96},
+    {"t": 6.05, "type": "mark", "name": "end"}
+  ]
+}

@@ -286,7 +286,8 @@ pub(crate) fn compute_markdown_spans(
                     }
                 }
             }
-            pos += tail.chars().next().unwrap().len_utf8();
+            let Some(ch) = tail.chars().next() else { break };
+            pos += ch.len_utf8();
         }
     }
     for range in find_placeholder_ranges(text, placeholder_token) {

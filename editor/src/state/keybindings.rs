@@ -1,5 +1,4 @@
 use super::{Editor, ViewMode};
-use crate::prefs;
 use rune::{Key, KeyEvent, Tx};
 use rune_kit::shell::is_sidebar_toggle;
 
@@ -12,8 +11,20 @@ pub(crate) fn on_key(editor: &mut Editor, key: &KeyEvent, tx: &mut Tx) -> bool {
         }
         return true;
     }
-    if editor.chrome.active_dialog.is_some() {
+    if editor.chrome.active_dialog.is_some() || editor.chrome.finish.is_some() {
         return false;
+    }
+    if editor.chrome.palette.open {
+        return false;
+    }
+    if key.is_command('p')
+        && key.mods.shift
+        && !key.mods.alt
+        && !editor.quick.open
+        && !editor.folder_search.open
+    {
+        editor.open_palette(tx);
+        return true;
     }
     if key.is_command('o') {
         if key.mods.shift {
@@ -25,6 +36,10 @@ pub(crate) fn on_key(editor: &mut Editor, key: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if editor.is_landing_view() {
         return false;
+    }
+    if editor.studio.open && key.key == Key::Escape {
+        editor.close_voice_studio(tx);
+        return true;
     }
     if editor.find.open && key.key == Key::Escape {
         editor.close_find(tx);
@@ -49,13 +64,11 @@ pub(crate) fn on_key(editor: &mut Editor, key: &KeyEvent, tx: &mut Tx) -> bool {
             None
         };
         if let Some(delta) = delta {
-            editor.store.ui.font_size = (editor.store.ui.font_size + delta).clamp(13.0, 24.0);
-            let _ = prefs::save_store(&editor.store);
+            editor.adjust_font_size(delta);
             return true;
         }
         if key.is_command('0') {
-            editor.store.ui.font_size = 16.5;
-            let _ = prefs::save_store(&editor.store);
+            editor.reset_font_size();
             return true;
         }
     }

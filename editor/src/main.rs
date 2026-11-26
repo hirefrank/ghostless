@@ -19,6 +19,7 @@ mod theme;
 mod ui;
 mod ui_welcome;
 mod voice_lens;
+mod watcher;
 mod worker;
 mod workspace_tree;
 

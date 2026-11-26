@@ -622,6 +622,7 @@ class SessionReceipt(TypedDict, total=False):
     checks: list[CheckItem]
     promotion: LearnResult
     rebuilt: bool
+    warnings: list[str]
 
 
 class ManifestFile(TypedDict):

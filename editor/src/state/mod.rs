@@ -21,18 +21,27 @@ use std::{
 };
 
 mod autosave;
+mod commands;
 mod dialogs;
+mod finish;
 mod keybindings;
+mod notifications;
 mod search_state;
+mod studio;
 mod voice;
+mod watching;
 mod workspace_actions;
 
 #[cfg(test)]
 mod tests;
 
 pub(crate) use autosave::poll;
+pub(crate) use commands::filtered_commands;
 pub(crate) use dialogs::DialogKind;
+pub(crate) use finish::FinishModal;
 pub(crate) use keybindings::on_key;
+pub(crate) use notifications::NoticeAction;
+pub(crate) use studio::{ALL_SECTIONS, Decision, ReviewKind};
 #[cfg(test)]
 pub(in crate::state) use voice::judge_target;
 pub(crate) use voice::section_for_document;
@@ -81,6 +90,9 @@ pub(crate) struct WorkspaceChrome {
     pub(crate) active_dialog: Option<DialogKind>,
     pub(crate) dialog_input: TextEdit,
     pub(crate) dialog_error: Option<String>,
+    pub(crate) finish: Option<FinishModal>,
+    pub(crate) palette: commands::PaletteState,
+    pub(in crate::state) finish_wait: Option<DocId>,
 }
 
 pub(crate) struct Editor {
@@ -117,7 +129,11 @@ pub(crate) struct Editor {
     pub(crate) inspector_tab: usize,
     pub(crate) section_menu_open: bool,
     pub(crate) rule_draft: TextEdit,
-    pub(crate) toast: Option<String>,
+    pub(crate) notifications: notifications::Notifications,
+    pub(crate) studio: studio::Studio,
+    watching: watching::WatchState,
+    external_compare: Option<DocId>,
+    finish_options: Option<crate::bridge::FinishOptions>,
     pub(crate) pending_document_focus: bool,
     pub(crate) compare_unified: bool,
     pub(crate) conflict_compare: bool,
@@ -143,7 +159,10 @@ impl Editor {
         let store = prefs::load_store();
         let runner: CliRunner = Box::new(run_cli);
         let writer: WriteRunner = Box::new(execute_write_op);
-        match target {
+        let watch_wake = Arc::new(wake);
+        let cloned = Arc::clone(&watch_wake);
+        let wake: WakeFn = Box::new(move || cloned());
+        let mut editor = match target {
             LaunchTarget::Session(session) => {
                 let mut editor = Self::with_handlers(session, store, runner, writer, wake);
                 if let Some(voice) = &editor.voice_project {
@@ -168,7 +187,10 @@ impl Editor {
                 editor.voice_project = voice_project;
                 editor
             }
-        }
+        };
+        editor.watching.wake = Some(watch_wake);
+        editor.restart_watcher();
+        editor
     }
     pub(crate) fn with_handlers(
         session: Session,
@@ -259,7 +281,11 @@ impl Editor {
             inspector_tab: 0,
             section_menu_open: false,
             rule_draft: TextEdit::new(""),
-            toast: None,
+            notifications: Default::default(),
+            studio: Default::default(),
+            watching: Default::default(),
+            external_compare: None,
+            finish_options: None,
             pending_document_focus: false,
             compare_unified: false,
             conflict_compare: false,
@@ -326,7 +352,11 @@ impl Editor {
             inspector_tab: 0,
             section_menu_open: false,
             rule_draft: TextEdit::new(""),
-            toast: None,
+            notifications: Default::default(),
+            studio: Default::default(),
+            watching: Default::default(),
+            external_compare: None,
+            finish_options: None,
             pending_document_focus: false,
             compare_unified: false,
             conflict_compare: false,
@@ -369,7 +399,7 @@ impl Editor {
             .is_some_and(DocumentBuffer::is_session)
     }
     pub(crate) fn active_has_baseline(&self) -> bool {
-        self.active_doc_ref().is_some_and(|d| d.original.is_some())
+        self.compare_left_text().is_some()
     }
     pub(crate) fn active_uses_rendered_preview(&self) -> bool {
         match self.view_mode {
@@ -444,6 +474,7 @@ impl Editor {
         }
     }
     pub(crate) fn switch_active_doc(&mut self, pos: usize) {
+        self.studio.open = false;
         if pos >= self.documents.len() {
             return;
         }
@@ -646,6 +677,7 @@ impl Editor {
     pub(crate) fn set_view_mode(&mut self, mode: ViewMode, tx: &mut Tx) {
         if mode != ViewMode::Compare {
             self.conflict_compare = false;
+            self.external_compare = None;
         }
         if mode == ViewMode::Compare {
             if !self.active_has_baseline() {
@@ -655,6 +687,7 @@ impl Editor {
             self.refresh_diff();
         }
         self.view_mode = mode;
+        self.studio.open = false;
         if !self.can_replace_find() {
             self.find.show_replace = false;
         }
@@ -717,6 +750,7 @@ pub(crate) fn on_window_close(editor: &mut Editor, tx: &mut Tx) {
 
 impl Drop for Editor {
     fn drop(&mut self) {
+        self.stop_watcher();
         if !self.flush_on_exit() {
             // Always recover every dirty buffer on drop, even after a cancelled quit and later edits.
             self.write_quit_recovery();

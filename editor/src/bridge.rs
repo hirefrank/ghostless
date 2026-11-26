@@ -3,10 +3,14 @@
 //! Analysis calls stay on this thread. Saves and finishes stay on
 //! [`crate::worker::Worker`] so a slow judge cannot block a write.
 
+mod hygiene;
+mod protocol;
+pub(crate) use hygiene::{Check, ChecksSummary, Rule, RulesSummary};
+
 use crate::error::EditorError;
 use std::{
     io::{BufRead, BufReader, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
         Arc, Mutex,
@@ -17,12 +21,16 @@ use std::{
 };
 
 #[cfg(test)]
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{cli, documents::DocId, worker::WakeFn};
+use crate::{
+    cli,
+    documents::DocId,
+    worker::{CliFn, WakeFn},
+};
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -206,6 +214,7 @@ pub(crate) enum BridgeOp {
         action: String,
         rule_id: String,
         section: Option<String>,
+        global: bool,
     },
     ChecksList {
         project: PathBuf,
@@ -215,6 +224,7 @@ pub(crate) enum BridgeOp {
         action: String,
         target: String,
         section: Option<String>,
+        global: bool,
         text: Option<String>,
     },
     SaveNote {
@@ -239,8 +249,7 @@ pub(crate) enum BridgeReply {
         result: Box<JudgeReport>,
     },
     Build {
-        #[allow(dead_code)]
-        doc_id: Option<DocId>,
+        request_id: u64,
         result: Result<BuildSummary, EditorError>,
     },
     SessionsList {
@@ -256,15 +265,19 @@ pub(crate) enum BridgeReply {
         result: Result<Value, EditorError>,
     },
     RulesList {
-        result: Result<Value, EditorError>,
+        request_id: u64,
+        result: Result<RulesSummary, EditorError>,
     },
     RulesDecide {
+        request_id: u64,
         result: Result<Value, EditorError>,
     },
     ChecksList {
-        result: Result<Value, EditorError>,
+        request_id: u64,
+        result: Result<ChecksSummary, EditorError>,
     },
     ChecksDecide {
+        request_id: u64,
         result: Result<Value, EditorError>,
     },
     SaveNote {
@@ -399,7 +412,13 @@ impl BridgeClient {
 
     pub(crate) fn shutdown(&mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
-        if let Some(mut child) = self.shared.child.lock().unwrap().take() {
+        if let Some(mut child) = self
+            .shared
+            .child
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -552,7 +571,10 @@ fn spawn_process(
             let _ = std::io::Read::read_to_string(&mut BufReader::new(stderr), &mut sink);
         });
     }
-    *shared.child.lock().unwrap() = Some(child);
+    *shared
+        .child
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(child);
     Ok(LiveProcess {
         stdin,
         stdout: BufReader::new(stdout),
@@ -578,216 +600,69 @@ fn write_and_read(live: &mut LiveProcess, payload: &str) -> Result<String, Edito
 
 fn shutdown_live(live: Option<LiveProcess>, shared: &Shared) {
     drop(live);
-    if let Some(mut child) = shared.child.lock().unwrap().take() {
+    if let Some(mut child) = shared
+        .child
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    {
         let _ = child.kill();
         let _ = child.wait();
     }
 }
 
-impl Job {
-    fn payload(&self) -> Result<String, EditorError> {
-        let (method, params) = self.op.params()?;
-        Ok(json!({"id": self.id, "method": method, "params": params}).to_string())
-    }
-
-    fn decode(self, line: &str) -> BridgeReply {
-        let envelope: Envelope = match serde_json::from_str(line) {
-            Ok(envelope) => envelope,
-            Err(error) => return self.fail(format!("Invalid bridge response: {error}")),
-        };
-        if envelope.id != Some(self.id) {
-            return self.fail("Bridge response did not match the request".to_owned());
-        }
-        if !envelope.ok {
-            return self.fail(
-                envelope
-                    .error
-                    .unwrap_or_else(|| "Bridge request failed".into()),
-            );
-        }
-        let result = envelope.result.unwrap_or(Value::Null);
-        match self.op {
-            BridgeOp::JudgeText { .. } => {
-                let doc_id = self.doc_id.clone().unwrap_or(DocId::File(PathBuf::new()));
-                let report =
-                    serde_json::from_value::<JudgeReport>(result).unwrap_or_else(|error| {
-                        JudgeReport::from_error(format!("Invalid judge report: {error}"))
-                    });
-                BridgeReply::Judge {
-                    request_id: self.id,
-                    doc_id,
-                    generation: self.generation,
-                    section: self.section_label,
-                    result: Box::new(report),
-                }
-            }
-            BridgeOp::Build { .. } => BridgeReply::Build {
-                doc_id: self.doc_id,
-                result: parse_value(result),
-            },
-            BridgeOp::SessionsList { .. } => BridgeReply::SessionsList {
-                result: parse_value(result),
-            },
-            BridgeOp::SessionStart { .. } => BridgeReply::SessionStart {
-                doc_id: self.doc_id,
-                generation: self.generation,
-                result: parse_value(result),
-            },
-            BridgeOp::SessionFinish { .. } => BridgeReply::SessionFinish {
-                doc_id: self.doc_id,
-                result: Ok(result),
-            },
-            BridgeOp::RulesList { .. } => BridgeReply::RulesList { result: Ok(result) },
-            BridgeOp::RulesDecide { .. } => BridgeReply::RulesDecide { result: Ok(result) },
-            BridgeOp::ChecksList { .. } => BridgeReply::ChecksList { result: Ok(result) },
-            BridgeOp::ChecksDecide { .. } => BridgeReply::ChecksDecide { result: Ok(result) },
-            BridgeOp::SaveNote { .. } => BridgeReply::SaveNote {
-                result: parse_value(result),
-            },
-            BridgeOp::Promote { .. } => BridgeReply::Promote { result: Ok(result) },
-        }
-    }
-
-    fn fail(self, error: impl Into<EditorError>) -> BridgeReply {
-        let error = error.into();
-        match self.op {
-            BridgeOp::JudgeText { .. } => BridgeReply::Judge {
-                request_id: self.id,
-                doc_id: self.doc_id.unwrap_or(DocId::File(PathBuf::new())),
-                generation: self.generation,
-                section: self.section_label,
-                result: Box::new(JudgeReport::from_error(error.to_string())),
-            },
-            BridgeOp::Build { .. } => BridgeReply::Build {
-                doc_id: self.doc_id,
-                result: Err(error),
-            },
-            BridgeOp::SessionsList { .. } => BridgeReply::SessionsList { result: Err(error) },
-            BridgeOp::SessionStart { .. } => BridgeReply::SessionStart {
-                doc_id: self.doc_id,
-                generation: self.generation,
-                result: Err(error),
-            },
-            BridgeOp::SessionFinish { .. } => BridgeReply::SessionFinish {
-                doc_id: self.doc_id,
-                result: Err(error),
-            },
-            BridgeOp::RulesList { .. } => BridgeReply::RulesList { result: Err(error) },
-            BridgeOp::RulesDecide { .. } => BridgeReply::RulesDecide { result: Err(error) },
-            BridgeOp::ChecksList { .. } => BridgeReply::ChecksList { result: Err(error) },
-            BridgeOp::ChecksDecide { .. } => BridgeReply::ChecksDecide { result: Err(error) },
-            BridgeOp::SaveNote { .. } => BridgeReply::SaveNote { result: Err(error) },
-            BridgeOp::Promote { .. } => BridgeReply::Promote { result: Err(error) },
-        }
-    }
+#[derive(Clone, Debug, Default)]
+pub(crate) struct FinishOptions {
+    pub note: Option<String>,
+    pub check: Option<String>,
+    pub rebuild: bool,
+    pub promote: bool,
 }
 
-impl BridgeOp {
-    fn params(&self) -> Result<(&'static str, Value), EditorError> {
-        let path = |value: &Path| -> Result<String, EditorError> {
-            value.to_str().map(str::to_owned).ok_or_else(|| {
-                EditorError::message(format!("Path is not UTF-8: {}", value.display()))
-            })
-        };
-        Ok(match self {
-            BridgeOp::JudgeText {
-                project,
-                text,
-                section,
-            } => (
-                "judge_text",
-                json!({"project": path(project)?, "text": text, "section": section}),
-            ),
-            BridgeOp::Build { project } => ("build", json!({"project": path(project)?})),
-            BridgeOp::SessionsList { project } => {
-                ("sessions_list", json!({"project": path(project)?}))
-            }
-            BridgeOp::SessionStart {
-                project,
-                draft,
-                section,
-                origin,
-                sources,
-            } => (
-                "session_start",
-                json!({
-                    "project": path(project)?,
-                    "draft": path(draft)?,
-                    "section": section,
-                    "origin": origin,
-                    "sources": sources,
-                }),
-            ),
-            BridgeOp::SessionFinish {
-                project,
-                session,
-                note,
-                checks,
-                rebuild,
-                promote,
-                final_path,
-            } => (
-                "session_finish",
-                json!({
-                    "project": path(project)?,
-                    "session": session,
-                    "note": note,
-                    "checks": checks,
-                    "rebuild": rebuild,
-                    "promote": promote,
-                    "final": final_path.as_ref().map(|item| path(item)).transpose()?,
-                }),
-            ),
-            BridgeOp::RulesList { project } => ("rules_list", json!({"project": path(project)?})),
-            BridgeOp::RulesDecide {
-                project,
-                action,
-                rule_id,
-                section,
-            } => (
-                "rules_decide",
-                json!({
-                    "project": path(project)?,
-                    "action": action,
-                    "ruleId": rule_id,
-                    "section": section,
-                }),
-            ),
-            BridgeOp::ChecksList { project } => ("checks_list", json!({"project": path(project)?})),
-            BridgeOp::ChecksDecide {
-                project,
-                action,
-                target,
-                section,
-                text,
-            } => (
-                "checks_decide",
-                json!({
-                    "project": path(project)?,
-                    "action": action,
-                    "target": target,
-                    "section": section,
-                    "text": text,
-                }),
-            ),
-            BridgeOp::SaveNote {
-                project,
-                kind,
-                text,
-            } => (
-                "save_note",
-                json!({"project": path(project)?, "kind": kind, "text": text}),
-            ),
-            BridgeOp::Promote {
-                project,
-                slug,
-                demote,
-            } => (
-                "promote",
-                json!({"project": path(project)?, "slug": slug, "demote": demote}),
-            ),
-        })
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FinishReceipt {
+    pub learned_path: Option<String>,
+    #[serde(default)]
+    pub rebuilt: bool,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+/// Run a single bridge request on the critical write worker's own lane.
+pub(crate) fn session_finish(
+    project: PathBuf,
+    session: String,
+    options: FinishOptions,
+    runner: &CliFn,
+) -> Result<FinishReceipt, EditorError> {
+    let request = Job {
+        id: 1,
+        doc_id: None,
+        generation: 0,
+        section_label: String::new(),
+        op: BridgeOp::SessionFinish {
+            project,
+            session,
+            note: options.note,
+            checks: options.check.into_iter().collect(),
+            rebuild: options.rebuild,
+            promote: options.promote,
+            final_path: None,
+        },
+    };
+    let line = runner(&["bridge"], Some(&format!("{}\n", request.payload()?)))?;
+    let envelope: Envelope = serde_json::from_str(&line).map_err(|error| EditorError::Json {
+        context: format!("Invalid bridge response: {error}"),
+    })?;
+    if envelope.id != Some(request.id) || !envelope.ok {
+        return Err(EditorError::Bridge(
+            envelope
+                .error
+                .unwrap_or_else(|| "Finish request failed".into()),
+        ));
     }
+    parse_value(envelope.result.unwrap_or(Value::Null))
 }
 
 #[derive(Deserialize)]
@@ -937,6 +812,7 @@ mod tests {
                 action: "confirm".into(),
                 rule_id: "cut:very".into(),
                 section: None,
+                global: false,
             },
             BridgeOp::ChecksList {
                 project: project.clone(),
@@ -947,6 +823,7 @@ mod tests {
                 target: "pair".into(),
                 section: None,
                 text: None,
+                global: false,
             },
             BridgeOp::SaveNote {
                 project: project.clone(),

@@ -741,7 +741,14 @@ fn ok_writer() -> WriteRunner {
 }
 
 fn ok_runner() -> CliRunner {
-    Box::new(|_, _| Ok("{}".into()))
+    Box::new(|args, _| {
+        Ok(if args == ["bridge"] {
+            r#"{"id":1,"ok":true,"result":{}}"#
+        } else {
+            "{}"
+        }
+        .into())
+    })
 }
 
 fn drain_until_idle(editor: &mut Editor) {
@@ -1681,10 +1688,10 @@ fn finish_waits_for_in_flight_save_then_finishes_once() {
         Ok(WriteOutcome::Local)
     });
     let runner: CliRunner = Box::new(move |args, _| {
-        if args[0] == "finish" {
+        if args[0] == "bridge" {
             cli_events.lock().unwrap().push("finish");
         }
-        Ok("{}".into())
+        Ok(r#"{"id":1,"ok":true,"result":{}}"#.into())
     });
 
     let mut editor = Editor::with_handlers(
@@ -1702,8 +1709,8 @@ fn finish_waits_for_in_flight_save_then_finishes_once() {
         .recv_timeout(Duration::from_secs(2))
         .expect("snapshot started");
 
-    editor.finish();
-    editor.finish();
+    editor.queue_finish();
+    editor.queue_finish();
     assert!(editor.active_is_locked());
 
     release_tx.send(()).unwrap();
@@ -2200,7 +2207,6 @@ fn section_switch_during_judge_keeps_the_new_section_score() {
 
 #[test]
 fn aba_section_switch_and_rebuild_drop_stale_judge_replies() {
-    use crate::bridge::BuildSummary;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let calls = Arc::new(AtomicUsize::new(0));
@@ -2259,16 +2265,7 @@ fn aba_section_switch_and_rebuild_drop_stale_judge_replies() {
     editor.request_judge(0.0);
     poll(&mut editor, delay, &mut tx);
     assert_eq!(started_rx.recv_timeout(Duration::from_secs(2)).unwrap(), 0);
-    editor.apply_bridge_reply(crate::bridge::BridgeReply::Build {
-        doc_id: Some(editor.documents[0].id.clone()),
-        result: Ok(BuildSummary {
-            gold_pieces: 1,
-            counts: serde_json::Value::Null,
-            bronze_format_only: false,
-            warnings: Vec::new(),
-            generated_at: String::new(),
-        }),
-    });
+    editor.invalidate_voice_analysis();
     assert_eq!(editor.documents[0].judge_epoch, 1);
     assert!(editor.documents[0].latest_judge_request.is_none());
     assert!(editor.active_judge_report().is_none());
@@ -3905,7 +3902,7 @@ fn linked_session_files_skips_finished_sessions_and_picks_newest_deterministical
             doc_id: DocId::File(draft.clone()),
             generation: 0,
             snapshot: None,
-            result: Ok(()),
+            result: Ok(crate::bridge::FinishReceipt::default()),
         },
         None,
     );
@@ -4317,7 +4314,7 @@ fn keep_session_then_finish_mirrors_and_reconcile_refreshes_the_sync_hash() {
         });
         doc.force_mirror = true;
     }
-    editor.finish();
+    editor.queue_finish();
     drain_until_idle(&mut editor);
     assert_eq!(fs::read_to_string(&draft).unwrap(), body);
 
@@ -4432,7 +4429,7 @@ fn finish_after_an_inflight_save_still_mirrors_a_kept_session() {
     editor.save_clicked();
     started.recv_timeout(Duration::from_secs(2)).unwrap();
     editor.active_doc_mut().unwrap().force_mirror = true;
-    editor.finish();
+    editor.queue_finish();
     release.send(()).unwrap();
     drain_until_idle(&mut editor);
     assert_eq!(fs::read_to_string(&draft).unwrap(), body);

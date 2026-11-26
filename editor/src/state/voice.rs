@@ -19,7 +19,9 @@ impl Editor {
     /// Left side of Compare. Conflict compare shows the workspace file; every other compare shows the session baseline.
     pub(crate) fn compare_left_text(&self) -> Option<&str> {
         let doc = self.active_doc_ref()?;
-        if self.is_conflict_compare() {
+        if let Some((left, _)) = self.external_compare_sides() {
+            Some(left)
+        } else if self.is_conflict_compare() {
             doc.conflict
                 .as_ref()
                 .map(|conflict| conflict.disk_text.as_str())
@@ -27,6 +29,14 @@ impl Editor {
             doc.original.as_deref()
         }
     }
+    pub(crate) fn compare_right_text(&self) -> Option<&str> {
+        let doc = self.active_doc_ref()?;
+        Some(
+            self.external_compare_sides()
+                .map_or(doc.edit.text.as_str(), |(_, right)| right),
+        )
+    }
+
     pub(crate) fn refresh_diff(&mut self) {
         let original = self.compare_left_text().map(str::to_owned);
         let Some(doc) = self.active_doc_ref() else {
@@ -38,8 +48,8 @@ impl Editor {
             return;
         };
         let title = doc.title.clone();
-        let current = doc.edit.text.clone();
-        let mut diff = DiffState::new(vec![FileDiff::from_texts(&title, &original, &current)]);
+        let current = self.compare_right_text().unwrap_or_default();
+        let mut diff = DiffState::new(vec![FileDiff::from_texts(&title, &original, current)]);
         diff.set_mode(if self.compare_unified {
             DiffMode::Unified
         } else {
@@ -57,6 +67,7 @@ impl Editor {
     pub(crate) fn can_revert(&self) -> bool {
         self.view_mode == ViewMode::Compare
             && !self.is_conflict_compare()
+            && !self.is_external_compare()
             && self
                 .active_doc_ref()
                 .is_some_and(|doc| doc.is_editable() && doc.original.is_some())
@@ -295,23 +306,6 @@ impl Editor {
             self.active_working_edit_mut().replace_text(&before);
         }
     }
-    pub(crate) fn request_voice_build(&mut self) {
-        let Some(project) = self.voice_project.clone() else {
-            self.status = "Open a voice project before building".into();
-            return;
-        };
-        let doc_id = self.active_doc_ref().map(|doc| doc.id.clone());
-        let generation = self.active_doc_ref().map(|doc| doc.generation).unwrap_or(0);
-        if let Err(error) = self.bridge.request(
-            doc_id,
-            generation,
-            crate::bridge::BridgeOp::Build { project },
-        ) {
-            self.status = error.to_string();
-            return;
-        }
-        self.status = "Building voice guide…".into();
-    }
     pub(crate) fn save_durable_rule(&mut self, kind: &str) {
         let text = self.rule_draft.text.trim().to_owned();
         if text.is_empty() {
@@ -424,6 +418,7 @@ impl Editor {
         {
             return;
         }
+        self.external_compare = None;
         self.conflict_compare = true;
         self.set_view_mode(ViewMode::Compare, tx);
         self.focus_document(tx);
@@ -459,6 +454,7 @@ impl Editor {
         let Some(index) = self.active_doc else { return };
         let doc_id = self.documents[index].id.clone();
         if self.documents[index].finished
+            || self.documents[index].external_conflict.is_some()
             || self.documents[index].pending_save
             || self.documents[index].force_mirror
             || self.worker_busy.as_ref().is_some_and(|(id, kind)| {
@@ -545,6 +541,16 @@ impl Editor {
             self.status = "This file changed on disk outside the edit session.".into();
         }
     }
+    pub(in crate::state) fn invalidate_voice_analysis(&mut self) {
+        for doc in &mut self.documents {
+            doc.judge_epoch += 1;
+            doc.latest_judge_request = None;
+            doc.cached_judge = None;
+        }
+        self.judge_inflight = None;
+        self.judge_armed = true;
+    }
+
     pub(in crate::state) fn request_judge(&mut self, clock: f64) {
         let ready = self.voice_project.is_some() && self.active_doc_ref().is_some_and(judge_target);
         if !ready {
@@ -635,26 +641,21 @@ impl Editor {
                     report: result,
                 });
             }
-            BridgeReply::Build { result, .. } => match result {
-                Ok(_) => {
-                    for doc in &mut self.documents {
-                        doc.judge_epoch += 1;
-                        doc.latest_judge_request = None;
-                        doc.cached_judge = None;
-                    }
-                    self.judge_inflight = None;
-                    self.judge_armed = true;
-                }
-                Err(error) => self.status = format!("Build failed: {error}"),
-            },
+            BridgeReply::Build { request_id, result } => {
+                self.apply_voice_build(request_id, result);
+            }
             BridgeReply::SaveNote { result, .. } => match result {
                 Ok(saved) => {
                     self.status = format!("Saved note to {}", saved.path);
-                    self.toast = Some(format!("Saved a note in {}", saved.path));
+                    self.notify(
+                        "voice-note".into(),
+                        format!("Saved a note in {}", saved.path),
+                        None,
+                    );
                 }
                 Err(error) => {
                     self.status = format!("Could not save note: {error}");
-                    self.toast = Some(self.status.clone());
+                    self.notify("voice-note-error".into(), self.status.clone(), None);
                 }
             },
             BridgeReply::SessionStart {
@@ -692,11 +693,17 @@ impl Editor {
                     };
                 }
             }
-            BridgeReply::RulesList { result }
-            | BridgeReply::RulesDecide { result }
-            | BridgeReply::ChecksList { result }
-            | BridgeReply::ChecksDecide { result }
-            | BridgeReply::Promote { result } => {
+            BridgeReply::RulesList { request_id, result } => {
+                self.apply_rules_list(request_id, result);
+            }
+            BridgeReply::ChecksList { request_id, result } => {
+                self.apply_checks_list(request_id, result);
+            }
+            BridgeReply::RulesDecide { request_id, result }
+            | BridgeReply::ChecksDecide { request_id, result } => {
+                self.apply_voice_decision(request_id, result);
+            }
+            BridgeReply::Promote { result } => {
                 if let Err(error) = result {
                     self.status = error.to_string();
                 }

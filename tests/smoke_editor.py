@@ -91,6 +91,192 @@ def keep_artifacts(source: Path, destination: str | None) -> None:
             shutil.copy2(path, dest / path.name)
 
 
+STUDIO_SIZE = "1280x820"
+STUDIO_DRAFT = """# The late train
+
+The platform went quiet after nine. A cleaner dragged his broom along the yellow line.
+Across the street, the café still had a light on.
+
+## What I remember
+
+I kept the ticket in my coat pocket. It was the first night I took that train home.
+"""
+BLUR_EDIT = "A new line for the late train."
+LINKED_FINAL = "# The late train\n\nI made the final train. Café was still open.\n"
+LINKED_NOTE = "I kept the line about the café and cut the opening."
+
+
+def studio_home(base: Path, name: str, env: dict[str, str]) -> dict[str, str]:
+    home = base / f"home-{name}"
+    home.mkdir()
+    (home / "editor-state.json").write_text(
+        json.dumps({"ui": {"theme": "paper", "sidebar_width": 250, "inspector_width": 318}}),
+        encoding="utf-8",
+    )
+    return {**env, "GHOSTLESS_HOME": str(home)}
+
+
+def studio_scene(
+    base: Path,
+    env: dict[str, str],
+    script: str,
+    label: str,
+    *launch: str,
+    mark: str = "end",
+    snap: Path | None = None,
+    workspace: Path | None = None,
+) -> list[dict[str, object]]:
+    """Render a script checkpoint and return the accessibility elements at that instant."""
+    script_path = ROOT / "editor" / "tests" / f"{script}.json"
+    if workspace is not None:
+        # Supply a native path to the same scripted file-dialog event on every OS.
+        script_data = json.loads(script_path.read_text(encoding="utf-8"))
+        for event in script_data["events"]:
+            if event.get("type") == "file-dialog":
+                event["path"] = str(workspace)
+        script_path = base / f"{script}-local.json"
+        script_path.write_text(json.dumps(script_data), encoding="utf-8")
+    tree = base / f"{label}-tree.json"
+    options = ["--snap", str(snap)] if snap is not None else []
+    run(
+        [
+            str(EDITOR),
+            *launch,
+            "--script",
+            str(script_path),
+            "--at",
+            f"mark:{mark}",
+            "--size",
+            STUDIO_SIZE,
+            "--realtime",
+            "--scale",
+            "1",
+            "--tree",
+            str(tree),
+            *options,
+        ],
+        cwd=base,
+        env=env,
+    )
+    elements: list[dict[str, object]] = json.loads(tree.read_text(encoding="utf-8"))["elements"]
+    return elements
+
+
+def studio_mentions(elements: list[dict[str, object]], text: str) -> bool:
+    return any(text in str(element.get(field, "")) for element in elements for field in ("label", "text", "value"))
+
+
+def studio_workspace(base: Path, cli: str, env: dict[str, str]) -> tuple[Path, Path, Path]:
+    workspace = base / "Writing Studio"
+    piece = workspace / "seeds" / "demo"
+    piece.mkdir(parents=True)
+    voice = workspace / "voice"
+    sample = ROOT / "fixtures" / "sample-voice"
+    shutil.copytree(sample, voice)
+    draft = piece / "draft.md"
+    draft.write_text(STUDIO_DRAFT, encoding="utf-8")
+    (piece / "questions.md").write_text(
+        "# Questions\n\nWhat changed between the first and last train?\n", encoding="utf-8"
+    )
+    (piece / "NEXT.md").write_text("# Next\n\nRead the opening aloud.\n", encoding="utf-8")
+    (piece / "ai-ish.md").write_text(
+        "# The late train\n\n"
+        "I was the only passenger left on the platform. The station clock was three minutes slow.\n\n"
+        "It's not a note, it's a framework. We can delve into what waiting does to a familiar place.\n\n"
+        "## After the bell\n\n"
+        "I could hear the café owner stacking cups. When she turned her sign over, I walked home.\n",
+        encoding="utf-8",
+    )
+    run(_cli_cmd(cli, "build", "--project", str(voice)), cwd=base, env=env)
+    return workspace, voice, draft
+
+
+def smoke_workspace_edit(base: Path, workspace: Path, draft: Path, env: dict[str, str]) -> None:
+    launch = ("--folder", str(workspace))
+    blur_env = studio_home(base, "blur", env)
+    blur = studio_scene(base, blur_env, "workspace-edit", "workspace-blur", *launch, mark="blurred")
+    if norm(draft.read_text(encoding="utf-8")) != BLUR_EDIT or not studio_mentions(blur, "Saved"):
+        raise RuntimeError("The editor did not flush the edited draft on blur before the autosave timer")
+    draft.write_text(STUDIO_DRAFT, encoding="utf-8")
+
+    undo_env = studio_home(base, "undo", env)
+    undo = studio_scene(base, undo_env, "workspace-edit", "workspace-undo", *launch)
+    if not studio_mentions(undo, "questions.md") or norm(draft.read_text(encoding="utf-8")) != norm(STUDIO_DRAFT):
+        raise RuntimeError("The draft's undo history did not survive switching to a second tab")
+
+
+def diff_layout(elements: list[dict[str, object]], layout: str) -> bool:
+    return any(element.get("label") == layout and element.get("itemSelected") is True for element in elements)
+
+
+def smoke_linked_session(base: Path, workspace: Path, voice: Path, draft: Path, env: dict[str, str]) -> None:
+    linked_env = studio_home(base, "linked", env)
+    launch = ("--folder", str(workspace))
+    unified = studio_scene(base, linked_env, "linked-compare", "workspace-unified", *launch)
+    if not diff_layout(unified, "Unified") or not studio_mentions(unified, "Baseline vs draft"):
+        raise RuntimeError("Linked draft did not switch to Unified Compare")
+    sessions = [path for path in (voice / "sessions").iterdir() if (path / "session.json").is_file()]
+    if len(sessions) != 1:
+        raise RuntimeError(f"Expected one workspace-linked session, found {len(sessions)}")
+    session = sessions[0]
+    if any(norm(path.read_text(encoding="utf-8")) != norm(LINKED_FINAL) for path in (draft, session / "after.md")):
+        raise RuntimeError("The working draft and its linked session copy did not save together")
+    if (session / "before.md").read_text(encoding="utf-8") != STUDIO_DRAFT:
+        raise RuntimeError("The linked save modified the immutable session baseline")
+    if (session / "receipt.json").exists():
+        raise RuntimeError("Compare or save finished the session")
+
+    split = studio_scene(base, linked_env, "linked-finish", "workspace-split", *launch, mark="split")
+    if not diff_layout(split, "Split") or not studio_mentions(split, "Baseline vs draft"):
+        raise RuntimeError("Linked draft did not switch back to Split Compare")
+    prior_stats = (voice / "voice-stats.json").read_bytes()
+    finished = studio_scene(base, linked_env, "linked-finish", "workspace-finished", *launch)
+    if not studio_mentions(finished, "Session: finished"):
+        raise RuntimeError("Finish & Learn did not lock the workspace-linked session")
+    receipt = json.loads((session / "receipt.json").read_text(encoding="utf-8"))
+    if receipt["tier"] != "gold" or not (voice / "gold" / session.name / "after.md").is_file():
+        raise RuntimeError("Finish & Learn did not save the writer-first final in the gold tier")
+    if (session / "notes.md").read_text(encoding="utf-8") != LINKED_NOTE:
+        raise RuntimeError("Finish & Learn did not save the modal notes")
+    if (voice / "voice-stats.json").read_bytes() == prior_stats:
+        raise RuntimeError("Finish & Learn did not rebuild the voice guide")
+    if norm(draft.read_text(encoding="utf-8")) != norm(LINKED_FINAL):
+        raise RuntimeError("Finish & Learn changed the final workspace draft")
+
+
+def smoke_writing_studio(base: Path, cli: str, env: dict[str, str]) -> None:
+    workspace, voice, draft = studio_workspace(base, cli, env)
+    welcome_env = studio_home(base, "welcome", env)
+    welcome = studio_scene(base, welcome_env, "workspace-welcome", "workspace-welcome", workspace=workspace)
+    for label in ("NEXT.md", "questions.md", "draft.md", "Rules & Checks"):
+        if not studio_mentions(welcome, label):
+            raise RuntimeError(f"Open Folder did not show {label} from the workspace or nested voice project")
+
+    smoke_workspace_edit(base, workspace, draft, env)
+
+    inspector_env = studio_home(base, "inspector", env)
+    inspector = studio_scene(
+        base,
+        inspector_env,
+        "workspace-inspector",
+        "workspace-inspector",
+        "--folder",
+        str(workspace),
+        snap=base / "editor-preview.png",
+    )
+    for label in ("Score ", "delve", "Voice lens"):
+        if not studio_mentions(inspector, label):
+            raise RuntimeError(f"The live Voice Inspector did not report {label}")
+    if not any("not-x-its-y" in str(item.get("help", "")) for item in inspector):
+        raise RuntimeError("The live Voice Inspector did not flag the contrast tell")
+
+    inspector_prefs = Path(inspector_env["GHOSTLESS_HOME"]) / "editor-state.json"
+    if not json.loads(inspector_prefs.read_text(encoding="utf-8"))["ui"]["voice_lens"]:
+        raise RuntimeError("The Voice Lens shortcut did not enable inline flags")
+
+    smoke_linked_session(base, workspace, voice, draft, env)
+
+
 def main() -> None:  # noqa: C901  # linear GUI smoke scenario, not a library function
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -154,6 +340,7 @@ def main() -> None:  # noqa: C901  # linear GUI smoke scenario, not a library fu
                 "mark:end",
                 "--size",
                 "1120x800",
+                "--realtime",
             ],
             cwd=base,
             env=env,
@@ -385,6 +572,7 @@ def main() -> None:  # noqa: C901  # linear GUI smoke scenario, not a library fu
         opened = {path.name for path in (project / "sessions").iterdir()} - before
         if len(opened) != 1:
             raise RuntimeError("Editor did not open a session from the project directory without --project")
+        smoke_writing_studio(base, cli, env)
         print(f"Rune editor + installed CLI smoke passed on {sys.platform}")
     finally:
         keep_artifacts(base, args.artifacts_dir)

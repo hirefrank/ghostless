@@ -50,6 +50,13 @@ pub(crate) struct SessionConflict {
     pub session_text: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExternalConflict {
+    pub path: PathBuf,
+    pub disk_text: String,
+    pub disk_sha256: String,
+}
+
 pub(crate) struct DocumentBuffer {
     pub id: DocId,
     pub title: String,
@@ -87,6 +94,8 @@ pub(crate) struct DocumentBuffer {
     pub latest_judge_request: Option<u64>,
     pub cached_judge: Option<CachedJudge>,
     pub conflict: Option<SessionConflict>,
+    pub external_prev: Option<String>,
+    pub external_conflict: Option<ExternalConflict>,
     pub force_mirror: bool,
     cached_words: Cell<(u64, usize)>,
     pub(crate) decoration_cache: RefCell<Option<DecorationCache>>,
@@ -141,6 +150,8 @@ impl DocumentBuffer {
             latest_judge_request: None,
             cached_judge: None,
             conflict: None,
+            external_prev: None,
+            external_conflict: None,
             force_mirror: false,
             cached_words: Cell::new((u64::MAX, 0)),
             decoration_cache: RefCell::new(None),
@@ -195,6 +206,8 @@ impl DocumentBuffer {
             latest_judge_request: None,
             cached_judge: None,
             conflict: None,
+            external_prev: None,
+            external_conflict: None,
             force_mirror: false,
             cached_words: Cell::new((u64::MAX, 0)),
             decoration_cache: RefCell::new(None),
@@ -240,6 +253,10 @@ impl DocumentBuffer {
 
     pub(crate) fn is_editable(&self) -> bool {
         self.can_save() && !self.user_locked
+    }
+
+    pub(crate) fn blocks_file_save(&self) -> bool {
+        !self.is_session() && self.external_conflict.is_some()
     }
 
     pub(crate) fn can_save(&self) -> bool {

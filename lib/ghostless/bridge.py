@@ -307,11 +307,20 @@ class _Worker:
         )
         result = cast(SessionReceipt, dict(receipt))
         learned = receipt.get("learnedPath")
+        warnings: list[str] = []
         if promote and receipt.get("origin") == "ai-first" and isinstance(learned, str) and learned.startswith("gold/"):
-            result["promotion"] = learn.promote_final(root, learned.removeprefix("gold/"), gold=True)
+            try:
+                result["promotion"] = learn.promote_final(root, learned.removeprefix("gold/"), gold=True)
+            except (ProjectError, OSError, ValueError) as exc:
+                warnings.append(f"Promotion failed: {exc}")
         if rebuild:
-            self._build(root)
-            result["rebuilt"] = True
+            try:
+                self._build(root)
+                result["rebuilt"] = True
+            except (ProjectError, OSError, ValueError) as exc:
+                warnings.append(f"Rebuild failed: {exc}")
+        if warnings:
+            result["warnings"] = warnings
         return result
 
 
